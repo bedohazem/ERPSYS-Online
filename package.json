@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "db:migrate": "node packages/database/scripts/migrate.js"
+    "db:migrate": "node packages/database/scripts/migrate.js",
+    "db:seed": "node packages/database/scripts/seed.js"
   },
   "repository": {
     "type": "git",
