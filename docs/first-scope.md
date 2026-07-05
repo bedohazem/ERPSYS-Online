@@ -6,7 +6,7 @@ Database and sync foundation only.
 
 ## Included
 
-- PostgreSQL docker setup
+- Local PostgreSQL setup
 - Core database migrations
 - API health check
 - Online sale contract
