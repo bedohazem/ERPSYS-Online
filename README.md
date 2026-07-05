@@ -1,29 +1,59 @@
 ﻿# ERPSYS Online
 
-Professional online ERP system.
+Modular ERP/POS Platform starting with Fashion Retail.
 
-## Core Architecture
+## Product Direction
+
+ERPSYS Online is not a huge generic ERP from day one, and it is not locked to fashion forever.
+
+The correct direction is:
+
+General ERP/POS Core
++
+Fashion Retail Module first
+
+## Current Goal
+
+Build a real system for managing fashion retail branches, inventory, sales, returns, exchanges, and POS operations.
+
+## Future Goal
+
+Turn the system into a SaaS product for small and medium retail brands.
+
+## Core Rules
 
 - PostgreSQL is the only source of truth.
 - Backend API is the only gateway for data changes.
 - Web Admin is used for management, inventory, and reports.
-- Desktop POS is used by cashiers.
-- Desktop POS can work when internet or server is down.
+- Desktop POS is used by cashiers and branches.
+- POS can work when internet or server is down.
 - Offline POS stores pending sales only.
 - Offline POS must never deduct local stock.
-- Pending sales are synced to PostgreSQL through the API when server is available.
+- Pending sales are synced to the Backend API when the server is available.
+- All stock deductions happen only inside the Backend API.
+- No frontend app talks directly to the database.
 
-## Project Structure
+## Main Apps
 
-- apps/api
 - apps/web-admin
 - apps/desktop-pos
+- apps/mobile-app later
+- apps/landing-website later
+
+## Main Services
+
+- services/api
+- services/worker later
+- services/reporting-service later
+- services/ai-service later
+
+## Packages
+
+- packages/database
 - packages/shared
-- db/migrations
-- db/seed
-- docs
-- infra
+- packages/ui
+- packages/validation
 
-## First Goal
+## First Vertical
 
-Start with architecture and database before screens.
+Fashion Retail ERP/POS.
