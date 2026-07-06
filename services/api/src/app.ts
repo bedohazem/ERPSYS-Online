@@ -7,6 +7,7 @@ import { companiesRouter } from "./modules/companies/companies.routes";
 import { branchesRouter } from "./modules/branches/branches.routes";
 import { catalogRouter } from "./modules/catalog/catalog.routes";
 import { inventoryRouter } from "./modules/inventory/inventory.routes";
+import { salesRouter } from "./modules/sales/sales.routes";
 
 export const app = express();
 
@@ -20,6 +21,7 @@ app.use(companiesRouter);
 app.use(branchesRouter);
 app.use(catalogRouter);
 app.use(inventoryRouter);
+app.use(salesRouter);
 
 app.use((_req, res) => {
   res.status(404).json({
