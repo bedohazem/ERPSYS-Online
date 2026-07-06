@@ -134,3 +134,178 @@ catalogRouter.get("/api/catalog/variants", async (req, res, next) => {
     next(error);
   }
 });
+
+catalogRouter.post("/api/catalog/products", async (req, res, next) => {
+  try {
+    const {
+      companyId,
+      categoryId,
+      brandId,
+      name,
+      description,
+      productType,
+      baseSku,
+      basePrice,
+      costPrice,
+      taxRate,
+    } = req.body;
+
+    if (!companyId || typeof companyId !== "string") {
+      return res.status(400).json({ error: "companyId is required" });
+    }
+
+    if (!name || typeof name !== "string") {
+      return res.status(400).json({ error: "Product name is required" });
+    }
+
+    const result = await db.query(
+      `
+      INSERT INTO products (
+        company_id,
+        category_id,
+        brand_id,
+        name,
+        description,
+        product_type,
+        base_sku,
+        base_price,
+        cost_price,
+        tax_rate
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING
+        id,
+        company_id,
+        category_id,
+        brand_id,
+        name,
+        description,
+        product_type,
+        base_sku,
+        base_price,
+        cost_price,
+        tax_rate,
+        status,
+        created_at,
+        updated_at;
+      `,
+      [
+        companyId,
+        categoryId || null,
+        brandId || null,
+        name.trim(),
+        description || null,
+        productType || "fashion",
+        baseSku || null,
+        Number(basePrice || 0),
+        Number(costPrice || 0),
+        Number(taxRate || 0),
+      ]
+    );
+
+    res.status(201).json({ data: result.rows[0] });
+  } catch (error) {
+    next(error);
+  }
+});
+
+catalogRouter.post("/api/catalog/variants", async (req, res, next) => {
+  try {
+    const {
+      companyId,
+      productId,
+      sizeId,
+      colorId,
+      seasonId,
+      collectionId,
+      sku,
+      styleCode,
+      primaryBarcode,
+      costPrice,
+      sellingPrice,
+    } = req.body;
+
+    if (!companyId || typeof companyId !== "string") {
+      return res.status(400).json({ error: "companyId is required" });
+    }
+
+    if (!productId || typeof productId !== "string") {
+      return res.status(400).json({ error: "productId is required" });
+    }
+
+    if (!sku || typeof sku !== "string") {
+      return res.status(400).json({ error: "Variant SKU is required" });
+    }
+
+    const result = await db.query(
+      `
+      INSERT INTO product_variants (
+        company_id,
+        product_id,
+        size_id,
+        color_id,
+        season_id,
+        collection_id,
+        sku,
+        style_code,
+        primary_barcode,
+        cost_price,
+        selling_price
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      RETURNING
+        id,
+        company_id,
+        product_id,
+        size_id,
+        color_id,
+        season_id,
+        collection_id,
+        sku,
+        style_code,
+        primary_barcode,
+        cost_price,
+        selling_price,
+        status,
+        created_at,
+        updated_at;
+      `,
+      [
+        companyId,
+        productId,
+        sizeId || null,
+        colorId || null,
+        seasonId || null,
+        collectionId || null,
+        sku.trim(),
+        styleCode || null,
+        primaryBarcode || null,
+        Number(costPrice || 0),
+        Number(sellingPrice || 0),
+      ]
+    );
+
+    const variant = result.rows[0];
+
+    if (primaryBarcode) {
+      await db.query(
+        `
+        INSERT INTO variant_barcodes (
+          company_id,
+          variant_id,
+          barcode,
+          barcode_type,
+          is_primary
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (company_id, barcode) DO NOTHING;
+        `,
+        [companyId, variant.id, primaryBarcode, "default", true]
+      );
+    }
+
+    res.status(201).json({ data: variant });
+  } catch (error) {
+    next(error);
+  }
+});
