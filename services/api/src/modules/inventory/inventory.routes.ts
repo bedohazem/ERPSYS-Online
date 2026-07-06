@@ -3,6 +3,39 @@ import { db } from "../../db/pool";
 
 export const inventoryRouter = Router();
 
+inventoryRouter.get("/api/inventory/stock-locations", async (req, res, next) => {
+  try {
+    const companyId = req.query.companyId;
+
+    if (typeof companyId !== "string" || !companyId.trim()) {
+      return res.status(400).json({ error: "companyId query parameter is required" });
+    }
+
+    const result = await db.query(
+      `
+      SELECT
+        id,
+        company_id,
+        branch_id,
+        code,
+        name,
+        location_type,
+        is_active,
+        created_at,
+        updated_at
+      FROM stock_locations
+      WHERE company_id = $1
+      ORDER BY name ASC;
+      `,
+      [companyId]
+    );
+
+    res.json({ data: result.rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
 inventoryRouter.get("/api/inventory/stock-balances", async (req, res, next) => {
   try {
     const companyId = req.query.companyId;

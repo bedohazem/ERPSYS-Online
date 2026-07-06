@@ -117,7 +117,7 @@ salesRouter.post("/api/sales", async (req, res, next) => {
         [companyId, variantId]
       );
 
-      if (variantResult.rowCount === 0) {
+      if ((variantResult.rowCount ?? 0) === 0) {
         throw new Error(`Variant not found or inactive: ${variantId}`);
       }
 
