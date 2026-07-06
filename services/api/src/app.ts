@@ -5,6 +5,7 @@ import { healthRouter } from "./routes/health.route";
 import { demoRouter } from "./routes/demo.route";
 import { companiesRouter } from "./modules/companies/companies.routes";
 import { branchesRouter } from "./modules/branches/branches.routes";
+import { catalogRouter } from "./modules/catalog/catalog.routes";
 
 export const app = express();
 
@@ -16,6 +17,7 @@ app.use(healthRouter);
 app.use(demoRouter);
 app.use(companiesRouter);
 app.use(branchesRouter);
+app.use(catalogRouter);
 
 app.use((_req, res) => {
   res.status(404).json({
