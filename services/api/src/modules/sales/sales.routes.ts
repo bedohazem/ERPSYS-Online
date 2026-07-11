@@ -1,10 +1,225 @@
-import { Router } from "express";
-import { db } from "../../db/pool";
+import { Router } from 'express'
+import { db } from '../../db/pool'
 
-export const salesRouter = Router();
+export const salesRouter = Router()
 
-salesRouter.post("/api/sales", async (req, res, next) => {
-  const client = await db.connect();
+// ======================================================
+// GET /api/sales
+// الهدف: عرض قائمة الفواتير المحفوظة
+// مثال:
+// /api/sales?companyId=xxx
+// /api/sales?companyId=xxx&branchId=yyy
+// ======================================================
+salesRouter.get('/api/sales', async (req, res, next) => {
+  try {
+    // companyId مهم جدًا عشان نجيب فواتير الشركة الحالية فقط
+    // ده جزء من فكرة multi-tenant مستقبلاً
+    const companyId = req.query.companyId
+
+    // branchId اختياري
+    // لو اتبعت، نجيب فواتير فرع محدد
+    // لو ما اتبعتش، نجيب فواتير كل الفروع داخل نفس الشركة
+    const branchId = req.query.branchId
+
+    // limit اختياري عشان ما نرجعش عدد ضخم من الفواتير مرة واحدة
+    // لو المستخدم ما بعتوش نخليه 50
+    const limit = Math.min(Number(req.query.limit || 50), 100)
+
+    // Validation بسيط للتأكد إن companyId موجود وصحيح كنص
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res
+        .status(400)
+        .json({ error: 'companyId query parameter is required' })
+    }
+
+    // هنا بنجيب الفواتير من جدول sales
+    // ومعاها اسم الفرع واسم العميل لو موجود
+    const result = await db.query(
+      `
+      SELECT
+        s.id,
+        s.company_id,
+        s.branch_id,
+        b.name AS branch_name,
+        s.stock_location_id,
+        sl.name AS stock_location_name,
+        s.customer_id,
+        c.name AS customer_name,
+        s.sale_number,
+        s.source,
+        s.local_sale_id,
+        s.subtotal,
+        s.discount_total,
+        s.tax_total,
+        s.total,
+        s.paid_total,
+        s.change_total,
+        s.status,
+        s.created_at,
+        s.synced_at,
+
+        -- عدد الأصناف داخل الفاتورة
+        COUNT(si.id)::int AS items_count
+      FROM sales s
+      JOIN branches b ON b.id = s.branch_id
+      JOIN stock_locations sl ON sl.id = s.stock_location_id
+      LEFT JOIN customers c ON c.id = s.customer_id
+      LEFT JOIN sale_items si ON si.sale_id = s.id
+      WHERE s.company_id = $1
+        AND ($2::uuid IS NULL OR s.branch_id = $2::uuid)
+      GROUP BY
+        s.id,
+        b.name,
+        sl.name,
+        c.name
+      ORDER BY s.created_at DESC
+      LIMIT $3;
+      `,
+      [
+        companyId,
+        typeof branchId === 'string' && branchId.trim() ? branchId : null,
+        limit,
+      ],
+    )
+
+    res.json({ data: result.rows })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// ======================================================
+// GET /api/sales/:saleId
+// الهدف: عرض تفاصيل فاتورة واحدة
+// بيرجع:
+// 1. بيانات الفاتورة
+// 2. الأصناف المباعة
+// 3. المدفوعات
+// مثال:
+// /api/sales/SALE_ID?companyId=xxx
+// ======================================================
+salesRouter.get('/api/sales/:saleId', async (req, res, next) => {
+  try {
+    // saleId جاي من الرابط نفسه
+    // مثال: /api/sales/123
+    const saleId = req.params.saleId
+
+    // companyId جاي من query
+    // لازم نستخدمه عشان نضمن إن الفاتورة تابعة للشركة الصح
+    const companyId = req.query.companyId
+
+    if (!saleId || typeof saleId !== 'string') {
+      return res.status(400).json({ error: 'saleId is required' })
+    }
+
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res
+        .status(400)
+        .json({ error: 'companyId query parameter is required' })
+    }
+
+    // أول Query: نجيب بيانات الفاتورة الرئيسية
+    const saleResult = await db.query(
+      `
+      SELECT
+        s.id,
+        s.company_id,
+        s.branch_id,
+        b.name AS branch_name,
+        s.stock_location_id,
+        sl.name AS stock_location_name,
+        s.customer_id,
+        c.name AS customer_name,
+        s.cashier_id,
+        u.full_name AS cashier_name,
+        s.sale_number,
+        s.source,
+        s.local_sale_id,
+        s.idempotency_key,
+        s.subtotal,
+        s.discount_total,
+        s.tax_total,
+        s.total,
+        s.paid_total,
+        s.change_total,
+        s.status,
+        s.created_at,
+        s.synced_at
+      FROM sales s
+      JOIN branches b ON b.id = s.branch_id
+      JOIN stock_locations sl ON sl.id = s.stock_location_id
+      LEFT JOIN customers c ON c.id = s.customer_id
+      LEFT JOIN users u ON u.id = s.cashier_id
+      WHERE s.company_id = $1
+        AND s.id = $2;
+      `,
+      [companyId, saleId],
+    )
+
+    // لو مفيش فاتورة بنفس ID داخل نفس الشركة، نرجع 404
+    if ((saleResult.rowCount ?? 0) === 0) {
+      return res.status(404).json({ error: 'Sale was not found' })
+    }
+
+    // تاني Query: نجيب أصناف الفاتورة
+    const itemsResult = await db.query(
+      `
+      SELECT
+        id,
+        sale_id,
+        variant_id,
+        sku_snapshot,
+        barcode_snapshot,
+        product_name_snapshot,
+        size_snapshot,
+        color_snapshot,
+        quantity,
+        unit_price,
+        discount_amount,
+        tax_amount,
+        line_total,
+        created_at
+      FROM sale_items
+      WHERE company_id = $1
+        AND sale_id = $2
+      ORDER BY created_at ASC;
+      `,
+      [companyId, saleId],
+    )
+
+    // تالت Query: نجيب المدفوعات الخاصة بالفاتورة
+    const paymentsResult = await db.query(
+      `
+      SELECT
+        id,
+        sale_id,
+        method,
+        amount,
+        reference,
+        created_at
+      FROM payments
+      WHERE company_id = $1
+        AND sale_id = $2
+      ORDER BY created_at ASC;
+      `,
+      [companyId, saleId],
+    )
+
+    // نرجع كل حاجة في Response واحد واضح
+    res.json({
+      data: {
+        sale: saleResult.rows[0],
+        items: itemsResult.rows,
+        payments: paymentsResult.rows,
+      },
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+salesRouter.post('/api/sales', async (req, res, next) => {
+  const client = await db.connect()
 
   try {
     const {
@@ -22,37 +237,37 @@ salesRouter.post("/api/sales", async (req, res, next) => {
       payments,
       discountTotal,
       taxTotal,
-    } = req.body;
+    } = req.body
 
-    if (!companyId || typeof companyId !== "string") {
-      return res.status(400).json({ error: "companyId is required" });
+    if (!companyId || typeof companyId !== 'string') {
+      return res.status(400).json({ error: 'companyId is required' })
     }
 
-    if (!branchId || typeof branchId !== "string") {
-      return res.status(400).json({ error: "branchId is required" });
+    if (!branchId || typeof branchId !== 'string') {
+      return res.status(400).json({ error: 'branchId is required' })
     }
 
-    if (!stockLocationId || typeof stockLocationId !== "string") {
-      return res.status(400).json({ error: "stockLocationId is required" });
+    if (!stockLocationId || typeof stockLocationId !== 'string') {
+      return res.status(400).json({ error: 'stockLocationId is required' })
     }
 
-    if (!saleNumber || typeof saleNumber !== "string") {
-      return res.status(400).json({ error: "saleNumber is required" });
+    if (!saleNumber || typeof saleNumber !== 'string') {
+      return res.status(400).json({ error: 'saleNumber is required' })
     }
 
-    if (!idempotencyKey || typeof idempotencyKey !== "string") {
-      return res.status(400).json({ error: "idempotencyKey is required" });
+    if (!idempotencyKey || typeof idempotencyKey !== 'string') {
+      return res.status(400).json({ error: 'idempotencyKey is required' })
     }
 
     if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: "items are required" });
+      return res.status(400).json({ error: 'items are required' })
     }
 
     if (!Array.isArray(payments) || payments.length === 0) {
-      return res.status(400).json({ error: "payments are required" });
+      return res.status(400).json({ error: 'payments are required' })
     }
 
-    await client.query("BEGIN");
+    await client.query('BEGIN')
 
     const existingSale = await client.query(
       `
@@ -61,39 +276,39 @@ salesRouter.post("/api/sales", async (req, res, next) => {
       WHERE company_id = $1
         AND idempotency_key = $2;
       `,
-      [companyId, idempotencyKey]
-    );
+      [companyId, idempotencyKey],
+    )
 
     if ((existingSale.rowCount ?? 0) > 0) {
-      await client.query("COMMIT");
+      await client.query('COMMIT')
 
       return res.status(200).json({
         duplicated: true,
         data: existingSale.rows[0],
-      });
+      })
     }
 
-    let subtotal = 0;
+    let subtotal = 0
 
-    const preparedItems = [];
+    const preparedItems = []
 
     for (const item of items) {
-      const variantId = item.variantId;
-      const quantity = Number(item.quantity);
-      const unitPrice = Number(item.unitPrice);
-      const itemDiscount = Number(item.discountAmount || 0);
-      const itemTax = Number(item.taxAmount || 0);
+      const variantId = item.variantId
+      const quantity = Number(item.quantity)
+      const unitPrice = Number(item.unitPrice)
+      const itemDiscount = Number(item.discountAmount || 0)
+      const itemTax = Number(item.taxAmount || 0)
 
-      if (!variantId || typeof variantId !== "string") {
-        throw new Error("variantId is required for each item");
+      if (!variantId || typeof variantId !== 'string') {
+        throw new Error('variantId is required for each item')
       }
 
       if (!Number.isFinite(quantity) || quantity <= 0) {
-        throw new Error("quantity must be greater than zero");
+        throw new Error('quantity must be greater than zero')
       }
 
       if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-        throw new Error("unitPrice must be zero or greater");
+        throw new Error('unitPrice must be zero or greater')
       }
 
       const variantResult = await client.query(
@@ -114,17 +329,17 @@ salesRouter.post("/api/sales", async (req, res, next) => {
           AND pv.id = $2
           AND pv.status = 'active';
         `,
-        [companyId, variantId]
-      );
+        [companyId, variantId],
+      )
 
       if ((variantResult.rowCount ?? 0) === 0) {
-        throw new Error(`Variant not found or inactive: ${variantId}`);
+        throw new Error(`Variant not found or inactive: ${variantId}`)
       }
 
-      const variant = variantResult.rows[0];
-      const lineTotal = quantity * unitPrice - itemDiscount + itemTax;
+      const variant = variantResult.rows[0]
+      const lineTotal = quantity * unitPrice - itemDiscount + itemTax
 
-      subtotal += quantity * unitPrice;
+      subtotal += quantity * unitPrice
 
       preparedItems.push({
         variantId,
@@ -138,18 +353,18 @@ salesRouter.post("/api/sales", async (req, res, next) => {
         productNameSnapshot: variant.product_name,
         sizeSnapshot: variant.size_name,
         colorSnapshot: variant.color_name,
-      });
+      })
     }
 
-    const finalDiscountTotal = Number(discountTotal || 0);
-    const finalTaxTotal = Number(taxTotal || 0);
-    const total = subtotal - finalDiscountTotal + finalTaxTotal;
+    const finalDiscountTotal = Number(discountTotal || 0)
+    const finalTaxTotal = Number(taxTotal || 0)
+    const total = subtotal - finalDiscountTotal + finalTaxTotal
 
     const paidTotal = payments.reduce((sum: number, payment: any) => {
-      return sum + Number(payment.amount || 0);
-    }, 0);
+      return sum + Number(payment.amount || 0)
+    }, 0)
 
-    const changeTotal = Math.max(paidTotal - total, 0);
+    const changeTotal = Math.max(paidTotal - total, 0)
 
     const saleResult = await client.query(
       `
@@ -190,7 +405,7 @@ salesRouter.post("/api/sales", async (req, res, next) => {
         shiftId || null,
         customerId || null,
         saleNumber.trim(),
-        source || "online_pos",
+        source || 'online_pos',
         localSaleId || null,
         idempotencyKey,
         subtotal,
@@ -199,12 +414,12 @@ salesRouter.post("/api/sales", async (req, res, next) => {
         total,
         paidTotal,
         changeTotal,
-      ]
-    );
+      ],
+    )
 
-    const sale = saleResult.rows[0];
+    const sale = saleResult.rows[0]
 
-    const createdItems = [];
+    const createdItems = []
 
     for (const item of preparedItems) {
       const saleItemResult = await client.query(
@@ -244,10 +459,10 @@ salesRouter.post("/api/sales", async (req, res, next) => {
           item.discountAmount,
           item.taxAmount,
           item.lineTotal,
-        ]
-      );
+        ],
+      )
 
-      createdItems.push(saleItemResult.rows[0]);
+      createdItems.push(saleItemResult.rows[0])
 
       const balanceResult = await client.query(
         `
@@ -258,13 +473,15 @@ salesRouter.post("/api/sales", async (req, res, next) => {
           AND variant_id = $3
         FOR UPDATE;
         `,
-        [companyId, stockLocationId, item.variantId]
-      );
+        [companyId, stockLocationId, item.variantId],
+      )
 
       const quantityBefore =
-        (balanceResult.rowCount ?? 0) > 0 ? Number(balanceResult.rows[0].quantity) : 0;
+        (balanceResult.rowCount ?? 0) > 0
+          ? Number(balanceResult.rows[0].quantity)
+          : 0
 
-      const quantityAfter = quantityBefore - item.quantity;
+      const quantityAfter = quantityBefore - item.quantity
 
       if ((balanceResult.rowCount ?? 0) === 0) {
         await client.query(
@@ -278,8 +495,8 @@ salesRouter.post("/api/sales", async (req, res, next) => {
           )
           VALUES ($1, $2, $3, $4, $5);
           `,
-          [companyId, branchId, stockLocationId, item.variantId, quantityAfter]
-        );
+          [companyId, branchId, stockLocationId, item.variantId, quantityAfter],
+        )
       } else {
         await client.query(
           `
@@ -290,8 +507,8 @@ salesRouter.post("/api/sales", async (req, res, next) => {
             AND stock_location_id = $3
             AND variant_id = $4;
           `,
-          [quantityAfter, companyId, stockLocationId, item.variantId]
-        );
+          [quantityAfter, companyId, stockLocationId, item.variantId],
+        )
       }
 
       await client.query(
@@ -331,22 +548,22 @@ salesRouter.post("/api/sales", async (req, res, next) => {
           sale.id,
           `Sale ${sale.sale_number}`,
           cashierId || null,
-        ]
-      );
+        ],
+      )
     }
 
-    const createdPayments = [];
+    const createdPayments = []
 
     for (const payment of payments) {
-      const method = payment.method;
-      const amount = Number(payment.amount);
+      const method = payment.method
+      const amount = Number(payment.amount)
 
-      if (!method || typeof method !== "string") {
-        throw new Error("Payment method is required");
+      if (!method || typeof method !== 'string') {
+        throw new Error('Payment method is required')
       }
 
       if (!Number.isFinite(amount) || amount <= 0) {
-        throw new Error("Payment amount must be greater than zero");
+        throw new Error('Payment amount must be greater than zero')
       }
 
       const paymentResult = await client.query(
@@ -361,13 +578,13 @@ salesRouter.post("/api/sales", async (req, res, next) => {
         VALUES ($1, $2, $3, $4, $5)
         RETURNING *;
         `,
-        [companyId, sale.id, method, amount, payment.reference || null]
-      );
+        [companyId, sale.id, method, amount, payment.reference || null],
+      )
 
-      createdPayments.push(paymentResult.rows[0]);
+      createdPayments.push(paymentResult.rows[0])
     }
 
-    await client.query("COMMIT");
+    await client.query('COMMIT')
 
     res.status(201).json({
       data: {
@@ -375,11 +592,11 @@ salesRouter.post("/api/sales", async (req, res, next) => {
         items: createdItems,
         payments: createdPayments,
       },
-    });
+    })
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
-    next(error);
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
   } finally {
-    client.release();
+    client.release()
   }
-});
+})
