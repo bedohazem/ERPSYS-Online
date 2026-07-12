@@ -1,5 +1,5 @@
-import { Router } from "express"
-import { db } from "../../db/pool"
+import { Router } from 'express'
+import { db } from '../../db/pool'
 
 export const customersRouter = Router()
 
@@ -18,7 +18,7 @@ export const customersRouter = Router()
 // q:
 // اختياري للبحث بالاسم أو رقم التليفون أو الإيميل
 // ======================================================
-customersRouter.get("/api/customers", async (req, res, next) => {
+customersRouter.get('/api/customers', async (req, res, next) => {
   try {
     const companyId = req.query.companyId
     const q = req.query.q
@@ -26,13 +26,16 @@ customersRouter.get("/api/customers", async (req, res, next) => {
     // limit عشان ما نرجعش عدد ضخم من العملاء مرة واحدة
     const limit = Math.min(Number(req.query.limit || 50), 100)
 
-    if (typeof companyId !== "string" || !companyId.trim()) {
-      return res.status(400).json({ error: "companyId query parameter is required" })
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res
+        .status(400)
+        .json({ error: 'companyId query parameter is required' })
     }
 
     // لو المستخدم كتب q نبحث به
     // لو ماكتبش q نرجع كل العملاء داخل الشركة
-    const searchText = typeof q === "string" && q.trim() ? `%${q.trim()}%` : null
+    const searchText =
+      typeof q === 'string' && q.trim() ? `%${q.trim()}%` : null
 
     const result = await db.query(
       `
@@ -67,6 +70,134 @@ customersRouter.get("/api/customers", async (req, res, next) => {
 })
 
 // ======================================================
+// GET /api/customers/:customerId/sales
+// الهدف:
+// عرض كل فواتير عميل معين
+//
+// مثال:
+// /api/customers/CUSTOMER_ID/sales?companyId=xxx
+//
+// ليه مهم؟
+// عشان لما نفتح شاشة عميل في Web Admin أو POS
+// نقدر نعرف العميل اشترى إيه قبل كده
+// وإجمالي تعاملاته كام
+// ======================================================
+customersRouter.get(
+  '/api/customers/:customerId/sales',
+  async (req, res, next) => {
+    try {
+      // customerId جاي من الرابط
+      // مثال: /api/customers/123/sales
+      const customerId = req.params.customerId
+
+      // companyId جاي من query
+      // لازم نستخدمه عشان نضمن إن العميل والفواتير تابعين لنفس الشركة
+      const companyId = req.query.companyId
+
+      // limit اختياري
+      // لو العميل عنده فواتير كتير، مانرجعش كل حاجة مرة واحدة
+      const limit = Math.min(Number(req.query.limit || 50), 100)
+
+      if (!customerId || typeof customerId !== 'string') {
+        return res.status(400).json({ error: 'customerId is required' })
+      }
+
+      if (typeof companyId !== 'string' || !companyId.trim()) {
+        return res
+          .status(400)
+          .json({ error: 'companyId query parameter is required' })
+      }
+
+      // أولًا: نتأكد إن العميل موجود داخل نفس الشركة
+      // ده يمنع إن حد يطلب فواتير عميل مش تابع للشركة دي
+      const customerResult = await db.query(
+        `
+      SELECT
+        id,
+        name,
+        phone,
+        email,
+        address,
+        is_active
+      FROM customers
+      WHERE company_id = $1
+        AND id = $2;
+      `,
+        [companyId, customerId],
+      )
+
+      if ((customerResult.rowCount ?? 0) === 0) {
+        return res.status(404).json({ error: 'Customer was not found' })
+      }
+
+      // ثانيًا: نجيب فواتير العميل
+      // بنجيب معاها اسم الفرع وعدد الأصناف داخل كل فاتورة
+      const salesResult = await db.query(
+        `
+      SELECT
+        s.id,
+        s.sale_number,
+        s.branch_id,
+        b.name AS branch_name,
+        s.stock_location_id,
+        sl.name AS stock_location_name,
+        s.subtotal,
+        s.discount_total,
+        s.tax_total,
+        s.total,
+        s.paid_total,
+        s.change_total,
+        s.status,
+        s.created_at,
+
+        -- عدد الأصناف داخل الفاتورة
+        COUNT(si.id)::int AS items_count
+      FROM sales s
+      JOIN branches b ON b.id = s.branch_id
+      JOIN stock_locations sl ON sl.id = s.stock_location_id
+      LEFT JOIN sale_items si ON si.sale_id = s.id
+      WHERE s.company_id = $1
+        AND s.customer_id = $2
+      GROUP BY
+        s.id,
+        b.name,
+        sl.name
+      ORDER BY s.created_at DESC
+      LIMIT $3;
+      `,
+        [companyId, customerId, limit],
+      )
+
+      // ثالثًا: نعمل ملخص سريع لتعاملات العميل
+      // عدد الفواتير + إجمالي المبيعات + إجمالي المدفوع
+      const summaryResult = await db.query(
+        `
+      SELECT
+        COUNT(*)::int AS sales_count,
+        COALESCE(SUM(total), 0) AS total_sales,
+        COALESCE(SUM(paid_total), 0) AS total_paid
+      FROM sales
+      WHERE company_id = $1
+        AND customer_id = $2
+        AND status = 'completed';
+      `,
+        [companyId, customerId],
+      )
+
+      res.json({
+        data: {
+          customer: customerResult.rows[0],
+          summary: summaryResult.rows[0],
+          sales: salesResult.rows,
+        },
+      })
+    } catch (error) {
+      next(error)
+    }
+  },
+)
+
+// ======================================================
 // GET /api/customers/:customerId
 // الهدف:
 // عرض بيانات عميل واحد
@@ -77,17 +208,19 @@ customersRouter.get("/api/customers", async (req, res, next) => {
 // ليه بنطلب companyId مع customerId؟
 // عشان نضمن إن العميل تابع لنفس الشركة
 // ======================================================
-customersRouter.get("/api/customers/:customerId", async (req, res, next) => {
+customersRouter.get('/api/customers/:customerId', async (req, res, next) => {
   try {
     const customerId = req.params.customerId
     const companyId = req.query.companyId
 
-    if (!customerId || typeof customerId !== "string") {
-      return res.status(400).json({ error: "customerId is required" })
+    if (!customerId || typeof customerId !== 'string') {
+      return res.status(400).json({ error: 'customerId is required' })
     }
 
-    if (typeof companyId !== "string" || !companyId.trim()) {
-      return res.status(400).json({ error: "companyId query parameter is required" })
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res
+        .status(400)
+        .json({ error: 'companyId query parameter is required' })
     }
 
     const result = await db.query(
@@ -110,7 +243,7 @@ customersRouter.get("/api/customers/:customerId", async (req, res, next) => {
     )
 
     if ((result.rowCount ?? 0) === 0) {
-      return res.status(404).json({ error: "Customer was not found" })
+      return res.status(404).json({ error: 'Customer was not found' })
     }
 
     res.json({ data: result.rows[0] })
@@ -137,21 +270,21 @@ customersRouter.get("/api/customers/:customerId", async (req, res, next) => {
 // phone معمول عليه UNIQUE داخل نفس الشركة
 // يعني مينفعش نفس رقم التليفون يتكرر لنفس companyId
 // ======================================================
-customersRouter.post("/api/customers", async (req, res, next) => {
+customersRouter.post('/api/customers', async (req, res, next) => {
   try {
     const { companyId, name, phone, email, address } = req.body
 
-    if (!companyId || typeof companyId !== "string") {
-      return res.status(400).json({ error: "companyId is required" })
+    if (!companyId || typeof companyId !== 'string') {
+      return res.status(400).json({ error: 'companyId is required' })
     }
 
-    if (!name || typeof name !== "string" || !name.trim()) {
-      return res.status(400).json({ error: "Customer name is required" })
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'Customer name is required' })
     }
 
     // لو فيه رقم تليفون، نتأكد الأول إنه مش موجود لنفس الشركة
     // عشان نرجع رسالة مفهومة بدل database error
-    if (phone && typeof phone === "string" && phone.trim()) {
+    if (phone && typeof phone === 'string' && phone.trim()) {
       const existingCustomer = await db.query(
         `
         SELECT id, name, phone
@@ -164,7 +297,7 @@ customersRouter.post("/api/customers", async (req, res, next) => {
 
       if ((existingCustomer.rowCount ?? 0) > 0) {
         return res.status(409).json({
-          error: "Customer phone already exists",
+          error: 'Customer phone already exists',
           data: existingCustomer.rows[0],
         })
       }
@@ -194,9 +327,9 @@ customersRouter.post("/api/customers", async (req, res, next) => {
       [
         companyId,
         name.trim(),
-        phone && typeof phone === "string" ? phone.trim() : null,
-        email && typeof email === "string" ? email.trim() : null,
-        address && typeof address === "string" ? address.trim() : null,
+        phone && typeof phone === 'string' ? phone.trim() : null,
+        email && typeof email === 'string' ? email.trim() : null,
+        address && typeof address === 'string' ? address.trim() : null,
       ],
     )
 
