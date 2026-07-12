@@ -3,10 +3,17 @@ import CustomersPage from './pages/CustomersPage'
 import ProductsPage from './pages/ProductsPage'
 import SalesPage from './pages/SalesPage'
 import ReturnsPage from './pages/ReturnsPage'
+import InventoryPage from './pages/InventoryPage'
 
 const API_BASE_URL = 'http://localhost:3000'
 
-type PageName = 'dashboard' | 'products' | 'customers' | 'sales' | 'returns'
+type PageName =
+  | 'dashboard'
+  | 'products'
+  | 'customers'
+  | 'sales'
+  | 'returns'
+  | 'inventory'
 
 type DailySummary = {
   companyId: string
@@ -175,6 +182,13 @@ function App() {
         >
           Returns
         </button>
+
+        <button
+          className={activePage === 'inventory' ? 'tab active-tab' : 'tab'}
+          onClick={() => setActivePage('inventory')}
+        >
+          Inventory
+        </button>
       </nav>
 
       <section className="panel">
@@ -320,6 +334,10 @@ function App() {
 
       {activePage === 'returns' ? (
         <ReturnsPage companyId={companyId} branchId={branchId} />
+      ) : null}
+
+      {activePage === 'inventory' ? (
+        <InventoryPage companyId={companyId} />
       ) : null}
     </main>
   )
