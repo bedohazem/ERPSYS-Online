@@ -23,6 +23,217 @@ class ReturnsApiError extends Error {
 }
 
 // ======================================================
+// GET /api/returns
+// الهدف:
+// عرض قائمة المرتجعات الموجودة داخل شركة معينة
+//
+// مثال:
+// /api/returns?companyId=xxx
+// /api/returns?companyId=xxx&branchId=yyy
+//
+// companyId:
+// مهم عشان نعرض مرتجعات الشركة الحالية فقط
+//
+// branchId:
+// اختياري لو عايز تعرض مرتجعات فرع معين فقط
+// ======================================================
+returnsRouter.get('/api/returns', async (req, res, next) => {
+  try {
+    const companyId = req.query.companyId
+    const branchId = req.query.branchId
+
+    // limit عشان ما نرجعش عدد كبير جدًا مرة واحدة
+    const limit = Math.min(Number(req.query.limit || 50), 100)
+
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res
+        .status(400)
+        .json({ error: 'companyId query parameter is required' })
+    }
+
+    const result = await db.query(
+      `
+      SELECT
+        r.id,
+        r.company_id,
+        r.branch_id,
+        b.name AS branch_name,
+        r.stock_location_id,
+        sl.name AS stock_location_name,
+        r.customer_id,
+        c.name AS customer_name,
+        r.original_sale_id,
+        s.sale_number AS original_sale_number,
+        r.return_number,
+        r.source,
+        r.subtotal,
+        r.refund_total,
+        r.status,
+        r.reason,
+        r.created_at,
+
+        -- عدد الأصناف داخل المرتجع
+        COUNT(ri.id)::int AS items_count
+      FROM returns r
+      JOIN branches b ON b.id = r.branch_id
+      JOIN stock_locations sl ON sl.id = r.stock_location_id
+      LEFT JOIN customers c ON c.id = r.customer_id
+      LEFT JOIN sales s ON s.id = r.original_sale_id
+      LEFT JOIN return_items ri ON ri.return_id = r.id
+      WHERE r.company_id = $1
+        AND ($2::uuid IS NULL OR r.branch_id = $2::uuid)
+      GROUP BY
+        r.id,
+        b.name,
+        sl.name,
+        c.name,
+        s.sale_number
+      ORDER BY r.created_at DESC
+      LIMIT $3;
+      `,
+      [
+        companyId,
+        typeof branchId === 'string' && branchId.trim() ? branchId : null,
+        limit,
+      ],
+    )
+
+    res.json({ data: result.rows })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// ======================================================
+// GET /api/returns/:returnId
+// الهدف:
+// عرض تفاصيل مرتجع واحد
+//
+// بيرجع:
+// 1. بيانات المرتجع
+// 2. الأصناف المرتجعة
+// 3. طرق رد الفلوس
+//
+// مثال:
+// /api/returns/RETURN_ID?companyId=xxx
+// ======================================================
+returnsRouter.get('/api/returns/:returnId', async (req, res, next) => {
+  try {
+    const returnId = req.params.returnId
+    const companyId = req.query.companyId
+
+    if (!returnId || typeof returnId !== 'string') {
+      return res.status(400).json({ error: 'returnId is required' })
+    }
+
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res
+        .status(400)
+        .json({ error: 'companyId query parameter is required' })
+    }
+
+    // أول Query:
+    // نجيب بيانات المرتجع الرئيسية
+    const returnResult = await db.query(
+      `
+      SELECT
+        r.id,
+        r.company_id,
+        r.branch_id,
+        b.name AS branch_name,
+        r.stock_location_id,
+        sl.name AS stock_location_name,
+        r.customer_id,
+        c.name AS customer_name,
+        r.original_sale_id,
+        s.sale_number AS original_sale_number,
+        r.return_number,
+        r.source,
+        r.idempotency_key,
+        r.subtotal,
+        r.refund_total,
+        r.status,
+        r.reason,
+        r.created_by,
+        u.full_name AS created_by_name,
+        r.created_at,
+        r.synced_at
+      FROM returns r
+      JOIN branches b ON b.id = r.branch_id
+      JOIN stock_locations sl ON sl.id = r.stock_location_id
+      LEFT JOIN customers c ON c.id = r.customer_id
+      LEFT JOIN sales s ON s.id = r.original_sale_id
+      LEFT JOIN users u ON u.id = r.created_by
+      WHERE r.company_id = $1
+        AND r.id = $2;
+      `,
+      [companyId, returnId],
+    )
+
+    // لو المرتجع مش موجود داخل نفس الشركة
+    if ((returnResult.rowCount ?? 0) === 0) {
+      return res.status(404).json({ error: 'Return was not found' })
+    }
+
+    // ثاني Query:
+    // نجيب الأصناف المرتجعة
+    const itemsResult = await db.query(
+      `
+      SELECT
+        id,
+        return_id,
+        original_sale_item_id,
+        variant_id,
+        sku_snapshot,
+        barcode_snapshot,
+        product_name_snapshot,
+        size_snapshot,
+        color_snapshot,
+        quantity,
+        unit_price,
+        refund_amount,
+        reason,
+        created_at
+      FROM return_items
+      WHERE company_id = $1
+        AND return_id = $2
+      ORDER BY created_at ASC;
+      `,
+      [companyId, returnId],
+    )
+
+    // ثالث Query:
+    // نجيب طرق رد الفلوس
+    const refundsResult = await db.query(
+      `
+      SELECT
+        id,
+        return_id,
+        method,
+        amount,
+        reference,
+        created_at
+      FROM return_refunds
+      WHERE company_id = $1
+        AND return_id = $2
+      ORDER BY created_at ASC;
+      `,
+      [companyId, returnId],
+    )
+
+    res.json({
+      data: {
+        return: returnResult.rows[0],
+        items: itemsResult.rows,
+        refunds: refundsResult.rows,
+      },
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// ======================================================
 // POST /api/returns
 // الهدف:
 // إنشاء مرتجع جديد
