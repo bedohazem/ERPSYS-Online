@@ -181,28 +181,70 @@ salesRouter.get('/api/sales/:saleId', async (req, res, next) => {
       return res.status(404).json({ error: 'Sale was not found' })
     }
 
+    // ======================================================
     // تاني Query: نجيب أصناف الفاتورة
+    //
+    // مع كل صنف بنرجع:
+    // 1. الكمية المباعة الأصلية
+    // 2. الكمية التي تم إرجاعها سابقًا
+    // 3. الكمية المتبقية المسموح بإرجاعها
+    //
+    // الهدف:
+    // شاشة New Return تمنع المستخدم من اختيار كمية
+    // أكبر من الكمية المتبقية فعلًا.
+    // ======================================================
     const itemsResult = await db.query(
       `
       SELECT
-        id,
-        sale_id,
-        variant_id,
-        sku_snapshot,
-        barcode_snapshot,
-        product_name_snapshot,
-        size_snapshot,
-        color_snapshot,
-        quantity,
-        unit_price,
-        discount_amount,
-        tax_amount,
-        line_total,
-        created_at
-      FROM sale_items
-      WHERE company_id = $1
-        AND sale_id = $2
-      ORDER BY created_at ASC;
+        si.id,
+        si.sale_id,
+        si.variant_id,
+        si.sku_snapshot,
+        si.barcode_snapshot,
+        si.product_name_snapshot,
+        si.size_snapshot,
+        si.color_snapshot,
+
+        -- الكمية التي تم بيعها داخل الفاتورة الأصلية
+        si.quantity,
+
+        -- إجمالي الكمية التي تم إرجاعها سابقًا من نفس السطر
+        COALESCE(
+          returned_items.returned_quantity,
+          0
+        ) AS already_returned_quantity,
+
+        -- الكمية التي ما زال مسموحًا بإرجاعها
+        GREATEST(
+          si.quantity - COALESCE(
+            returned_items.returned_quantity,
+            0
+          ),
+          0
+        ) AS remaining_returnable_quantity,
+
+        si.unit_price,
+        si.discount_amount,
+        si.tax_amount,
+        si.line_total,
+        si.created_at
+      FROM sale_items si
+
+      -- نجمع كل المرتجعات السابقة الخاصة بكل sale item
+      LEFT JOIN (
+        SELECT
+          original_sale_item_id,
+          SUM(quantity) AS returned_quantity
+        FROM return_items
+        WHERE company_id = $1
+          AND original_sale_item_id IS NOT NULL
+        GROUP BY original_sale_item_id
+      ) returned_items
+        ON returned_items.original_sale_item_id = si.id
+
+      WHERE si.company_id = $1
+        AND si.sale_id = $2
+      ORDER BY si.created_at ASC;
       `,
       [companyId, saleId],
     )

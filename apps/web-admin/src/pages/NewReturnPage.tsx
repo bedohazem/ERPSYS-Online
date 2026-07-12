@@ -33,7 +33,16 @@ type SaleItem = {
   product_name_snapshot: string
   size_snapshot: string | null
   color_snapshot: string | null
+
+  // الكمية المباعة أصلًا داخل الفاتورة
   quantity: string
+
+  // الكمية التي تم إرجاعها سابقًا من نفس سطر الفاتورة
+  already_returned_quantity: string
+
+  // الكمية التي ما زال مسموحًا بإرجاعها
+  remaining_returnable_quantity: string
+
   unit_price: string
   discount_amount: string
   tax_amount: string
@@ -248,12 +257,23 @@ function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
     }
   }
 
+  // ======================================================
+  // updateReturnQuantity
+  //
+  // تمنع إدخال:
+  // - رقم سالب
+  // - رقم أكبر من الكمية المتبقية المسموح بإرجاعها
+  //
+  // ملاحظة:
+  // Backend يعيد التحقق مرة ثانية عند الحفظ،
+  // لذلك الحماية موجودة في الواجهة وفي السيرفر.
+  // ======================================================
   function updateReturnQuantity(
     saleItemId: string,
-    soldQuantityValue: string,
+    remainingQuantityValue: string,
     inputValue: string,
   ) {
-    const soldQuantity = Number(soldQuantityValue)
+    const remainingQuantity = Number(remainingQuantityValue)
     const requestedQuantity = Number(inputValue)
 
     let nextQuantity = Number.isFinite(requestedQuantity)
@@ -264,8 +284,8 @@ function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
       nextQuantity = 0
     }
 
-    if (nextQuantity > soldQuantity) {
-      nextQuantity = soldQuantity
+    if (nextQuantity > remainingQuantity) {
+      nextQuantity = remainingQuantity
     }
 
     setReturnQuantities((currentQuantities) => ({
@@ -274,10 +294,16 @@ function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
     }))
   }
 
+  // ======================================================
+  // returnFullItemQuantity
+  //
+  // زر إرجاع الكل لا يرجع الكمية المباعة بالكامل،
+  // لكنه يرجع فقط الكمية التي لم يتم إرجاعها سابقًا.
+  // ======================================================
   function returnFullItemQuantity(saleItem: SaleItem) {
     setReturnQuantities((currentQuantities) => ({
       ...currentQuantities,
-      [saleItem.id]: Number(saleItem.quantity),
+      [saleItem.id]: Number(saleItem.remaining_returnable_quantity),
     }))
   }
 
@@ -598,9 +624,11 @@ function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
                     <th>Barcode</th>
                     <th>المقاس</th>
                     <th>اللون</th>
-                    <th>الكمية المباعة</th>
+                    <th>المباع</th>
+                    <th>مرتجع سابقًا</th>
+                    <th>المتاح للإرجاع</th>
                     <th>السعر</th>
-                    <th>الكمية المرتجعة</th>
+                    <th>المرتجع الآن</th>
                     <th>قيمة المرتجع</th>
                     <th>إجراءات</th>
                   </tr>
@@ -608,10 +636,18 @@ function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
 
                 <tbody>
                   {selectedSaleDetails.items.map((saleItem) => {
+                    // الكمية المتبقية بعد خصم كل المرتجعات السابقة
+                    const remainingReturnableQuantity = Number(
+                      saleItem.remaining_returnable_quantity,
+                    )
+
                     const returnQuantity = returnQuantities[saleItem.id] || 0
 
                     const itemRefundTotal =
                       returnQuantity * Number(saleItem.unit_price)
+
+                    // الصنف يكون غير قابل للإرجاع لو تم إرجاعه بالكامل
+                    const fullyReturned = remainingReturnableQuantity <= 0
 
                     return (
                       <tr key={saleItem.id}>
@@ -620,36 +656,56 @@ function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
                         <td>{saleItem.barcode_snapshot || '-'}</td>
                         <td>{saleItem.size_snapshot || '-'}</td>
                         <td>{saleItem.color_snapshot || '-'}</td>
+
                         <td>{saleItem.quantity}</td>
+
+                        <td>{saleItem.already_returned_quantity}</td>
+
+                        <td>{saleItem.remaining_returnable_quantity}</td>
+
                         <td>{saleItem.unit_price}</td>
+
                         <td>
-                          <input
-                            type="number"
-                            min="0"
-                            max={Number(saleItem.quantity)}
-                            step="1"
-                            value={returnQuantity}
-                            onChange={(event) =>
-                              updateReturnQuantity(
-                                saleItem.id,
-                                saleItem.quantity,
-                                event.target.value,
-                              )
-                            }
-                          />
+                          {fullyReturned ? (
+                            <span className="muted">
+                              تم إرجاع الكمية بالكامل
+                            </span>
+                          ) : (
+                            <input
+                              type="number"
+                              min="0"
+                              max={remainingReturnableQuantity}
+                              step="1"
+                              value={returnQuantity}
+                              disabled={savingReturn}
+                              onChange={(event) =>
+                                updateReturnQuantity(
+                                  saleItem.id,
+                                  saleItem.remaining_returnable_quantity,
+                                  event.target.value,
+                                )
+                              }
+                            />
+                          )}
                         </td>
+
                         <td>{itemRefundTotal}</td>
+
                         <td>
                           <button
                             className="table-button"
-                            disabled={savingReturn}
+                            disabled={savingReturn || fullyReturned}
                             onClick={() => returnFullItemQuantity(saleItem)}
                           >
-                            إرجاع الكل
+                            إرجاع المتبقي
                           </button>{' '}
                           <button
                             className="table-button danger-button"
-                            disabled={savingReturn}
+                            disabled={
+                              savingReturn ||
+                              fullyReturned ||
+                              returnQuantity === 0
+                            }
                             onClick={() => clearItemQuantity(saleItem.id)}
                           >
                             مسح
