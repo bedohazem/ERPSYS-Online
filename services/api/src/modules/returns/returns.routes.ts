@@ -375,6 +375,11 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
             si.color_snapshot,
             si.quantity AS sold_quantity,
             si.unit_price,
+
+            -- إجمالي السطر النهائي بعد خصم وضريبة الصنف
+            -- نستخدمه لحساب المبلغ الحقيقي المستحق للمرتجع
+            si.line_total,
+
             s.customer_id
           FROM sale_items si
           JOIN sales s ON s.id = si.sale_id
@@ -426,14 +431,47 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           )
         }
 
-        subtotal += refundAmount
+        // ======================================================
+        // حساب قيمة المرتجع من بيانات الفاتورة الأصلية
+        //
+        // لا نثق في unitPrice أو refundAmount المرسلين من Frontend.
+        //
+        // مثال:
+        // تم بيع قطعتين وإجمالي السطر بعد الخصم = 180
+        // إذن صافي قيمة القطعة الواحدة = 90
+        // عند إرجاع قطعة واحدة يكون المرتجع = 90
+        // ======================================================
+        const originalUnitPrice = Number(saleItem.unit_price)
+        const originalLineTotal = Number(saleItem.line_total)
+
+        if (!Number.isFinite(originalLineTotal) || originalLineTotal < 0) {
+          throw new ReturnsApiError(
+            400,
+            'Original sale item line total is invalid',
+          )
+        }
+
+        const refundableUnitAmount =
+          soldQuantity > 0 ? originalLineTotal / soldQuantity : 0
+
+        // نثبت المبلغ على منزلتين عشريتين لمنع مشاكل الكسور
+        const calculatedRefundAmount = Number(
+          (refundableUnitAmount * quantity).toFixed(2),
+        )
+
+        subtotal += calculatedRefundAmount
 
         preparedItems.push({
           originalSaleItemId,
           variantId,
           quantity,
-          unitPrice,
-          refundAmount,
+
+          // نحفظ سعر الوحدة الأصلي للمعلومة والتقارير
+          unitPrice: originalUnitPrice,
+
+          // المبلغ الفعلي محسوب من Backend
+          refundAmount: calculatedRefundAmount,
+
           reason: item.reason || null,
           skuSnapshot: saleItem.sku_snapshot,
           barcodeSnapshot: saleItem.barcode_snapshot,
@@ -497,15 +535,35 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       })
     }
 
-    // =========================
-    // Prepare refunds total
-    // =========================
-    const refundTotal = refunds.reduce((sum: number, refund: any) => {
-      return sum + Number(refund.amount || 0)
-    }, 0)
+    // ======================================================
+    // حساب إجمالي طرق رد المبلغ
+    // ======================================================
+    const refundTotal = Number(
+      refunds
+        .reduce((sum: number, refund: any) => {
+          return sum + Number(refund.amount || 0)
+        }, 0)
+        .toFixed(2),
+    )
 
-    if (refundTotal < 0) {
-      throw new ReturnsApiError(400, 'refundTotal is invalid')
+    // نثبت إجمالي الأصناف المرتجعة على منزلتين عشريتين
+    subtotal = Number(subtotal.toFixed(2))
+
+    if (!Number.isFinite(refundTotal) || refundTotal <= 0) {
+      throw new ReturnsApiError(400, 'refundTotal must be greater than zero')
+    }
+
+    // ======================================================
+    // لازم إجمالي الفلوس التي سيتم ردها يساوي
+    // إجمالي قيمة الأصناف المرتجعة.
+    //
+    // نسمح بفارق قرش واحد فقط بسبب تقريب الكسور.
+    // ======================================================
+    if (Math.abs(refundTotal - subtotal) > 0.01) {
+      throw new ReturnsApiError(
+        400,
+        `Refund total does not match return items total. Items total: ${subtotal}, Refund total: ${refundTotal}`,
+      )
     }
 
     // =========================

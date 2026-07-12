@@ -127,6 +127,34 @@ function createIdempotencyKey() {
   return `web-admin-return-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+// ======================================================
+// calculateItemRefundAmount
+//
+// تحسب قيمة المرتجع من إجمالي سطر الفاتورة الأصلي
+// بعد خصم وضريبة الصنف، بدل الاعتماد على سعر الوحدة فقط.
+//
+// Backend يعيد نفس الحساب مرة أخرى عند الحفظ
+// ويظل هو مصدر الحقيقة النهائي.
+// ======================================================
+function calculateItemRefundAmount(saleItem: SaleItem, returnQuantity: number) {
+  const soldQuantity = Number(saleItem.quantity)
+  const originalLineTotal = Number(saleItem.line_total)
+
+  if (
+    !Number.isFinite(soldQuantity) ||
+    soldQuantity <= 0 ||
+    !Number.isFinite(originalLineTotal) ||
+    originalLineTotal < 0 ||
+    returnQuantity <= 0
+  ) {
+    return 0
+  }
+
+  const refundableUnitAmount = originalLineTotal / soldQuantity
+
+  return Number((refundableUnitAmount * returnQuantity).toFixed(2))
+}
+
 function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
   const [sales, setSales] = useState<Sale[]>([])
   const [selectedSaleDetails, setSelectedSaleDetails] =
@@ -181,10 +209,21 @@ function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
       .filter((item) => item.quantity > 0)
   }, [selectedSaleDetails, returnQuantities])
 
+  // ======================================================
+  // إجمالي المرتجع الحالي
+  //
+  // يعتمد على صافي قيمة كل سطر بعد الخصم والضريبة،
+  // وليس على سعر الوحدة الخام فقط.
+  // ======================================================
   const refundTotal = useMemo(() => {
-    return selectedReturnItems.reduce((total, item) => {
-      return total + item.quantity * Number(item.saleItem.unit_price)
+    const total = selectedReturnItems.reduce((currentTotal, selectedItem) => {
+      return (
+        currentTotal +
+        calculateItemRefundAmount(selectedItem.saleItem, selectedItem.quantity)
+      )
     }, 0)
+
+    return Number(total.toFixed(2))
   }, [selectedReturnItems])
 
   async function loadSales() {
@@ -366,12 +405,19 @@ function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
         items: selectedReturnItems.map((selectedItem) => {
           const unitPrice = Number(selectedItem.saleItem.unit_price)
 
+          // قيمة المرتجع المحسوبة من إجمالي السطر الأصلي
+          // Backend سيعيد حسابها ويتحقق منها مرة أخرى.
+          const refundAmount = calculateItemRefundAmount(
+            selectedItem.saleItem,
+            selectedItem.quantity,
+          )
+
           return {
             originalSaleItemId: selectedItem.saleItem.id,
             variantId: selectedItem.saleItem.variant_id,
             quantity: selectedItem.quantity,
             unitPrice,
-            refundAmount: selectedItem.quantity * unitPrice,
+            refundAmount,
             reason: selectedReason || null,
           }
         }),
@@ -643,8 +689,12 @@ function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
 
                     const returnQuantity = returnQuantities[saleItem.id] || 0
 
-                    const itemRefundTotal =
-                      returnQuantity * Number(saleItem.unit_price)
+                    // قيمة المرتجع بعد احتساب خصم وضريبة
+                    // سطر الفاتورة الأصلية.
+                    const itemRefundTotal = calculateItemRefundAmount(
+                      saleItem,
+                      returnQuantity,
+                    )
 
                     // الصنف يكون غير قابل للإرجاع لو تم إرجاعه بالكامل
                     const fullyReturned = remainingReturnableQuantity <= 0
