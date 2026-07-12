@@ -26,6 +26,15 @@ type CartItem = {
   availableQuantity: number
 }
 
+type Customer = {
+  id: string
+  name: string
+  phone: string | null
+  email: string | null
+  address: string | null
+  is_active: boolean
+}
+
 type SaleResponse = {
   sale: {
     id: string
@@ -75,12 +84,16 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
 
   const [saleNumber, setSaleNumber] = useState(createSaleNumber())
   const [customerId, setCustomerId] = useState('')
+  const [customerSearchText, setCustomerSearchText] = useState('')
+  const [customers, setCustomers] = useState<Customer[]>([])
+  const [selectedCustomerName, setSelectedCustomerName] = useState('')
   const [code, setCode] = useState('')
   const [quantity, setQuantity] = useState(1)
 
   const [cartItems, setCartItems] = useState<CartItem[]>([])
   const [lastSavedSale, setLastSavedSale] = useState<SaleResponse | null>(null)
 
+  const [loadingCustomers, setLoadingCustomers] = useState(false)
   const [loadingLookup, setLoadingLookup] = useState(false)
   const [savingSale, setSavingSale] = useState(false)
   const [error, setError] = useState('')
@@ -207,6 +220,59 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   }
 
   // ======================================================
+  // loadCustomers
+  // تحميل العملاء لاختيار عميل للفاتورة
+  //
+  // بدل ما نكتب customerId يدوي
+  // نبحث بالاسم أو التليفون ثم نختار العميل
+  // ======================================================
+  async function loadCustomers() {
+    setLoadingCustomers(true)
+    setError('')
+
+    try {
+      const selectedCompanyId = companyId.trim()
+      const query = customerSearchText.trim()
+
+      if (!selectedCompanyId) {
+        throw new Error('companyId is required')
+      }
+
+      const customersUrl =
+        `${API_BASE_URL}/api/customers` +
+        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
+        (query ? `&q=${encodeURIComponent(query)}` : '')
+
+      const customersResponse =
+        await fetchJson<ApiResponse<Customer[]>>(customersUrl)
+
+      setCustomers(customersResponse.data)
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'Unknown customers error',
+      )
+    } finally {
+      setLoadingCustomers(false)
+    }
+  }
+
+  function selectCustomer(customer: Customer) {
+    setCustomerId(customer.id)
+    setSelectedCustomerName(customer.name)
+    setCustomerSearchText(customer.name)
+    setCustomers([])
+  }
+
+  function clearSelectedCustomer() {
+    setCustomerId('')
+    setSelectedCustomerName('')
+    setCustomerSearchText('')
+    setCustomers([])
+  }
+
+  // ======================================================
   // saveSale
   // تحفظ الفاتورة في Backend API
   //
@@ -288,6 +354,9 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       setCartItems([])
       setSaleNumber(createSaleNumber())
       setCustomerId('')
+      setSelectedCustomerName('')
+      setCustomerSearchText('')
+      setCustomers([])
     } catch (currentError) {
       setError(
         currentError instanceof Error
@@ -349,10 +418,69 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
             customerId اختياري
             <input
               value={customerId}
-              onChange={(event) => setCustomerId(event.target.value)}
+              onChange={(event) => {
+                setCustomerId(event.target.value)
+                setSelectedCustomerName('')
+              }}
               placeholder="سيبه فاضي لو بيع عام"
             />
           </label>
+        </div>
+
+        <div className="customer-picker">
+          <div className="customer-search-row">
+            <label>
+              بحث عن عميل
+              <input
+                value={customerSearchText}
+                onChange={(event) => setCustomerSearchText(event.target.value)}
+                placeholder="اكتب اسم العميل أو التليفون"
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    loadCustomers()
+                  }
+                }}
+              />
+            </label>
+
+            <button
+              className="primary-button small-button"
+              disabled={!companyId.trim() || loadingCustomers}
+              onClick={loadCustomers}
+            >
+              {loadingCustomers ? 'جاري البحث...' : 'بحث العملاء'}
+            </button>
+
+            {customerId ? (
+              <button
+                className="table-button danger-button"
+                onClick={clearSelectedCustomer}
+              >
+                إلغاء العميل
+              </button>
+            ) : null}
+          </div>
+
+          {selectedCustomerName ? (
+            <p className="selected-customer">
+              العميل المختار: <strong>{selectedCustomerName}</strong>
+            </p>
+          ) : null}
+
+          {customers.length > 0 ? (
+            <div className="customer-results">
+              {customers.map((customer) => (
+                <button
+                  className="customer-result-button"
+                  key={customer.id}
+                  onClick={() => selectCustomer(customer)}
+                >
+                  <strong>{customer.name}</strong>
+                  <span>{customer.phone || 'بدون تليفون'}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </section>
 
