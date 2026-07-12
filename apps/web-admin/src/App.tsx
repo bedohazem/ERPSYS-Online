@@ -2,10 +2,11 @@ import { useState } from 'react'
 import CustomersPage from './pages/CustomersPage'
 import ProductsPage from './pages/ProductsPage'
 import SalesPage from './pages/SalesPage'
+import ReturnsPage from './pages/ReturnsPage'
 
 const API_BASE_URL = 'http://localhost:3000'
 
-type PageName = 'dashboard' | 'products' | 'customers' | 'sales'
+type PageName = 'dashboard' | 'products' | 'customers' | 'sales' | 'returns'
 
 type DailySummary = {
   companyId: string
@@ -167,6 +168,13 @@ function App() {
         >
           Sales
         </button>
+
+        <button
+          className={activePage === 'returns' ? 'tab active-tab' : 'tab'}
+          onClick={() => setActivePage('returns')}
+        >
+          Returns
+        </button>
       </nav>
 
       <section className="panel">
@@ -308,6 +316,10 @@ function App() {
 
       {activePage === 'sales' ? (
         <SalesPage companyId={companyId} branchId={branchId} />
+      ) : null}
+
+      {activePage === 'returns' ? (
+        <ReturnsPage companyId={companyId} branchId={branchId} />
       ) : null}
     </main>
   )
