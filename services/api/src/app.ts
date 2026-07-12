@@ -9,6 +9,7 @@ import { catalogRouter } from './modules/catalog/catalog.routes'
 import { inventoryRouter } from './modules/inventory/inventory.routes'
 import { salesRouter } from './modules/sales/sales.routes'
 import { posRouter } from './modules/pos/pos.routes'
+import { customersRouter } from './modules/customers/customers.routes'
 
 export const app = express()
 
@@ -24,6 +25,7 @@ app.use(catalogRouter)
 app.use(inventoryRouter)
 app.use(salesRouter)
 app.use(posRouter)
+app.use(customersRouter)
 
 app.use((_req, res) => {
   res.status(404).json({
