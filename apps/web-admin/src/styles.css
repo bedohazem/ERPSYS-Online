@@ -174,3 +174,56 @@ th {
     font-size: 28px;
   }
 }
+
+.tabs {
+  display: flex;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.tab {
+  padding: 12px 18px;
+  border: 1px solid #c9d7eb;
+  border-radius: 14px;
+  background: white;
+  color: #0f3d91;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.active-tab {
+  background: #0f3d91;
+  color: white;
+  border-color: #0f3d91;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.section-header h2 {
+  margin: 0;
+}
+
+.small-button {
+  margin-top: 0;
+}
+
+h3 {
+  margin: 28px 0 12px;
+  color: #172033;
+}
+
+@media (max-width: 900px) {
+  .section-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tabs {
+    flex-direction: column;
+  }
+}

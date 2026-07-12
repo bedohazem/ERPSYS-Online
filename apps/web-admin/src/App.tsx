@@ -1,6 +1,9 @@
 import { useState } from 'react'
+import ProductsPage from './pages/ProductsPage'
 
 const API_BASE_URL = 'http://localhost:3000'
+
+type PageName = 'dashboard' | 'products'
 
 type DailySummary = {
   companyId: string
@@ -56,9 +59,15 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 function App() {
-  const [companyId, setCompanyId] = useState('')
-  const [branchId, setBranchId] = useState('')
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
+  const [activePage, setActivePage] = useState<PageName>('dashboard')
+
+  const [companyId, setCompanyId] = useState(
+    '57068e5c-b81e-40c0-aa3a-a9371923bf50',
+  )
+  const [branchId, setBranchId] = useState(
+    'c834cecd-a7b7-4779-a2e5-799587059a94',
+  )
+  const [date, setDate] = useState('2026-07-12')
 
   const [dailySummary, setDailySummary] = useState<DailySummary | null>(null)
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([])
@@ -120,13 +129,29 @@ function App() {
       <section className="hero">
         <div>
           <p className="eyebrow">ERPSYS Online</p>
-          <h1>لوحة إدارة تجريبية</h1>
+          <h1>لوحة الإدارة</h1>
           <p>
-            أول Web Admin بسيط يقرأ من الـ Backend API ويعرض تقرير اليوم وآخر
-            حركات المخزون.
+            Web Admin يقرأ من الـ Backend API ويعرض الداشبورد والمنتجات
+            والأصناف.
           </p>
         </div>
       </section>
+
+      <nav className="tabs">
+        <button
+          className={activePage === 'dashboard' ? 'tab active-tab' : 'tab'}
+          onClick={() => setActivePage('dashboard')}
+        >
+          Dashboard
+        </button>
+
+        <button
+          className={activePage === 'products' ? 'tab active-tab' : 'tab'}
+          onClick={() => setActivePage('products')}
+        >
+          Products
+        </button>
+      </nav>
 
       <section className="panel">
         <h2>بيانات التشغيل</h2>
@@ -159,88 +184,107 @@ function App() {
             />
           </label>
         </div>
-
-        <button
-          className="primary-button"
-          disabled={!companyId.trim() || !date || loading}
-          onClick={loadDashboard}
-        >
-          {loading ? 'جاري التحميل...' : 'تحميل الداشبورد'}
-        </button>
-
-        {error ? <p className="error-message">{error}</p> : null}
       </section>
 
-      {dailySummary ? (
-        <section className="cards-grid">
-          <article className="card">
-            <span>مبيعات اليوم</span>
-            <strong>{dailySummary.sales.total}</strong>
-            <small>عدد الفواتير: {dailySummary.sales.count}</small>
-          </article>
+      {activePage === 'dashboard' ? (
+        <>
+          <section className="panel">
+            <div className="section-header">
+              <div>
+                <h2>Dashboard</h2>
+                <p className="muted">
+                  تقرير اليوم وآخر حركات المخزون من قاعدة البيانات.
+                </p>
+              </div>
 
-          <article className="card">
-            <span>المرتجعات</span>
-            <strong>{dailySummary.returns.totalRefunded}</strong>
-            <small>عدد المرتجعات: {dailySummary.returns.count}</small>
-          </article>
+              <button
+                className="primary-button small-button"
+                disabled={!companyId.trim() || !date || loading}
+                onClick={loadDashboard}
+              >
+                {loading ? 'جاري التحميل...' : 'تحميل الداشبورد'}
+              </button>
+            </div>
 
-          <article className="card">
-            <span>صافي اليوم</span>
-            <strong>{dailySummary.net.netSales}</strong>
-            <small>مبيعات - مرتجعات</small>
-          </article>
+            {error ? <p className="error-message">{error}</p> : null}
+          </section>
 
-          <article className="card">
-            <span>حركة القطع</span>
-            <strong>
-              {dailySummary.sales.soldItemsQuantity -
-                dailySummary.returns.returnedItemsQuantity}
-            </strong>
-            <small>
-              مباع: {dailySummary.sales.soldItemsQuantity} / مرتجع:{' '}
-              {dailySummary.returns.returnedItemsQuantity}
-            </small>
-          </article>
-        </section>
+          {dailySummary ? (
+            <section className="cards-grid">
+              <article className="card">
+                <span>مبيعات اليوم</span>
+                <strong>{dailySummary.sales.total}</strong>
+                <small>عدد الفواتير: {dailySummary.sales.count}</small>
+              </article>
+
+              <article className="card">
+                <span>المرتجعات</span>
+                <strong>{dailySummary.returns.totalRefunded}</strong>
+                <small>عدد المرتجعات: {dailySummary.returns.count}</small>
+              </article>
+
+              <article className="card">
+                <span>صافي اليوم</span>
+                <strong>{dailySummary.net.netSales}</strong>
+                <small>مبيعات - مرتجعات</small>
+              </article>
+
+              <article className="card">
+                <span>حركة القطع</span>
+                <strong>
+                  {dailySummary.sales.soldItemsQuantity -
+                    dailySummary.returns.returnedItemsQuantity}
+                </strong>
+                <small>
+                  مباع: {dailySummary.sales.soldItemsQuantity} / مرتجع:{' '}
+                  {dailySummary.returns.returnedItemsQuantity}
+                </small>
+              </article>
+            </section>
+          ) : null}
+
+          <section className="panel">
+            <h2>آخر حركات المخزون</h2>
+
+            {stockMovements.length === 0 ? (
+              <p className="muted">لا توجد حركات معروضة حتى الآن.</p>
+            ) : (
+              <div className="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>الصنف</th>
+                      <th>SKU</th>
+                      <th>الحركة</th>
+                      <th>قبل</th>
+                      <th>الكمية</th>
+                      <th>بعد</th>
+                      <th>المكان</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stockMovements.map((movement) => (
+                      <tr key={movement.id}>
+                        <td>{movement.product_name}</td>
+                        <td>{movement.sku}</td>
+                        <td>{movement.movement_type}</td>
+                        <td>{movement.quantity_before}</td>
+                        <td>{movement.quantity}</td>
+                        <td>{movement.quantity_after}</td>
+                        <td>{movement.stock_location_name}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </>
       ) : null}
 
-      <section className="panel">
-        <h2>آخر حركات المخزون</h2>
-
-        {stockMovements.length === 0 ? (
-          <p className="muted">لا توجد حركات معروضة حتى الآن.</p>
-        ) : (
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>الصنف</th>
-                  <th>SKU</th>
-                  <th>الحركة</th>
-                  <th>قبل</th>
-                  <th>الكمية</th>
-                  <th>بعد</th>
-                  <th>المكان</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stockMovements.map((movement) => (
-                  <tr key={movement.id}>
-                    <td>{movement.product_name}</td>
-                    <td>{movement.sku}</td>
-                    <td>{movement.movement_type}</td>
-                    <td>{movement.quantity_before}</td>
-                    <td>{movement.quantity}</td>
-                    <td>{movement.quantity_after}</td>
-                    <td>{movement.stock_location_name}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      {activePage === 'products' ? (
+        <ProductsPage companyId={companyId} />
+      ) : null}
     </main>
   )
 }
