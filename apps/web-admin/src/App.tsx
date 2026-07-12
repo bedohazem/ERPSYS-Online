@@ -1,9 +1,10 @@
 import { useState } from 'react'
+import CustomersPage from './pages/CustomersPage'
 import ProductsPage from './pages/ProductsPage'
 
 const API_BASE_URL = 'http://localhost:3000'
 
-type PageName = 'dashboard' | 'products'
+type PageName = 'dashboard' | 'products' | 'customers'
 
 type DailySummary = {
   companyId: string
@@ -132,7 +133,7 @@ function App() {
           <h1>لوحة الإدارة</h1>
           <p>
             Web Admin يقرأ من الـ Backend API ويعرض الداشبورد والمنتجات
-            والأصناف.
+            والعملاء.
           </p>
         </div>
       </section>
@@ -150,6 +151,13 @@ function App() {
           onClick={() => setActivePage('products')}
         >
           Products
+        </button>
+
+        <button
+          className={activePage === 'customers' ? 'tab active-tab' : 'tab'}
+          onClick={() => setActivePage('customers')}
+        >
+          Customers
         </button>
       </nav>
 
@@ -284,6 +292,10 @@ function App() {
 
       {activePage === 'products' ? (
         <ProductsPage companyId={companyId} />
+      ) : null}
+
+      {activePage === 'customers' ? (
+        <CustomersPage companyId={companyId} />
       ) : null}
     </main>
   )

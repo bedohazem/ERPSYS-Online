@@ -227,3 +227,56 @@ h3 {
     flex-direction: column;
   }
 }
+
+.single-search-row {
+  margin-top: 18px;
+  max-width: 520px;
+}
+
+.table-button {
+  padding: 8px 12px;
+  border: 1px solid #c9d7eb;
+  border-radius: 10px;
+  background: white;
+  color: #0f3d91;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.table-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.mini-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 14px;
+  margin: 20px 0;
+}
+
+.mini-card {
+  padding: 16px;
+  border: 1px solid #e6edf7;
+  border-radius: 16px;
+  background: #f8fbff;
+}
+
+.mini-card span {
+  display: block;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.mini-card strong {
+  display: block;
+  margin-top: 8px;
+  color: #0f3d91;
+  font-size: 24px;
+}
+
+@media (max-width: 900px) {
+  .mini-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
