@@ -354,6 +354,231 @@ customersRouter.get(
 )
 
 // ======================================================
+// GET /api/customers/:customerId/activity
+// الهدف:
+// عرض نشاط العميل بالكامل في مكان واحد
+//
+// النشاط يشمل:
+// 1. فواتير البيع Sales
+// 2. المرتجعات Returns
+//
+// مثال:
+// /api/customers/CUSTOMER_ID/activity?companyId=xxx
+//
+// ليه مهم؟
+// في شاشة العميل، بدل ما تفتح المشتريات لوحدها والمرتجعات لوحدها
+// نقدر نعرض تاريخ تعاملات العميل كله مرتب بالتاريخ.
+// ======================================================
+customersRouter.get(
+  '/api/customers/:customerId/activity',
+  async (req, res, next) => {
+    try {
+      // customerId جاي من الرابط
+      // مثال: /api/customers/123/activity
+      const customerId = req.params.customerId
+
+      // companyId جاي من query
+      // لازم نستخدمه عشان نضمن إن العميل تابع للشركة الحالية
+      const companyId = req.query.companyId
+
+      // limit اختياري
+      // عشان لو العميل عنده حركات كتير مانرجعش كل حاجة مرة واحدة
+      const limit = Math.min(Number(req.query.limit || 50), 100)
+
+      if (!customerId || typeof customerId !== 'string') {
+        return res.status(400).json({ error: 'customerId is required' })
+      }
+
+      if (typeof companyId !== 'string' || !companyId.trim()) {
+        return res
+          .status(400)
+          .json({ error: 'companyId query parameter is required' })
+      }
+
+      // ======================================================
+      // أولًا: نتأكد إن العميل موجود داخل نفس الشركة
+      // ده مهم جدًا عشان عزل بيانات الشركات
+      // ======================================================
+      const customerResult = await db.query(
+        `
+      SELECT
+        id,
+        name,
+        phone,
+        email,
+        address,
+        is_active
+      FROM customers
+      WHERE company_id = $1
+        AND id = $2;
+      `,
+        [companyId, customerId],
+      )
+
+      if ((customerResult.rowCount ?? 0) === 0) {
+        return res.status(404).json({ error: 'Customer was not found' })
+      }
+
+      // ======================================================
+      // ثانيًا: نعمل ملخص مالي للعميل
+      //
+      // sales_count:
+      // عدد فواتير البيع المكتملة
+      //
+      // total_sales:
+      // إجمالي مبيعات العميل
+      //
+      // returns_count:
+      // عدد المرتجعات المكتملة
+      //
+      // total_refunded:
+      // إجمالي المبالغ المرتجعة للعميل
+      //
+      // net_sales:
+      // صافي تعامل العميل = المبيعات - المرتجعات
+      // ======================================================
+      const summaryResult = await db.query(
+        `
+      SELECT
+        (
+          SELECT COUNT(*)::int
+          FROM sales
+          WHERE company_id = $1
+            AND customer_id = $2
+            AND status = 'completed'
+        ) AS sales_count,
+
+        (
+          SELECT COALESCE(SUM(total), 0)
+          FROM sales
+          WHERE company_id = $1
+            AND customer_id = $2
+            AND status = 'completed'
+        ) AS total_sales,
+
+        (
+          SELECT COUNT(*)::int
+          FROM returns
+          WHERE company_id = $1
+            AND customer_id = $2
+            AND status = 'completed'
+        ) AS returns_count,
+
+        (
+          SELECT COALESCE(SUM(refund_total), 0)
+          FROM returns
+          WHERE company_id = $1
+            AND customer_id = $2
+            AND status = 'completed'
+        ) AS total_refunded,
+
+        (
+          (
+            SELECT COALESCE(SUM(total), 0)
+            FROM sales
+            WHERE company_id = $1
+              AND customer_id = $2
+              AND status = 'completed'
+          )
+          -
+          (
+            SELECT COALESCE(SUM(refund_total), 0)
+            FROM returns
+            WHERE company_id = $1
+              AND customer_id = $2
+              AND status = 'completed'
+          )
+        ) AS net_sales;
+      `,
+        [companyId, customerId],
+      )
+
+      // ======================================================
+      // ثالثًا: نجيب Timeline موحد
+      //
+      // هنا بنستخدم UNION ALL عشان ندمج:
+      // - sales
+      // - returns
+      //
+      // وكل حركة بنحط لها activity_type:
+      // sale أو return
+      // ======================================================
+      const activityResult = await db.query(
+        `
+      SELECT
+        'sale' AS activity_type,
+        s.id AS activity_id,
+        s.sale_number AS document_number,
+        s.total AS amount,
+        s.paid_total AS paid_amount,
+        0::numeric AS refund_amount,
+        s.status,
+        s.created_at,
+        b.name AS branch_name,
+        sl.name AS stock_location_name,
+        COUNT(si.id)::int AS items_count
+      FROM sales s
+      JOIN branches b ON b.id = s.branch_id
+      JOIN stock_locations sl ON sl.id = s.stock_location_id
+      LEFT JOIN sale_items si ON si.sale_id = s.id
+      WHERE s.company_id = $1
+        AND s.customer_id = $2
+      GROUP BY
+        s.id,
+        b.name,
+        sl.name
+
+      UNION ALL
+
+      SELECT
+        'return' AS activity_type,
+        r.id AS activity_id,
+        r.return_number AS document_number,
+        r.subtotal AS amount,
+        0::numeric AS paid_amount,
+        r.refund_total AS refund_amount,
+        r.status,
+        r.created_at,
+        b.name AS branch_name,
+        sl.name AS stock_location_name,
+        COUNT(ri.id)::int AS items_count
+      FROM returns r
+      JOIN branches b ON b.id = r.branch_id
+      JOIN stock_locations sl ON sl.id = r.stock_location_id
+      LEFT JOIN return_items ri ON ri.return_id = r.id
+      WHERE r.company_id = $1
+        AND r.customer_id = $2
+      GROUP BY
+        r.id,
+        b.name,
+        sl.name
+
+      ORDER BY created_at DESC
+      LIMIT $3;
+      `,
+        [companyId, customerId, limit],
+      )
+
+      // ======================================================
+      // نرجع كل حاجة في Response واحد واضح
+      // customer = بيانات العميل
+      // summary = ملخص التعاملات
+      // activity = الحركات مرتبة بالتاريخ
+      // ======================================================
+      res.json({
+        data: {
+          customer: customerResult.rows[0],
+          summary: summaryResult.rows[0],
+          activity: activityResult.rows,
+        },
+      })
+    } catch (error) {
+      next(error)
+    }
+  },
+)
+
+// ======================================================
 // GET /api/customers/:customerId
 // الهدف:
 // عرض بيانات عميل واحد
