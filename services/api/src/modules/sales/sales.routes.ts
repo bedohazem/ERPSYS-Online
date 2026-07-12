@@ -4,6 +4,26 @@ import { db } from '../../db/pool'
 export const salesRouter = Router()
 
 // ======================================================
+// SalesApiError
+// ده Error مخصص للـ Sales API
+//
+// ليه عملناه؟
+// بدل ما أي مشكلة ترجع 500 Internal Server Error
+// نقدر نرجع status واضح زي 400 مع رسالة مفهومة
+//
+// مثال:
+// لو المخزون غير كافي نرجع 400
+// ======================================================
+class SalesApiError extends Error {
+  statusCode: number
+
+  constructor(statusCode: number, message: string) {
+    super(message)
+    this.statusCode = statusCode
+  }
+}
+
+// ======================================================
 // GET /api/sales
 // الهدف: عرض قائمة الفواتير المحفوظة
 // مثال:
@@ -476,40 +496,39 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         [companyId, stockLocationId, item.variantId],
       )
 
+      // الكمية الموجودة حاليًا في المخزون قبل البيع
+      // لو مفيش record في stock_balances نعتبر الكمية = 0
       const quantityBefore =
         (balanceResult.rowCount ?? 0) > 0
           ? Number(balanceResult.rows[0].quantity)
           : 0
 
-      const quantityAfter = quantityBefore - item.quantity
-
-      if ((balanceResult.rowCount ?? 0) === 0) {
-        await client.query(
-          `
-          INSERT INTO stock_balances (
-            company_id,
-            branch_id,
-            stock_location_id,
-            variant_id,
-            quantity
-          )
-          VALUES ($1, $2, $3, $4, $5);
-          `,
-          [companyId, branchId, stockLocationId, item.variantId, quantityAfter],
-        )
-      } else {
-        await client.query(
-          `
-          UPDATE stock_balances
-          SET quantity = $1,
-              updated_at = NOW()
-          WHERE company_id = $2
-            AND stock_location_id = $3
-            AND variant_id = $4;
-          `,
-          [quantityAfter, companyId, stockLocationId, item.variantId],
+      // ممنوع نبيع أكتر من الكمية المتاحة
+      // مثال:
+      // الموجود 8 والعميل بيبيع 20 => نوقف العملية كلها
+      // لأن المخزون لازم ماينزلش بالسالب
+      if (quantityBefore < item.quantity) {
+        throw new SalesApiError(
+          400,
+          `Insufficient stock for ${item.skuSnapshot}. Available: ${quantityBefore}, Requested: ${item.quantity}`,
         )
       }
+
+      // الكمية بعد البيع = الكمية قبل البيع - الكمية المباعة
+      const quantityAfter = quantityBefore - item.quantity
+
+      // هنا بنحدث المخزون بعد التأكد إن الكمية كافية
+      await client.query(
+        `
+        UPDATE stock_balances
+        SET quantity = $1,
+            updated_at = NOW()
+        WHERE company_id = $2
+          AND stock_location_id = $3
+          AND variant_id = $4;
+        `,
+        [quantityAfter, companyId, stockLocationId, item.variantId],
+      )
 
       await client.query(
         `
@@ -594,7 +613,18 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       },
     })
   } catch (error) {
+    // لو حصل أي خطأ، نرجع كل اللي حصل جوه transaction
+    // يعني لو الفاتورة اتعملت وبعدها اكتشفنا إن المخزون غير كافي
+    // كل حاجة تتلغي: sale + sale_items + payments + stock movement
     await client.query('ROLLBACK').catch(() => {})
+
+    // لو الخطأ من النوع اللي إحنا عاملينه للـ Sales
+    // نرجع status واضح ورسالة مفهومة
+    if (error instanceof SalesApiError) {
+      return res.status(error.statusCode).json({ error: error.message })
+    }
+
+    // أي خطأ تاني غير متوقع يروح للـ error handler العام
     next(error)
   } finally {
     client.release()
