@@ -280,3 +280,31 @@ h3 {
     grid-template-columns: 1fr;
   }
 }
+
+.sale-form-grid {
+  grid-template-columns: 1fr 1.5fr 1fr;
+}
+
+.item-form-grid {
+  grid-template-columns: 1fr 180px;
+  margin-bottom: 18px;
+}
+
+.success-message {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #e8fff1;
+  color: #126b34;
+}
+
+.danger-button {
+  color: #9b1c1c;
+}
+
+@media (max-width: 900px) {
+  .sale-form-grid,
+  .item-form-grid {
+    grid-template-columns: 1fr;
+  }
+}

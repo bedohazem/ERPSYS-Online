@@ -4,6 +4,7 @@ import ProductsPage from './pages/ProductsPage'
 import SalesPage from './pages/SalesPage'
 import ReturnsPage from './pages/ReturnsPage'
 import InventoryPage from './pages/InventoryPage'
+import NewSalePage from './pages/NewSalePage'
 
 const API_BASE_URL = 'http://localhost:3000'
 
@@ -14,6 +15,7 @@ type PageName =
   | 'sales'
   | 'returns'
   | 'inventory'
+  | 'new-sale'
 
 type DailySummary = {
   companyId: string
@@ -189,6 +191,13 @@ function App() {
         >
           Inventory
         </button>
+
+        <button
+          className={activePage === 'new-sale' ? 'tab active-tab' : 'tab'}
+          onClick={() => setActivePage('new-sale')}
+        >
+          New Sale
+        </button>
       </nav>
 
       <section className="panel">
@@ -338,6 +347,10 @@ function App() {
 
       {activePage === 'inventory' ? (
         <InventoryPage companyId={companyId} />
+      ) : null}
+
+      {activePage === 'new-sale' ? (
+        <NewSalePage companyId={companyId} branchId={branchId} />
       ) : null}
     </main>
   )
