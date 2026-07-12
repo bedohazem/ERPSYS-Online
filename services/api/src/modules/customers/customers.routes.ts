@@ -198,6 +198,162 @@ customersRouter.get(
 )
 
 // ======================================================
+// GET /api/customers/:customerId/returns
+// الهدف:
+// عرض كل مرتجعات عميل معين
+//
+// مثال:
+// /api/customers/CUSTOMER_ID/returns?companyId=xxx
+//
+// ليه مهم؟
+// عشان لما نفتح شاشة العميل نقدر نشوف:
+// 1. العميل رجّع إيه
+// 2. إجمالي المرتجعات كام
+// 3. المرتجعات مرتبطة بأي فواتير أصلية
+// ======================================================
+customersRouter.get(
+  '/api/customers/:customerId/returns',
+  async (req, res, next) => {
+    try {
+      // customerId جاي من الرابط
+      // مثال: /api/customers/123/returns
+      const customerId = req.params.customerId
+
+      // companyId جاي من query
+      // مهم عشان نضمن إن العميل تابع للشركة الحالية
+      const companyId = req.query.companyId
+
+      // limit اختياري
+      // لو العميل عنده مرتجعات كتير، مانرجعش كل حاجة مرة واحدة
+      const limit = Math.min(Number(req.query.limit || 50), 100)
+
+      if (!customerId || typeof customerId !== 'string') {
+        return res.status(400).json({ error: 'customerId is required' })
+      }
+
+      if (typeof companyId !== 'string' || !companyId.trim()) {
+        return res
+          .status(400)
+          .json({ error: 'companyId query parameter is required' })
+      }
+
+      // ======================================================
+      // أولًا: نتأكد إن العميل موجود داخل نفس الشركة
+      // ده يمنع إن حد يطلب مرتجعات عميل مش تابع للشركة دي
+      // ======================================================
+      const customerResult = await db.query(
+        `
+      SELECT
+        id,
+        name,
+        phone,
+        email,
+        address,
+        is_active
+      FROM customers
+      WHERE company_id = $1
+        AND id = $2;
+      `,
+        [companyId, customerId],
+      )
+
+      if ((customerResult.rowCount ?? 0) === 0) {
+        return res.status(404).json({ error: 'Customer was not found' })
+      }
+
+      // ======================================================
+      // ثانيًا: نجيب مرتجعات العميل
+      // بنجيب معاها:
+      // - رقم المرتجع
+      // - رقم الفاتورة الأصلية لو موجود
+      // - اسم الفرع
+      // - إجمالي المبلغ المرجع
+      // - عدد الأصناف داخل المرتجع
+      // ======================================================
+      const returnsResult = await db.query(
+        `
+      SELECT
+        r.id,
+        r.return_number,
+        r.branch_id,
+        b.name AS branch_name,
+        r.stock_location_id,
+        sl.name AS stock_location_name,
+        r.original_sale_id,
+        s.sale_number AS original_sale_number,
+        r.subtotal,
+        r.refund_total,
+        r.status,
+        r.reason,
+        r.created_at,
+
+        -- عدد الأصناف داخل المرتجع
+        COUNT(ri.id)::int AS items_count
+      FROM returns r
+      JOIN branches b ON b.id = r.branch_id
+      JOIN stock_locations sl ON sl.id = r.stock_location_id
+      LEFT JOIN sales s ON s.id = r.original_sale_id
+      LEFT JOIN return_items ri ON ri.return_id = r.id
+      WHERE r.company_id = $1
+        AND r.customer_id = $2
+      GROUP BY
+        r.id,
+        b.name,
+        sl.name,
+        s.sale_number
+      ORDER BY r.created_at DESC
+      LIMIT $3;
+      `,
+        [companyId, customerId, limit],
+      )
+
+      // ======================================================
+      // ثالثًا: نعمل ملخص سريع لمرتجعات العميل
+      //
+      // returns_count:
+      // عدد المرتجعات المكتملة
+      //
+      // total_refunded:
+      // إجمالي المبالغ اللي رجعت للعميل
+      //
+      // total_returned_items:
+      // إجمالي عدد القطع المرتجعة
+      // ======================================================
+      const summaryResult = await db.query(
+        `
+      SELECT
+        COUNT(DISTINCT r.id)::int AS returns_count,
+        COALESCE(SUM(DISTINCT r.refund_total), 0) AS total_refunded,
+        COALESCE(SUM(ri.quantity), 0) AS total_returned_items
+      FROM returns r
+      LEFT JOIN return_items ri ON ri.return_id = r.id
+      WHERE r.company_id = $1
+        AND r.customer_id = $2
+        AND r.status = 'completed';
+      `,
+        [companyId, customerId],
+      )
+
+      // ======================================================
+      // نرجع كل حاجة في شكل واضح:
+      // customer = بيانات العميل
+      // summary = ملخص المرتجعات
+      // returns = قائمة المرتجعات
+      // ======================================================
+      res.json({
+        data: {
+          customer: customerResult.rows[0],
+          summary: summaryResult.rows[0],
+          returns: returnsResult.rows,
+        },
+      })
+    } catch (error) {
+      next(error)
+    }
+  },
+)
+
+// ======================================================
 // GET /api/customers/:customerId
 // الهدف:
 // عرض بيانات عميل واحد
