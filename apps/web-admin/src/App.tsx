@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 // بيانات المستخدم والشركة تأتي من Session الموثقة.
 import { useAuth } from './auth/AuthContext'
 import CustomersPage from './pages/CustomersPage'
@@ -20,6 +20,54 @@ type PageName =
   | 'inventory'
   | 'new-sale'
   | 'new-return'
+
+// كل صفحة مرتبطة بصلاحية Backend.
+const pageDefinitions: Array<{
+  name: PageName
+  label: string
+  permission: string
+}> = [
+  {
+    name: 'dashboard',
+    label: 'Dashboard',
+    permission: 'dashboard.view',
+  },
+  {
+    name: 'products',
+    label: 'Products',
+    permission: 'products.view',
+  },
+  {
+    name: 'customers',
+    label: 'Customers',
+    permission: 'customers.view',
+  },
+  {
+    name: 'sales',
+    label: 'Sales',
+    permission: 'sales.view',
+  },
+  {
+    name: 'returns',
+    label: 'Returns',
+    permission: 'returns.view',
+  },
+  {
+    name: 'inventory',
+    label: 'Inventory',
+    permission: 'inventory.view',
+  },
+  {
+    name: 'new-sale',
+    label: 'New Sale',
+    permission: 'sales.create',
+  },
+  {
+    name: 'new-return',
+    label: 'New Return',
+    permission: 'returns.create',
+  },
+]
 
 type DailySummary = {
   companyId: string
@@ -102,6 +150,29 @@ function App() {
   // بيانات الشركة والفرع لا تُكتب يدويًا بعد الآن.
   // مصدرها Session المستخدم المسجل.
   const { user, logout } = useAuth()
+
+  // الصفحات التي يملك المستخدم صلاحية عرضها.
+  const visiblePages = useMemo(() => {
+    const isAdmin = user?.roles.includes('admin') ?? false
+
+    return pageDefinitions.filter((page) => {
+      return isAdmin || user?.permissions.includes(page.permission)
+    })
+  }, [user])
+
+  // لو المستخدم لا يملك صلاحية الصفحة الحالية،
+  // ننقله لأول صفحة مسموحة.
+  useEffect(() => {
+    const pageIsAllowed = visiblePages.some((page) => page.name === activePage)
+
+    if (!pageIsAllowed) {
+      const firstAllowedPage = visiblePages[0]?.name
+
+      if (firstAllowedPage) {
+        setActivePage(firstAllowedPage)
+      }
+    }
+  }, [activePage, visiblePages])
 
   const companyId = user?.companyId || ''
 
@@ -189,65 +260,21 @@ function App() {
       </section>
 
       <nav className="tabs">
-        <button
-          className={activePage === 'dashboard' ? 'tab active-tab' : 'tab'}
-          onClick={() => setActivePage('dashboard')}
-        >
-          Dashboard
-        </button>
+        {visiblePages.map((page) => (
+          <button
+            key={page.name}
+            className={activePage === page.name ? 'tab active-tab' : 'tab'}
+            onClick={() => {
+              if (page.name === 'new-return') {
+                setSelectedReturnSaleId(null)
+              }
 
-        <button
-          className={activePage === 'products' ? 'tab active-tab' : 'tab'}
-          onClick={() => setActivePage('products')}
-        >
-          Products
-        </button>
-
-        <button
-          className={activePage === 'customers' ? 'tab active-tab' : 'tab'}
-          onClick={() => setActivePage('customers')}
-        >
-          Customers
-        </button>
-
-        <button
-          className={activePage === 'sales' ? 'tab active-tab' : 'tab'}
-          onClick={() => setActivePage('sales')}
-        >
-          Sales
-        </button>
-
-        <button
-          className={activePage === 'returns' ? 'tab active-tab' : 'tab'}
-          onClick={() => setActivePage('returns')}
-        >
-          Returns
-        </button>
-
-        <button
-          className={activePage === 'inventory' ? 'tab active-tab' : 'tab'}
-          onClick={() => setActivePage('inventory')}
-        >
-          Inventory
-        </button>
-
-        <button
-          className={activePage === 'new-sale' ? 'tab active-tab' : 'tab'}
-          onClick={() => setActivePage('new-sale')}
-        >
-          New Sale
-        </button>
-
-        <button
-          className={activePage === 'new-return' ? 'tab active-tab' : 'tab'}
-          onClick={() => {
-            // فتح يدوي بدون اختيار فاتورة من شاشة Sales
-            setSelectedReturnSaleId(null)
-            setActivePage('new-return')
-          }}
-        >
-          New Return
-        </button>
+              setActivePage(page.name)
+            }}
+          >
+            {page.label}
+          </button>
+        ))}
       </nav>
 
       {/* =================================================
