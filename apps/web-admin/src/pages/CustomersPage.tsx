@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useAuth } from '../auth/AuthContext'
 
 const API_BASE_URL = 'http://localhost:3000'
 
@@ -75,6 +76,13 @@ function CustomersPage({ companyId }: CustomersPageProps) {
   const [loadingCustomers, setLoadingCustomers] = useState(false)
   const [loadingActivity, setLoadingActivity] = useState(false)
   const [error, setError] = useState('')
+
+  const { user } = useAuth()
+
+  const canViewCustomers =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('customers.view') ||
+    false
 
   // ======================================================
   // loadCustomers
@@ -161,13 +169,15 @@ function CustomersPage({ companyId }: CustomersPageProps) {
             </p>
           </div>
 
-          <button
-            className="primary-button small-button"
-            disabled={!companyId.trim() || loadingCustomers}
-            onClick={loadCustomers}
-          >
-            {loadingCustomers ? 'جاري التحميل...' : 'تحميل العملاء'}
-          </button>
+          {canViewCustomers ? (
+            <button
+              className="primary-button small-button"
+              disabled={!companyId.trim() || loadingCustomers}
+              onClick={loadCustomers}
+            >
+              {loadingCustomers ? 'جاري التحميل...' : 'تحميل العملاء'}
+            </button>
+          ) : null}
         </div>
 
         <div className="single-search-row">
@@ -207,13 +217,15 @@ function CustomersPage({ companyId }: CustomersPageProps) {
                     <td>{customer.address || '-'}</td>
                     <td>{customer.is_active ? 'نشط' : 'غير نشط'}</td>
                     <td>
-                      <button
-                        className="table-button"
-                        disabled={loadingActivity}
-                        onClick={() => loadCustomerActivity(customer.id)}
-                      >
-                        عرض النشاط
-                      </button>
+                      {canViewCustomers ? (
+                        <button
+                          className="table-button"
+                          disabled={loadingActivity}
+                          onClick={() => loadCustomerActivity(customer.id)}
+                        >
+                          عرض النشاط
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}

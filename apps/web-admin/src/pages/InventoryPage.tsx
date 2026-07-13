@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useAuth } from '../auth/AuthContext'
 
 const API_BASE_URL = 'http://localhost:3000'
 
@@ -74,6 +75,13 @@ function InventoryPage({ companyId }: InventoryPageProps) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const { user } = useAuth()
+
+  const canViewInventory =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('inventory.view') ||
+    false
+
   // ======================================================
   // loadInventory
   // تجيب:
@@ -123,13 +131,15 @@ function InventoryPage({ companyId }: InventoryPageProps) {
             <p className="muted">عرض رصيد المخزون الحالي وآخر حركات المخزون.</p>
           </div>
 
-          <button
-            className="primary-button small-button"
-            disabled={!companyId.trim() || loading}
-            onClick={loadInventory}
-          >
-            {loading ? 'جاري التحميل...' : 'تحميل المخزون'}
-          </button>
+          {canViewInventory ? (
+            <button
+              className="primary-button small-button"
+              disabled={!companyId.trim() || loading}
+              onClick={loadInventory}
+            >
+              {loading ? 'جاري التحميل...' : 'تحميل المخزون'}
+            </button>
+          ) : null}
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}

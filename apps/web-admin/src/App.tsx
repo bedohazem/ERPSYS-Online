@@ -151,6 +151,11 @@ function App() {
   // مصدرها Session المستخدم المسجل.
   const { user, logout } = useAuth()
 
+  const canViewDashboard =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('dashboard.view') ||
+    false
+
   // الصفحات التي يملك المستخدم صلاحية عرضها.
   const visiblePages = useMemo(() => {
     const isAdmin = user?.roles.includes('admin') ?? false
@@ -352,13 +357,15 @@ function App() {
                 </p>
               </div>
 
-              <button
-                className="primary-button small-button"
-                disabled={!companyId.trim() || !date || loading}
-                onClick={loadDashboard}
-              >
-                {loading ? 'جاري التحميل...' : 'تحميل الداشبورد'}
-              </button>
+              {canViewDashboard ? (
+                <button
+                  className="primary-button small-button"
+                  disabled={!companyId.trim() || !date || loading}
+                  onClick={loadDashboard}
+                >
+                  {loading ? 'جاري التحميل...' : 'تحميل الداشبورد'}
+                </button>
+              ) : null}
             </div>
 
             {error ? <p className="error-message">{error}</p> : null}
