@@ -205,3 +205,56 @@ export function getAuthContext(res: Response): AuthContext {
 
   return authContext
 }
+
+// ======================================================
+// applyAuthenticatedTenant
+//
+// يفرض بيانات الشركة والفرع والمستخدم من Session الموثقة.
+//
+// أي companyId أو branchId يرسله Frontend يتم استبداله.
+// وبالتالي لا يستطيع المستخدم الوصول لبيانات شركة أخرى
+// بمجرد تغيير UUID داخل الطلب.
+// ======================================================
+export function applyAuthenticatedTenant(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const auth = getAuthContext(res)
+
+    // req.query كائن قابل للتعديل، حتى لو كان نوعه
+    // الافتراضي داخل Express هو ParsedQs.
+    const authenticatedQuery = req.query as Record<string, unknown>
+
+    authenticatedQuery.companyId = auth.companyId
+
+    // المستخدم المرتبط بفرع يتم تقييده على فرعه حاليًا.
+    // لاحقًا نسمح للمستخدمين أصحاب صلاحية كل الفروع
+    // بتحديد فرع مختلف.
+    if (auth.branchId) {
+      authenticatedQuery.branchId = auth.branchId
+    }
+
+    // تطبيق نفس السياق على Body الخاص بعمليات الإنشاء.
+    if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
+      req.body.companyId = auth.companyId
+
+      if (auth.branchId) {
+        req.body.branchId = auth.branchId
+      }
+
+      // المستخدم الحالي هو المسؤول عن الحركة.
+      req.body.createdBy = auth.userId
+
+      // عند إنشاء فاتورة بيع، المستخدم الحالي هو الكاشير.
+      if (req.method === 'POST' && req.originalUrl.startsWith('/api/sales')) {
+        req.body.cashierId = auth.userId
+      }
+    }
+
+    next()
+  } catch (error) {
+    next(error)
+  }
+}

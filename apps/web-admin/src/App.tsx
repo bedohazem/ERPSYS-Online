@@ -1,4 +1,6 @@
 import { useState } from 'react'
+// بيانات المستخدم والشركة تأتي من Session الموثقة.
+import { useAuth } from './auth/AuthContext'
 import CustomersPage from './pages/CustomersPage'
 import ProductsPage from './pages/ProductsPage'
 import SalesPage from './pages/SalesPage'
@@ -72,6 +74,22 @@ async function fetchJson<T>(url: string): Promise<T> {
   return data as T
 }
 
+// ======================================================
+// تاريخ اليوم حسب توقيت جهاز المستخدم
+//
+// نطرح timezone offset حتى لا يتغير اليوم عند تحويله
+// إلى ISO String.
+// ======================================================
+function createTodayDateValue() {
+  const now = new Date()
+
+  const localDate = new Date(
+    now.getTime() - now.getTimezoneOffset() * 60 * 1000,
+  )
+
+  return localDate.toISOString().slice(0, 10)
+}
+
 function App() {
   const [activePage, setActivePage] = useState<PageName>('dashboard')
 
@@ -81,13 +99,15 @@ function App() {
     string | null
   >(null)
 
-  const [companyId, setCompanyId] = useState(
-    '57068e5c-b81e-40c0-aa3a-a9371923bf50',
-  )
-  const [branchId, setBranchId] = useState(
-    'c834cecd-a7b7-4779-a2e5-799587059a94',
-  )
-  const [date, setDate] = useState('2026-07-12')
+  // بيانات الشركة والفرع لا تُكتب يدويًا بعد الآن.
+  // مصدرها Session المستخدم المسجل.
+  const { user, logout } = useAuth()
+
+  const companyId = user?.companyId || ''
+
+  const branchId = user?.branchId || ''
+
+  const [date, setDate] = useState(createTodayDateValue)
 
   const [dailySummary, setDailySummary] = useState<DailySummary | null>(null)
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([])
@@ -230,30 +250,61 @@ function App() {
         </button>
       </nav>
 
-      <section className="panel">
-        <h2>بيانات التشغيل</h2>
+      {/* =================================================
+          جلسة التشغيل
 
-        <div className="form-grid">
-          <label>
-            companyId
-            <input
-              value={companyId}
-              onChange={(event) => setCompanyId(event.target.value)}
-              placeholder="اكتب companyId هنا"
-            />
-          </label>
+          الشركة والفرع والمستخدم أصبحوا Read Only لأن
+          مصدرهم هو Session الموثقة من Backend.
+      ================================================= */}
+      <section className="panel session-panel">
+        <div className="section-header">
+          <div>
+            <h2>جلسة التشغيل</h2>
 
-          <label>
-            branchId اختياري
-            <input
-              value={branchId}
-              onChange={(event) => setBranchId(event.target.value)}
-              placeholder="اكتب branchId لو عايز تقرير فرع معين"
-            />
-          </label>
+            <p className="muted">
+              بيانات الشركة والفرع مرتبطة بالمستخدم المسجل حاليًا.
+            </p>
+          </div>
 
-          <label>
-            التاريخ
+          <button
+            type="button"
+            className="logout-button small-button"
+            onClick={() => {
+              void logout()
+            }}
+          >
+            تسجيل الخروج
+          </button>
+        </div>
+
+        <div className="session-info-grid">
+          <article>
+            <span>المستخدم</span>
+
+            <strong>{user?.fullName || '-'}</strong>
+
+            <small>@{user?.username || '-'}</small>
+          </article>
+
+          <article>
+            <span>الشركة</span>
+
+            <strong>{user?.companyName || user?.companyCode || '-'}</strong>
+
+            <small>{user?.companyCode || '-'}</small>
+          </article>
+
+          <article>
+            <span>الفرع</span>
+
+            <strong>{user?.branchName || 'غير مرتبط بفرع'}</strong>
+
+            <small>Session Branch</small>
+          </article>
+
+          <label className="session-date-card">
+            <span>تاريخ الداشبورد</span>
+
             <input
               type="date"
               value={date}

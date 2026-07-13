@@ -1,41 +1,64 @@
-﻿import { Router } from "express";
-import { db } from "../../db/pool";
+﻿import { Router } from 'express'
+import { db } from '../../db/pool'
 
-export const companiesRouter = Router();
+export const companiesRouter = Router()
 
-companiesRouter.get("/api/companies", async (_req, res, next) => {
+// ======================================================
+// GET /api/companies
+//
+// يرجع الشركة التابعة للجلسة الحالية فقط.
+// companyId يتم وضعه تلقائيًا بواسطة Auth Middleware.
+// ======================================================
+companiesRouter.get('/api/companies', async (req, res, next) => {
   try {
-    const result = await db.query(`
-      SELECT id, name, legal_name, tax_number, is_active, created_at, updated_at
-      FROM companies
-      ORDER BY created_at DESC;
-    `);
+    const companyId = req.query.companyId
 
-    res.json({ data: result.rows });
-  } catch (error) {
-    next(error);
-  }
-});
-
-companiesRouter.post("/api/companies", async (req, res, next) => {
-  try {
-    const { name, legalName, taxNumber } = req.body;
-
-    if (!name || typeof name !== "string") {
-      return res.status(400).json({ error: "Company name is required" });
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res.status(400).json({
+        error: 'Authenticated company is missing',
+      })
     }
 
     const result = await db.query(
       `
-      INSERT INTO companies (name, legal_name, tax_number)
-      VALUES ($1, $2, $3)
-      RETURNING id, name, legal_name, tax_number, is_active, created_at, updated_at;
-      `,
-      [name.trim(), legalName || null, taxNumber || null]
-    );
+        SELECT
+          id,
+          code,
+          name,
+          legal_name,
+          tax_number,
+          is_active,
+          created_at,
+          updated_at
+        FROM companies
+        WHERE id = $1;
+        `,
+      [companyId],
+    )
 
-    res.status(201).json({ data: result.rows[0] });
+    if ((result.rowCount ?? 0) === 0) {
+      return res.status(404).json({
+        error: 'Company was not found',
+      })
+    }
+
+    res.json({
+      data: result.rows,
+    })
   } catch (error) {
-    next(error);
+    next(error)
   }
-});
+})
+
+// ======================================================
+// إنشاء شركة جديدة
+//
+// مقفول مؤقتًا حتى إنشاء صلاحية Platform Administrator.
+// مستخدم الشركة العادي أو Admin داخل الشركة لا يجب أن
+// يستطيع إنشاء Tenant جديد.
+// ======================================================
+companiesRouter.post('/api/companies', (_req, res) => {
+  res.status(403).json({
+    error: 'Company creation requires platform administrator access',
+  })
+})
