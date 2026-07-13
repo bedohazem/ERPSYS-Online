@@ -24,6 +24,15 @@ type Sale = {
   created_at: string
   synced_at: string | null
   items_count: number
+
+  // إجمالي الكمية المباعة داخل الفاتورة
+  sold_quantity: string
+
+  // الكمية التي تم إرجاعها سابقًا
+  returned_quantity: string
+
+  // الكمية التي ما زال يمكن إرجاعها
+  remaining_returnable_quantity: string
 }
 
 type SaleItem = {
@@ -213,6 +222,9 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
                   <th>المدفوع</th>
                   <th>الباقي/الباقي للعميل</th>
                   <th>الأصناف</th>
+                  <th>القطع المباعة</th>
+                  <th>المرتجع سابقًا</th>
+                  <th>المتاح للإرجاع</th>
                   <th>الحالة</th>
                   <th>التفاصيل</th>
                   <th>مرتجع</th>
@@ -228,7 +240,14 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
                     <td>{sale.paid_total}</td>
                     <td>{sale.change_total}</td>
                     <td>{sale.items_count}</td>
+
+                    {/* متابعة كميات البيع والمرتجعات */}
+                    <td>{sale.sold_quantity}</td>
+                    <td>{sale.returned_quantity}</td>
+                    <td>{sale.remaining_returnable_quantity}</td>
+
                     <td>{sale.status}</td>
+
                     <td>
                       <button
                         className="table-button"
@@ -238,12 +257,18 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
                         عرض التفاصيل
                       </button>
                     </td>
+
                     <td>
                       <button
                         className="primary-button small-button"
+                        disabled={
+                          Number(sale.remaining_returnable_quantity) <= 0
+                        }
                         onClick={() => onCreateReturn(sale.id)}
                       >
-                        إنشاء مرتجع
+                        {Number(sale.remaining_returnable_quantity) <= 0
+                          ? 'تم الإرجاع بالكامل'
+                          : 'إنشاء مرتجع'}
                       </button>
                     </td>
                   </tr>

@@ -52,8 +52,15 @@ salesRouter.get('/api/sales', async (req, res, next) => {
         .json({ error: 'companyId query parameter is required' })
     }
 
-    // هنا بنجيب الفواتير من جدول sales
-    // ومعاها اسم الفرع واسم العميل لو موجود
+    // ======================================================
+    // تحميل الفواتير مع حالة المرتجعات
+    //
+    // لكل فاتورة نرجع:
+    // 1. عدد سطور الأصناف
+    // 2. إجمالي الكمية المباعة
+    // 3. إجمالي الكمية المرتجعة سابقًا
+    // 4. الكمية المتبقية التي يمكن إرجاعها
+    // ======================================================
     const result = await db.query(
       `
       SELECT
@@ -78,20 +85,70 @@ salesRouter.get('/api/sales', async (req, res, next) => {
         s.created_at,
         s.synced_at,
 
-        -- عدد الأصناف داخل الفاتورة
-        COUNT(si.id)::int AS items_count
+        -- عدد سطور الأصناف داخل الفاتورة
+        COUNT(si.id)::int AS items_count,
+
+        -- إجمالي عدد القطع المباعة
+        COALESCE(
+          SUM(si.quantity),
+          0
+        ) AS sold_quantity,
+
+        -- إجمالي عدد القطع التي تم إرجاعها سابقًا
+        COALESCE(
+          returned_items.returned_quantity,
+          0
+        ) AS returned_quantity,
+
+        -- الكمية التي ما زال يمكن إرجاعها
+        GREATEST(
+          COALESCE(SUM(si.quantity), 0) -
+          COALESCE(returned_items.returned_quantity, 0),
+          0
+        ) AS remaining_returnable_quantity
+
       FROM sales s
-      JOIN branches b ON b.id = s.branch_id
-      JOIN stock_locations sl ON sl.id = s.stock_location_id
-      LEFT JOIN customers c ON c.id = s.customer_id
-      LEFT JOIN sale_items si ON si.sale_id = s.id
+
+      JOIN branches b
+        ON b.id = s.branch_id
+
+      JOIN stock_locations sl
+        ON sl.id = s.stock_location_id
+
+      LEFT JOIN customers c
+        ON c.id = s.customer_id
+
+      LEFT JOIN sale_items si
+        ON si.sale_id = s.id
+
+      -- نجمع المرتجعات السابقة لكل فاتورة
+      LEFT JOIN (
+        SELECT
+          original_sale_items.sale_id,
+          SUM(ri.quantity) AS returned_quantity
+        FROM return_items ri
+
+        JOIN sale_items original_sale_items
+          ON original_sale_items.id = ri.original_sale_item_id
+          AND original_sale_items.company_id = ri.company_id
+
+        WHERE ri.company_id = $1
+          AND ri.original_sale_item_id IS NOT NULL
+
+        GROUP BY original_sale_items.sale_id
+      ) returned_items
+        ON returned_items.sale_id = s.id
+
       WHERE s.company_id = $1
         AND ($2::uuid IS NULL OR s.branch_id = $2::uuid)
+
       GROUP BY
         s.id,
         b.name,
         sl.name,
-        c.name
+        c.name,
+        returned_items.returned_quantity
+
       ORDER BY s.created_at DESC
       LIMIT $3;
       `,
