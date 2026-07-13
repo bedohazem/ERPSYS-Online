@@ -209,11 +209,10 @@ export function getAuthContext(res: Response): AuthContext {
 // ======================================================
 // applyAuthenticatedTenant
 //
-// يفرض بيانات الشركة والفرع والمستخدم من Session الموثقة.
+// تفرض الشركة والفرع والمستخدم من Session الموثقة.
 //
-// أي companyId أو branchId يرسله Frontend يتم استبداله.
-// وبالتالي لا يستطيع المستخدم الوصول لبيانات شركة أخرى
-// بمجرد تغيير UUID داخل الطلب.
+// ممنوع الاعتماد على companyId أو branchId المرسلين
+// من المتصفح لأن المستخدم يستطيع تغييرهما يدويًا.
 // ======================================================
 export function applyAuthenticatedTenant(
   req: Request,
@@ -223,33 +222,64 @@ export function applyAuthenticatedTenant(
   try {
     const auth = getAuthContext(res)
 
-    // req.query كائن قابل للتعديل، حتى لو كان نوعه
-    // الافتراضي داخل Express هو ParsedQs.
-    const authenticatedQuery = req.query as Record<string, unknown>
+    // ====================================================
+    // Query الموثقة
+    //
+    // ننشئ نسخة جديدة بدل تعديل الكائن الراجع من req.query.
+    // ثم نثبتها على نفس Request حتى تقرأ كل Routes
+    // نفس البيانات الموثقة.
+    // ====================================================
+    const authenticatedQuery: Record<string, unknown> = {
+      ...(req.query as Record<string, unknown>),
 
-    authenticatedQuery.companyId = auth.companyId
-
-    // المستخدم المرتبط بفرع يتم تقييده على فرعه حاليًا.
-    // لاحقًا نسمح للمستخدمين أصحاب صلاحية كل الفروع
-    // بتحديد فرع مختلف.
-    if (auth.branchId) {
-      authenticatedQuery.branchId = auth.branchId
+      // الشركة دائمًا من Session.
+      companyId: auth.companyId,
     }
 
-    // تطبيق نفس السياق على Body الخاص بعمليات الإنشاء.
+    if (auth.branchId) {
+      // المستخدم المرتبط بفرع لا يستطيع تغيير الفرع.
+      authenticatedQuery.branchId = auth.branchId
+    } else {
+      // المستخدم العام على مستوى الشركة يرى كل الفروع حاليًا.
+      // اختيار فرع محدد سيُضاف لاحقًا بصلاحية مستقلة.
+      delete authenticatedQuery.branchId
+    }
+
+    // Express يحتوي على Query Getter.
+    // إنشاء خاصية على Request يضمن أن كل القراءات التالية
+    // تستخدم النسخة الموثقة نفسها.
+    Object.defineProperty(req, 'query', {
+      value: authenticatedQuery,
+      writable: false,
+      enumerable: true,
+      configurable: true,
+    })
+
+    // ====================================================
+    // Body الموثقة
+    //
+    // نلغي أي companyId أو branchId أرسله Frontend
+    // ونستبدلهما ببيانات Session.
+    // ====================================================
     if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
-      req.body.companyId = auth.companyId
+      const authenticatedBody = req.body as Record<string, unknown>
+
+      authenticatedBody.companyId = auth.companyId
 
       if (auth.branchId) {
-        req.body.branchId = auth.branchId
+        authenticatedBody.branchId = auth.branchId
+      } else {
+        // المستخدم غير المرتبط بفرع لا يُسمح له حاليًا
+        // بفرض branchId من Body حتى نضيف صلاحية اختيار الفرع.
+        delete authenticatedBody.branchId
       }
 
-      // المستخدم الحالي هو المسؤول عن الحركة.
-      req.body.createdBy = auth.userId
+      // المستخدم الحالي هو صاحب العملية.
+      authenticatedBody.createdBy = auth.userId
 
-      // عند إنشاء فاتورة بيع، المستخدم الحالي هو الكاشير.
+      // المستخدم الحالي هو الكاشير في فاتورة Web Admin أو POS.
       if (req.method === 'POST' && req.originalUrl.startsWith('/api/sales')) {
-        req.body.cashierId = auth.userId
+        authenticatedBody.cashierId = auth.userId
       }
     }
 
