@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 const API_BASE_URL = 'http://localhost:3000'
 
@@ -106,6 +106,14 @@ type ApiResponse<T> = {
 type NewReturnPageProps = {
   companyId: string
   branchId: string
+
+  // فاتورة تم اختيارها من شاشة Sales
+  // لو القيمة null تعمل الشاشة بالطريقة العادية
+  initialSaleId: string | null
+
+  // يتم استدعاؤها بعد استلام رقم الفاتورة
+  // حتى لا يعاد فتح نفس الفاتورة مرة ثانية
+  onInitialSaleHandled: () => void
 }
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -155,7 +163,12 @@ function calculateItemRefundAmount(saleItem: SaleItem, returnQuantity: number) {
   return Number((refundableUnitAmount * returnQuantity).toFixed(2))
 }
 
-function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
+function NewReturnPage({
+  companyId,
+  branchId,
+  initialSaleId,
+  onInitialSaleHandled,
+}: NewReturnPageProps) {
   const [sales, setSales] = useState<Sale[]>([])
   const [selectedSaleDetails, setSelectedSaleDetails] =
     useState<SaleDetails | null>(null)
@@ -295,6 +308,28 @@ function NewReturnPage({ companyId, branchId }: NewReturnPageProps) {
       setLoadingSaleDetails(false)
     }
   }
+
+  // ======================================================
+  // فتح فاتورة تم إرسالها من شاشة Sales
+  //
+  // عند الضغط على "عمل مرتجع":
+  // 1. App يفتح صفحة New Return
+  // 2. يرسل saleId
+  // 3. الصفحة تحمل تفاصيل الفاتورة تلقائيًا
+  // ======================================================
+  useEffect(() => {
+    const selectedInitialSaleId = initialSaleId?.trim()
+
+    if (!selectedInitialSaleId) {
+      return
+    }
+
+    loadSaleDetails(selectedInitialSaleId)
+
+    // نمسح القيمة من App بعد استخدامها
+    // لمنع إعادة فتح نفس الفاتورة عند الدخول لاحقًا
+    onInitialSaleHandled()
+  }, [initialSaleId])
 
   // ======================================================
   // updateReturnQuantity

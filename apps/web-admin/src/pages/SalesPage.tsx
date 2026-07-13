@@ -69,6 +69,10 @@ type ApiResponse<T> = {
 type SalesPageProps = {
   companyId: string
   branchId: string
+
+  // ترسل رقم الفاتورة إلى App
+  // لفتح شاشة المرتجع عليها مباشرة
+  onCreateReturn: (saleId: string) => void
 }
 
 // ======================================================
@@ -89,7 +93,7 @@ async function fetchJson<T>(url: string): Promise<T> {
   return data as T
 }
 
-function SalesPage({ companyId, branchId }: SalesPageProps) {
+function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
   const [sales, setSales] = useState<Sale[]>([])
   const [selectedSaleDetails, setSelectedSaleDetails] =
     useState<SaleDetails | null>(null)
@@ -211,6 +215,7 @@ function SalesPage({ companyId, branchId }: SalesPageProps) {
                   <th>الأصناف</th>
                   <th>الحالة</th>
                   <th>التفاصيل</th>
+                  <th>مرتجع</th>
                 </tr>
               </thead>
               <tbody>
@@ -231,6 +236,14 @@ function SalesPage({ companyId, branchId }: SalesPageProps) {
                         onClick={() => loadSaleDetails(sale.id)}
                       >
                         عرض التفاصيل
+                      </button>
+                    </td>
+                    <td>
+                      <button
+                        className="primary-button small-button"
+                        onClick={() => onCreateReturn(sale.id)}
+                      >
+                        إنشاء مرتجع
                       </button>
                     </td>
                   </tr>

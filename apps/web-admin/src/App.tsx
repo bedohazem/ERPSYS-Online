@@ -75,6 +75,12 @@ async function fetchJson<T>(url: string): Promise<T> {
 function App() {
   const [activePage, setActivePage] = useState<PageName>('dashboard')
 
+  // رقم الفاتورة التي سيتم فتح مرتجع لها مباشرة
+  // null يعني فتح شاشة New Return بدون فاتورة محددة
+  const [selectedReturnSaleId, setSelectedReturnSaleId] = useState<
+    string | null
+  >(null)
+
   const [companyId, setCompanyId] = useState(
     '57068e5c-b81e-40c0-aa3a-a9371923bf50',
   )
@@ -136,6 +142,17 @@ function App() {
     } finally {
       setLoading(false)
     }
+  }
+
+  // ======================================================
+  // openNewReturnFromSale
+  //
+  // تستقبل saleId من شاشة Sales
+  // ثم تفتح شاشة New Return على نفس الفاتورة مباشرة
+  // ======================================================
+  function openNewReturnFromSale(saleId: string) {
+    setSelectedReturnSaleId(saleId)
+    setActivePage('new-return')
   }
 
   return (
@@ -203,7 +220,11 @@ function App() {
 
         <button
           className={activePage === 'new-return' ? 'tab active-tab' : 'tab'}
-          onClick={() => setActivePage('new-return')}
+          onClick={() => {
+            // فتح يدوي بدون اختيار فاتورة من شاشة Sales
+            setSelectedReturnSaleId(null)
+            setActivePage('new-return')
+          }}
         >
           New Return
         </button>
@@ -347,7 +368,11 @@ function App() {
       ) : null}
 
       {activePage === 'sales' ? (
-        <SalesPage companyId={companyId} branchId={branchId} />
+        <SalesPage
+          companyId={companyId}
+          branchId={branchId}
+          onCreateReturn={openNewReturnFromSale}
+        />
       ) : null}
 
       {activePage === 'returns' ? (
@@ -363,7 +388,12 @@ function App() {
       ) : null}
 
       {activePage === 'new-return' ? (
-        <NewReturnPage companyId={companyId} branchId={branchId} />
+        <NewReturnPage
+          companyId={companyId}
+          branchId={branchId}
+          initialSaleId={selectedReturnSaleId}
+          onInitialSaleHandled={() => setSelectedReturnSaleId(null)}
+        />
       ) : null}
     </main>
   )
