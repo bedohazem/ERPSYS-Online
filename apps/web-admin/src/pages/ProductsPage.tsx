@@ -1,3 +1,6 @@
+import { useAuth } from '../auth/AuthContext'
+import { hasPermission } from '../auth/permissions'
+
 type Product = {
   id: string
   name: string
@@ -64,6 +67,10 @@ function ProductsPage({ companyId }: ProductsPageProps) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const { user } = useAuth()
+
+  const canViewProducts = hasPermission(user, 'products.view')
+
   // ======================================================
   // loadProductsData
   // تجيب:
@@ -119,13 +126,15 @@ function ProductsPage({ companyId }: ProductsPageProps) {
           </p>
         </div>
 
-        <button
-          className="primary-button small-button"
-          disabled={!companyId.trim() || loading}
-          onClick={loadProductsData}
-        >
-          {loading ? 'جاري التحميل...' : 'تحميل المنتجات'}
-        </button>
+        {canViewProducts ? (
+          <button
+            className="primary-button small-button"
+            disabled={!companyId.trim() || loading}
+            onClick={loadProductsData}
+          >
+            {loading ? 'جاري التحميل...' : 'تحميل المنتجات'}
+          </button>
+        ) : null}
       </div>
 
       {error ? <p className="error-message">{error}</p> : null}

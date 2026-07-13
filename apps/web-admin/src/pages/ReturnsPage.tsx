@@ -1,5 +1,6 @@
 import { useState } from 'react'
-
+import { useAuth } from '../auth/AuthContext'
+import { hasPermission } from '../auth/permissions'
 const API_BASE_URL = 'http://localhost:3000'
 
 type ReturnDocument = {
@@ -97,6 +98,10 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
   const [loadingDetails, setLoadingDetails] = useState(false)
   const [error, setError] = useState('')
 
+  const { user } = useAuth()
+
+  const canViewReturns = hasPermission(user, 'returns.view')
+
   // ======================================================
   // loadReturns
   // تجيب قائمة المرتجعات
@@ -184,13 +189,15 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
             </p>
           </div>
 
-          <button
-            className="primary-button small-button"
-            disabled={!companyId.trim() || loadingReturns}
-            onClick={loadReturns}
-          >
-            {loadingReturns ? 'جاري التحميل...' : 'تحميل المرتجعات'}
-          </button>
+          {canViewReturns ? (
+            <button
+              className="primary-button small-button"
+              disabled={!companyId.trim() || loadingReturns}
+              onClick={loadReturns}
+            >
+              {loadingReturns ? 'جاري التحميل...' : 'تحميل المرتجعات'}
+            </button>
+          ) : null}
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
@@ -225,13 +232,15 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
                     <td>{returnDocument.items_count}</td>
                     <td>{returnDocument.status}</td>
                     <td>
-                      <button
-                        className="table-button"
-                        disabled={loadingDetails}
-                        onClick={() => loadReturnDetails(returnDocument.id)}
-                      >
-                        عرض التفاصيل
-                      </button>
+                      {canViewReturns ? (
+                        <button
+                          className="table-button"
+                          disabled={loadingDetails}
+                          onClick={() => loadReturnDetails(returnDocument.id)}
+                        >
+                          عرض التفاصيل
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
