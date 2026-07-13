@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useAuth } from '../auth/AuthContext'
 
 const API_BASE_URL = 'http://localhost:3000'
 
@@ -193,6 +194,14 @@ function NewReturnPage({
   // يتحكم في ظهور نافذة تأكيد حفظ المرتجع
   const [showReturnConfirm, setShowReturnConfirm] = useState(false)
   const [error, setError] = useState('')
+
+  const { user } = useAuth()
+
+  // زر الحفظ يظهر فقط لمن يملك صلاحية إنشاء المرتجع
+  const canCreateReturn =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('returns.create') ||
+    false
 
   const filteredSales = useMemo(() => {
     const searchValue = saleSearchText.trim().toLowerCase()
@@ -734,15 +743,17 @@ function NewReturnPage({
                 <p className="muted">اكتب الكمية المراد إرجاعها أمام كل صنف.</p>
               </div>
 
-              <button
-                className="primary-button small-button"
-                disabled={selectedReturnItems.length === 0 || savingReturn}
-                onClick={saveReturn}
-              >
-                {savingReturn
-                  ? 'جاري حفظ المرتجع...'
-                  : `حفظ المرتجع بقيمة ${refundTotal}`}
-              </button>
+              {canCreateReturn ? (
+                <button
+                  className="primary-button small-button"
+                  disabled={selectedReturnItems.length === 0 || savingReturn}
+                  onClick={saveReturn}
+                >
+                  {savingReturn
+                    ? 'جاري حفظ المرتجع...'
+                    : `حفظ المرتجع بقيمة ${refundTotal}`}
+                </button>
+              ) : null}
             </div>
 
             <div className="table-wrapper">
