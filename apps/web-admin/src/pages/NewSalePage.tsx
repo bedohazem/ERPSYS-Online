@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useAuth } from '../auth/AuthContext'
 
 const API_BASE_URL = 'http://localhost:3000'
 
@@ -78,6 +79,13 @@ function createIdempotencyKey() {
 }
 
 function NewSalePage({ companyId, branchId }: NewSalePageProps) {
+  const { user } = useAuth()
+
+  // زر الحفظ يظهر فقط لمن يملك صلاحية إنشاء البيع
+  const canCreateSale =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('sales.create') ||
+    false
   const [stockLocationId, setStockLocationId] = useState(
     '9036fcdb-3931-4284-bf8a-f61e81b0ab40',
   )
@@ -379,13 +387,15 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
             </p>
           </div>
 
-          <button
-            className="primary-button small-button"
-            disabled={cartItems.length === 0 || savingSale}
-            onClick={saveSale}
-          >
-            {savingSale ? 'جاري الحفظ...' : 'حفظ الفاتورة'}
-          </button>
+          {canCreateSale ? (
+            <button
+              className="primary-button small-button"
+              disabled={cartItems.length === 0 || savingSale}
+              onClick={saveSale}
+            >
+              {savingSale ? 'جاري الحفظ...' : 'حفظ الفاتورة'}
+            </button>
+          ) : null}
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
