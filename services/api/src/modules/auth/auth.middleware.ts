@@ -288,3 +288,34 @@ export function applyAuthenticatedTenant(
     next(error)
   }
 }
+
+// ======================================================
+// requirePermission
+//
+// تمنع الوصول للـ Route إلا لو المستخدم يمتلك
+// الصلاحية المطلوبة.
+//
+// دور admin مسموح له مؤقتًا بكل الصلاحيات
+// كحماية إضافية أثناء تأسيس النظام.
+// ======================================================
+export function requirePermission(permissionCode: string) {
+  return (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const isAdmin = auth.roles.includes('admin')
+
+      const hasPermission = auth.permissions.includes(permissionCode)
+
+      if (!isAdmin && !hasPermission) {
+        return res.status(403).json({
+          error: `Permission required: ${permissionCode}`,
+        })
+      }
+
+      next()
+    } catch (error) {
+      next(error)
+    }
+  }
+}
