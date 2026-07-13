@@ -332,7 +332,25 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
     const preparedItems: any[] = []
     let subtotal = 0
 
-    for (const item of items) {
+    // ======================================================
+    // ترتيب الأصناف قبل قفلها ومعالجتها
+    //
+    // لو عمليتا مرتجع تعملان في نفس اللحظة على أكثر من صنف،
+    // الترتيب الثابت يقلل احتمال حدوث Database Deadlock.
+    // ======================================================
+    const orderedItems = [...items].sort((firstItem, secondItem) => {
+      const firstKey = String(
+        firstItem.originalSaleItemId || firstItem.variantId || '',
+      )
+
+      const secondKey = String(
+        secondItem.originalSaleItemId || secondItem.variantId || '',
+      )
+
+      return firstKey.localeCompare(secondKey)
+    })
+
+    for (const item of orderedItems) {
       const originalSaleItemId = item.originalSaleItemId || null
       const variantId = item.variantId
       const quantity = Number(item.quantity)
@@ -385,7 +403,16 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           JOIN sales s ON s.id = si.sale_id
           WHERE si.company_id = $1
             AND si.id = $2
-            AND si.variant_id = $3;
+            AND si.variant_id = $3
+
+          -- ==================================================
+          -- نقفل سطر الفاتورة حتى نهاية Transaction.
+          --
+          -- لو طلبا مرتجع وصلا في نفس الوقت لنفس الصنف:
+          -- الطلب الثاني ينتظر الأول، ثم يعيد حساب الكمية
+          -- المرتجعة سابقًا قبل السماح بإنشاء المرتجع.
+          -- ==================================================
+          FOR UPDATE OF si;
           `,
           [companyId, originalSaleItemId, variantId],
         )
