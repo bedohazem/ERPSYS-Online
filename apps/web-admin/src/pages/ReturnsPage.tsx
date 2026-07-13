@@ -25,6 +25,10 @@ type ReturnDocument = {
 type ReturnItem = {
   id: string
   return_id: string
+
+  // سطر الفاتورة الأصلية الذي تم إرجاع الصنف منه
+  original_sale_item_id: string | null
+
   variant_id: string | null
   sku_snapshot: string | null
   barcode_snapshot: string | null
@@ -33,7 +37,13 @@ type ReturnItem = {
   color_snapshot: string | null
   quantity: string
   unit_price: string
-  line_total: string
+
+  // القيمة الفعلية التي تم ردها لهذا الصنف
+  // Backend يحسبها من سطر الفاتورة الأصلية
+  refund_amount: string
+
+  // سبب خاص بالصنف إن كان موجودًا
+  reason: string | null
 }
 
 type ReturnRefund = {
@@ -284,8 +294,9 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
                   <th>المقاس</th>
                   <th>اللون</th>
                   <th>الكمية</th>
-                  <th>السعر</th>
-                  <th>الإجمالي</th>
+                  <th>السعر الأصلي</th>
+                  <th>المبلغ المرتجع</th>
+                  <th>السبب</th>
                 </tr>
               </thead>
               <tbody>
@@ -298,7 +309,11 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
                     <td>{item.color_snapshot || '-'}</td>
                     <td>{item.quantity}</td>
                     <td>{item.unit_price}</td>
-                    <td>{item.line_total}</td>
+
+                    {/* المبلغ الحقيقي الذي تم رده لهذا الصنف */}
+                    <td>{item.refund_amount}</td>
+
+                    <td>{item.reason || '-'}</td>
                   </tr>
                 ))}
               </tbody>
