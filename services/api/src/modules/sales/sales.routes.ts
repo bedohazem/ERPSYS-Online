@@ -45,6 +45,26 @@ const allowedPaymentMethods = new Set([
 ])
 
 // ======================================================
+// مصادر البيع المسموح بها
+//
+// أي قيمة أخرى يتم رفضها قبل الوصول لقاعدة البيانات.
+// ======================================================
+const allowedSaleSources = new Set(['online_pos', 'offline_pos', 'web_admin'])
+
+// ======================================================
+// UUID validation
+//
+// يمنع إرسال IDs غير صالحة إلى PostgreSQL
+// وبالتالي يرجع خطأ 400 مفهوم بدل Database Error.
+// ======================================================
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function isValidUuid(value: string) {
+  return uuidPattern.test(value)
+}
+
+// ======================================================
 // GET /api/sales
 // الهدف: عرض قائمة الفواتير المحفوظة
 // مثال:
@@ -405,6 +425,68 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       return res.status(400).json({ error: 'payments are required' })
     }
 
+    // ======================================================
+    // تجهيز القيم الاختيارية
+    //
+    // لا نمرر undefined أو قيم عشوائية إلى PostgreSQL.
+    // ======================================================
+    const selectedCustomerId =
+      typeof customerId === 'string' && customerId.trim()
+        ? customerId.trim()
+        : null
+
+    const selectedCashierId =
+      typeof cashierId === 'string' && cashierId.trim()
+        ? cashierId.trim()
+        : null
+
+    const selectedShiftId =
+      typeof shiftId === 'string' && shiftId.trim() ? shiftId.trim() : null
+
+    const selectedSource =
+      typeof source === 'string' && source.trim() ? source.trim() : 'online_pos'
+
+    // ======================================================
+    // فحص صيغة جميع UUIDs
+    // ======================================================
+    if (!isValidUuid(companyId)) {
+      return res.status(400).json({ error: 'companyId is invalid' })
+    }
+
+    if (!isValidUuid(branchId)) {
+      return res.status(400).json({ error: 'branchId is invalid' })
+    }
+
+    if (!isValidUuid(stockLocationId)) {
+      return res.status(400).json({
+        error: 'stockLocationId is invalid',
+      })
+    }
+
+    if (selectedCustomerId && !isValidUuid(selectedCustomerId)) {
+      return res.status(400).json({
+        error: 'customerId is invalid',
+      })
+    }
+
+    if (selectedCashierId && !isValidUuid(selectedCashierId)) {
+      return res.status(400).json({
+        error: 'cashierId is invalid',
+      })
+    }
+
+    if (selectedShiftId && !isValidUuid(selectedShiftId)) {
+      return res.status(400).json({
+        error: 'shiftId is invalid',
+      })
+    }
+
+    if (!allowedSaleSources.has(selectedSource)) {
+      return res.status(400).json({
+        error: `Unsupported sale source: ${selectedSource}`,
+      })
+    }
+
     await client.query('BEGIN')
 
     const existingSale = await client.query(
@@ -424,6 +506,144 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         duplicated: true,
         data: existingSale.rows[0],
       })
+    }
+
+    // ======================================================
+    // Tenant Validation
+    //
+    // نتحقق أن كل الكيانات المستخدمة في الفاتورة:
+    // - تابعة لنفس الشركة
+    // - نشطة
+    // - مرتبطة بالفرع الصحيح
+    //
+    // ده يمنع خلط بيانات شركتين أو فرعين داخل مستند واحد.
+    // ======================================================
+    const contextValidationResult = await client.query(
+      `
+      SELECT
+        EXISTS (
+          SELECT 1
+          FROM companies c
+          WHERE c.id = $1
+            AND c.is_active = TRUE
+        ) AS company_is_valid,
+
+        EXISTS (
+          SELECT 1
+          FROM branches b
+          WHERE b.id = $2
+            AND b.company_id = $1
+            AND b.is_active = TRUE
+        ) AS branch_is_valid,
+
+        EXISTS (
+          SELECT 1
+          FROM stock_locations sl
+          WHERE sl.id = $3
+            AND sl.company_id = $1
+            AND sl.is_active = TRUE
+
+            -- المخزن المركزي ممكن يكون بدون branch_id.
+            -- أما مخزن الفرع فلازم يطابق فرع الفاتورة.
+            AND (
+              sl.branch_id IS NULL
+              OR sl.branch_id = $2
+            )
+        ) AS stock_location_is_valid,
+
+        CASE
+          WHEN $4::uuid IS NULL THEN TRUE
+          ELSE EXISTS (
+            SELECT 1
+            FROM customers c
+            WHERE c.id = $4
+              AND c.company_id = $1
+              AND c.is_active = TRUE
+          )
+        END AS customer_is_valid,
+
+        CASE
+          WHEN $5::uuid IS NULL THEN TRUE
+          ELSE EXISTS (
+            SELECT 1
+            FROM users u
+            WHERE u.id = $5
+              AND u.company_id = $1
+              AND u.is_active = TRUE
+              AND (
+                u.branch_id IS NULL
+                OR u.branch_id = $2
+              )
+          )
+        END AS cashier_is_valid,
+
+        CASE
+          WHEN $6::uuid IS NULL THEN TRUE
+          ELSE EXISTS (
+            SELECT 1
+            FROM cashier_shifts cs
+            WHERE cs.id = $6
+              AND cs.company_id = $1
+              AND cs.branch_id = $2
+              AND cs.status = 'open'
+
+              -- لو cashierId موجود لازم الوردية تخص نفس الكاشير.
+              AND (
+                $5::uuid IS NULL
+                OR cs.cashier_id = $5
+              )
+          )
+        END AS shift_is_valid;
+      `,
+      [
+        companyId,
+        branchId,
+        stockLocationId,
+        selectedCustomerId,
+        selectedCashierId,
+        selectedShiftId,
+      ],
+    )
+
+    const contextValidation = contextValidationResult.rows[0]
+
+    if (!contextValidation.company_is_valid) {
+      throw new SalesApiError(400, 'Company was not found or inactive')
+    }
+
+    if (!contextValidation.branch_is_valid) {
+      throw new SalesApiError(
+        400,
+        'Branch does not belong to company or is inactive',
+      )
+    }
+
+    if (!contextValidation.stock_location_is_valid) {
+      throw new SalesApiError(
+        400,
+        'Stock location does not belong to company or branch',
+      )
+    }
+
+    if (!contextValidation.customer_is_valid) {
+      throw new SalesApiError(
+        400,
+        'Customer does not belong to company or is inactive',
+      )
+    }
+
+    if (!contextValidation.cashier_is_valid) {
+      throw new SalesApiError(
+        400,
+        'Cashier does not belong to company or branch',
+      )
+    }
+
+    if (!contextValidation.shift_is_valid) {
+      throw new SalesApiError(
+        400,
+        'Shift is invalid, closed, or belongs to another cashier',
+      )
     }
 
     // ======================================================
@@ -615,11 +835,12 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         companyId,
         branchId,
         stockLocationId,
-        cashierId || null,
-        shiftId || null,
-        customerId || null,
+        // القيم دي تم التحقق من الشركة والفرع الخاصين بها.
+        selectedCashierId,
+        selectedShiftId,
+        selectedCustomerId,
         saleNumber.trim(),
-        source || 'online_pos',
+        selectedSource,
         localSaleId || null,
         idempotencyKey,
         subtotal,
@@ -760,7 +981,8 @@ salesRouter.post('/api/sales', async (req, res, next) => {
           quantityAfter,
           sale.id,
           `Sale ${sale.sale_number}`,
-          cashierId || null,
+          // المستخدم المسؤول عن حركة المخزون
+          selectedCashierId,
         ],
       )
     }
