@@ -12,7 +12,8 @@ import { posRouter } from './modules/pos/pos.routes'
 import { customersRouter } from './modules/customers/customers.routes'
 import { returnsRouter } from './modules/returns/returns.routes'
 import { reportsRouter } from './modules/reports/reports.routes'
-
+// Routes الخاصة بتسجيل الدخول والجلسات
+import { authRouter } from './modules/auth/auth.routes'
 export const app = express()
 
 app.use(helmet())
@@ -30,6 +31,8 @@ app.use(posRouter)
 app.use(customersRouter)
 app.use(returnsRouter)
 app.use(reportsRouter)
+// Login / Logout / Current authenticated user
+app.use(authRouter)
 
 app.use((_req, res) => {
   res.status(404).json({

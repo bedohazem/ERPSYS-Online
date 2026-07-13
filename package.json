@@ -11,7 +11,8 @@
     "db:migrate": "node packages/database/scripts/migrate.js",
     "db:seed": "node packages/database/scripts/seed.js",
     "api:dev": "tsx watch services/api/src/server.ts",
-    "api:start": "tsx services/api/src/server.ts"
+    "api:start": "tsx services/api/src/server.ts",
+    "auth:set-password": "tsx packages/auth/scripts/set-user-password.ts"
   },
   "repository": {
     "type": "git",
