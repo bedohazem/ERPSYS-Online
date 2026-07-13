@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useAuth } from '../auth/AuthContext'
 
 const API_BASE_URL = 'http://localhost:3000'
 
@@ -103,6 +104,16 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
+  const { user } = useAuth()
+  const canCreateSale =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('sales.create') ||
+    false
+  const canCreateReturn =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('returns.create') ||
+    false
+
   const [sales, setSales] = useState<Sale[]>([])
   const [selectedSaleDetails, setSelectedSaleDetails] =
     useState<SaleDetails | null>(null)
@@ -262,6 +273,7 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
                       <button
                         className="primary-button small-button"
                         disabled={
+                          !canCreateReturn ||
                           Number(sale.remaining_returnable_quantity) <= 0
                         }
                         onClick={() => onCreateReturn(sale.id)}
