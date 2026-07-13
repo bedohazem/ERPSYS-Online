@@ -270,18 +270,19 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
                     </td>
 
                     <td>
-                      <button
-                        className="primary-button small-button"
-                        disabled={
-                          !canCreateReturn ||
-                          Number(sale.remaining_returnable_quantity) <= 0
-                        }
-                        onClick={() => onCreateReturn(sale.id)}
-                      >
-                        {Number(sale.remaining_returnable_quantity) <= 0
-                          ? 'تم الإرجاع بالكامل'
-                          : 'إنشاء مرتجع'}
-                      </button>
+                      {canCreateReturn ? (
+                        <button
+                          className="primary-button small-button"
+                          disabled={
+                            Number(sale.remaining_returnable_quantity) <= 0
+                          }
+                          onClick={() => onCreateReturn(sale.id)}
+                        >
+                          {Number(sale.remaining_returnable_quantity) <= 0
+                            ? 'تم الإرجاع بالكامل'
+                            : 'إنشاء مرتجع'}
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}

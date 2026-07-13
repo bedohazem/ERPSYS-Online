@@ -86,6 +86,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
     user?.roles.includes('admin') ||
     user?.permissions.includes('sales.create') ||
     false
+
   const [stockLocationId, setStockLocationId] = useState(
     '9036fcdb-3931-4284-bf8a-f61e81b0ab40',
   )
