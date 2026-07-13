@@ -24,6 +24,27 @@ class SalesApiError extends Error {
 }
 
 // ======================================================
+// roundMoney
+//
+// يمنع ظهور كسور طويلة في العمليات المالية.
+// كل المبالغ المالية تُحفظ بمنزلتين عشريتين.
+// ======================================================
+function roundMoney(value: number) {
+  return Number(value.toFixed(2))
+}
+
+// طرق الدفع التي يدعمها النظام حاليًا.
+// التحقق هنا يمنع وصول قيمة غير صحيحة إلى PostgreSQL.
+const allowedPaymentMethods = new Set([
+  'cash',
+  'card',
+  'wallet',
+  'bank_transfer',
+  'mixed',
+  'other',
+])
+
+// ======================================================
 // GET /api/sales
 // الهدف: عرض قائمة الفواتير المحفوظة
 // مثال:
@@ -354,8 +375,6 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       idempotencyKey,
       items,
       payments,
-      discountTotal,
-      taxTotal,
     } = req.body
 
     if (!companyId || typeof companyId !== 'string') {
@@ -407,29 +426,38 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       })
     }
 
+    // ======================================================
+    // تجهيز الأصناف وحساب الفاتورة
+    //
+    // قاعدة مهمة:
+    // لا نثق في سعر أو خصم أو ضريبة قادمة من Frontend.
+    //
+    // سعر البيع يتم قراءته من PostgreSQL فقط.
+    // الخصومات والضرائب ستتم إضافتها لاحقًا من خلال
+    // نظام تسعير وصلاحيات منفصل.
+    // ======================================================
     let subtotal = 0
+
+    // الخصم والضريبة مقفولان حاليًا حتى إنشاء
+    // نظام صلاحيات وتسعير آمن.
+    const finalDiscountTotal = 0
+    const finalTaxTotal = 0
 
     const preparedItems = []
 
     for (const item of items) {
       const variantId = item.variantId
       const quantity = Number(item.quantity)
-      const unitPrice = Number(item.unitPrice)
-      const itemDiscount = Number(item.discountAmount || 0)
-      const itemTax = Number(item.taxAmount || 0)
 
       if (!variantId || typeof variantId !== 'string') {
-        throw new Error('variantId is required for each item')
+        throw new SalesApiError(400, 'variantId is required for each item')
       }
 
       if (!Number.isFinite(quantity) || quantity <= 0) {
-        throw new Error('quantity must be greater than zero')
+        throw new SalesApiError(400, 'quantity must be greater than zero')
       }
 
-      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-        throw new Error('unitPrice must be zero or greater')
-      }
-
+      // نقرأ الصنف وسعره الحقيقي من قاعدة البيانات.
       const variantResult = await client.query(
         `
         SELECT
@@ -441,9 +469,12 @@ salesRouter.post('/api/sales', async (req, res, next) => {
           fs.name AS size_name,
           fc.name AS color_name
         FROM product_variants pv
-        JOIN products p ON p.id = pv.product_id
-        LEFT JOIN fashion_sizes fs ON fs.id = pv.size_id
-        LEFT JOIN fashion_colors fc ON fc.id = pv.color_id
+        JOIN products p
+          ON p.id = pv.product_id
+        LEFT JOIN fashion_sizes fs
+          ON fs.id = pv.size_id
+        LEFT JOIN fashion_colors fc
+          ON fc.id = pv.color_id
         WHERE pv.company_id = $1
           AND pv.id = $2
           AND pv.status = 'active';
@@ -452,13 +483,30 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       )
 
       if ((variantResult.rowCount ?? 0) === 0) {
-        throw new Error(`Variant not found or inactive: ${variantId}`)
+        throw new SalesApiError(
+          404,
+          `Variant not found or inactive: ${variantId}`,
+        )
       }
 
       const variant = variantResult.rows[0]
-      const lineTotal = quantity * unitPrice - itemDiscount + itemTax
 
-      subtotal += quantity * unitPrice
+      // سعر البيع الحقيقي من PostgreSQL.
+      // أي unitPrice مرسل من الواجهة يتم تجاهله.
+      const unitPrice = Number(variant.selling_price)
+
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        throw new SalesApiError(
+          400,
+          `Invalid selling price for variant: ${variantId}`,
+        )
+      }
+
+      const itemDiscount = 0
+      const itemTax = 0
+      const lineTotal = roundMoney(quantity * unitPrice)
+
+      subtotal = roundMoney(subtotal + lineTotal)
 
       preparedItems.push({
         variantId,
@@ -475,15 +523,62 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       })
     }
 
-    const finalDiscountTotal = Number(discountTotal || 0)
-    const finalTaxTotal = Number(taxTotal || 0)
-    const total = subtotal - finalDiscountTotal + finalTaxTotal
+    // إجمالي الفاتورة محسوب بالكامل داخل Backend.
+    const total = roundMoney(subtotal - finalDiscountTotal + finalTaxTotal)
 
-    const paidTotal = payments.reduce((sum: number, payment: any) => {
-      return sum + Number(payment.amount || 0)
-    }, 0)
+    // ======================================================
+    // تجهيز طرق الدفع قبل إنشاء الفاتورة
+    //
+    // نتحقق من كل المدفوعات أولًا حتى لا يتم إنشاء
+    // Sale Header ببيانات دفع غير صالحة.
+    // ======================================================
+    const preparedPayments: Array<{
+      method: string
+      amount: number
+      reference: string | null
+    }> = []
 
-    const changeTotal = Math.max(paidTotal - total, 0)
+    for (const payment of payments) {
+      const method = payment.method
+      const amount = Number(payment.amount)
+
+      if (typeof method !== 'string' || !allowedPaymentMethods.has(method)) {
+        throw new SalesApiError(
+          400,
+          `Unsupported payment method: ${String(method)}`,
+        )
+      }
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new SalesApiError(400, 'Payment amount must be greater than zero')
+      }
+
+      preparedPayments.push({
+        method,
+        amount: roundMoney(amount),
+        reference:
+          typeof payment.reference === 'string' && payment.reference.trim()
+            ? payment.reference.trim()
+            : null,
+      })
+    }
+
+    const paidTotal = roundMoney(
+      preparedPayments.reduce((sum, payment) => {
+        return sum + payment.amount
+      }, 0),
+    )
+
+    // النظام لا يحتوي حاليًا على مبيعات آجلة أو حسابات مدينة،
+    // لذلك لا نسمح بحفظ فاتورة ناقصة الدفع.
+    if (paidTotal < total) {
+      throw new SalesApiError(
+        400,
+        `Paid total is less than sale total. Sale total: ${total}, Paid total: ${paidTotal}`,
+      )
+    }
+
+    const changeTotal = roundMoney(Math.max(paidTotal - total, 0))
 
     const saleResult = await client.query(
       `
@@ -672,18 +767,8 @@ salesRouter.post('/api/sales', async (req, res, next) => {
 
     const createdPayments = []
 
-    for (const payment of payments) {
-      const method = payment.method
-      const amount = Number(payment.amount)
-
-      if (!method || typeof method !== 'string') {
-        throw new Error('Payment method is required')
-      }
-
-      if (!Number.isFinite(amount) || amount <= 0) {
-        throw new Error('Payment amount must be greater than zero')
-      }
-
+    // المدفوعات تم التحقق منها وحسابها قبل إنشاء الفاتورة.
+    for (const payment of preparedPayments) {
       const paymentResult = await client.query(
         `
         INSERT INTO payments (
@@ -696,7 +781,7 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         VALUES ($1, $2, $3, $4, $5)
         RETURNING *;
         `,
-        [companyId, sale.id, method, amount, payment.reference || null],
+        [companyId, sale.id, payment.method, payment.amount, payment.reference],
       )
 
       createdPayments.push(paymentResult.rows[0])
