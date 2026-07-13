@@ -190,6 +190,8 @@ function NewReturnPage({
   const [loadingSales, setLoadingSales] = useState(false)
   const [loadingSaleDetails, setLoadingSaleDetails] = useState(false)
   const [savingReturn, setSavingReturn] = useState(false)
+  // يتحكم في ظهور نافذة تأكيد حفظ المرتجع
+  const [showReturnConfirm, setShowReturnConfirm] = useState(false)
   const [error, setError] = useState('')
 
   const filteredSales = useMemo(() => {
@@ -427,6 +429,30 @@ function NewReturnPage({
       const originalSale = selectedSaleDetails.sale
       const selectedReason = reason.trim()
 
+      // ======================================================
+      // سبب المرتجع إجباري
+      //
+      // السبب مهم للمراجعة والتقارير ومعرفة سبب زيادة المخزون.
+      // ======================================================
+      if (!selectedReason) {
+        throw new Error('اكتب سبب المرتجع قبل الحفظ')
+      }
+
+      // ======================================================
+      // فتح نافذة التأكيد الاحترافية
+      //
+      // أول ضغطة على زر الحفظ تفتح الـ Popup فقط.
+      // عند الضغط على "تأكيد المرتجع" يتم استدعاء
+      // نفس الدالة مرة ثانية ويكمل الحفظ الفعلي.
+      // ======================================================
+      if (!showReturnConfirm) {
+        setShowReturnConfirm(true)
+        return
+      }
+
+      // إغلاق النافذة قبل إرسال الطلب إلى Backend
+      setShowReturnConfirm(false)
+
       const returnBody = {
         companyId: selectedCompanyId,
         branchId: originalSale.branch_id,
@@ -493,6 +519,28 @@ function NewReturnPage({
       setSavingReturn(false)
     }
   }
+
+  // ======================================================
+  // إغلاق نافذة التأكيد عند الضغط على Escape
+  // لتحسين تجربة الاستخدام.
+  // ======================================================
+  useEffect(() => {
+    if (!showReturnConfirm) {
+      return
+    }
+
+    function handleEscapeKey(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !savingReturn) {
+        setShowReturnConfirm(false)
+      }
+    }
+
+    document.addEventListener('keydown', handleEscapeKey)
+
+    return () => {
+      document.removeEventListener('keydown', handleEscapeKey)
+    }
+  }, [showReturnConfirm, savingReturn])
 
   return (
     <>
@@ -655,11 +703,12 @@ function NewReturnPage({
 
             <div className="form-grid">
               <label>
-                سبب المرتجع
+                سبب المرتجع *
                 <input
                   value={reason}
                   onChange={(event) => setReason(event.target.value)}
                   placeholder="مثال: تغيير مقاس أو عيب في الصنف"
+                  required
                 />
               </label>
 
@@ -804,6 +853,91 @@ function NewReturnPage({
             </div>
           </section>
         </>
+      ) : null}
+
+      {/* =====================================================
+    نافذة تأكيد المرتجع
+
+    تمنع الحفظ بالخطأ وتعرض ملخص العملية
+    قبل زيادة المخزون ورد المبلغ.
+===================================================== */}
+      {showReturnConfirm && selectedSaleDetails ? (
+        <div
+          className="return-modal-backdrop"
+          role="presentation"
+          onMouseDown={() => {
+            if (!savingReturn) {
+              setShowReturnConfirm(false)
+            }
+          }}
+        >
+          <section
+            className="return-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="return-confirm-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="return-modal-icon">↩</div>
+
+            <div className="return-modal-header">
+              <h2 id="return-confirm-title">تأكيد حفظ المرتجع</h2>
+
+              <p>راجع بيانات المرتجع قبل تنفيذ العملية وتعديل المخزون.</p>
+            </div>
+
+            <div className="return-modal-summary">
+              <div>
+                <span>رقم المرتجع</span>
+                <strong>{returnNumber}</strong>
+              </div>
+
+              <div>
+                <span>الفاتورة الأصلية</span>
+                <strong>{selectedSaleDetails.sale.sale_number}</strong>
+              </div>
+
+              <div>
+                <span>عدد الأصناف</span>
+                <strong>{selectedReturnItems.length}</strong>
+              </div>
+
+              <div>
+                <span>المبلغ المرتجع</span>
+                <strong>{refundTotal}</strong>
+              </div>
+
+              <div className="return-modal-full-row">
+                <span>سبب المرتجع</span>
+                <strong>{reason}</strong>
+              </div>
+            </div>
+
+            <div className="return-modal-warning">
+              سيتم زيادة المخزون وتسجيل المبلغ المرتجع بعد التأكيد.
+            </div>
+
+            <div className="return-modal-actions">
+              <button
+                type="button"
+                className="table-button danger-button"
+                disabled={savingReturn}
+                onClick={() => setShowReturnConfirm(false)}
+              >
+                إلغاء
+              </button>
+
+              <button
+                type="button"
+                className="primary-button"
+                disabled={savingReturn}
+                onClick={saveReturn}
+              >
+                {savingReturn ? 'جاري الحفظ...' : 'تأكيد المرتجع'}
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
     </>
   )
