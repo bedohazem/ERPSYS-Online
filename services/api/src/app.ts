@@ -9,6 +9,7 @@ import { authRouter } from './modules/auth/auth.routes'
 import {
   applyAuthenticatedTenant,
   requireAuth,
+  requireBusinessPermission,
 } from './modules/auth/auth.middleware'
 
 import { companiesRouter } from './modules/companies/companies.routes'
@@ -50,7 +51,13 @@ app.use(authRouter)
 // 2. يأخذ الشركة والفرع من Session الموثقة.
 // ======================================================
 
-app.use('/api', requireAuth, applyAuthenticatedTenant)
+// كل Business API تحتاج Login وصلاحية مناسبة.
+app.use(
+  '/api',
+  requireAuth,
+  applyAuthenticatedTenant,
+  requireBusinessPermission,
+)
 
 // ======================================================
 // Protected Business Routes

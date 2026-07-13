@@ -319,3 +319,86 @@ export function requirePermission(permissionCode: string) {
     }
   }
 }
+
+// ======================================================
+// requireBusinessPermission
+//
+// يربط كل مجموعة API بالصلاحية المناسبة.
+// أي API جديدة غير موجودة بالقائمة يتم رفضها تلقائيًا.
+// ======================================================
+export function requireBusinessPermission(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const path = req.originalUrl.split('?')[0]
+
+  const rules = [
+    {
+      prefix: '/api/demo',
+      read: 'dashboard.view',
+    },
+    {
+      prefix: '/api/companies',
+      read: 'dashboard.view',
+    },
+    {
+      prefix: '/api/branches',
+      read: 'dashboard.view',
+      write: 'users.manage',
+    },
+    {
+      prefix: '/api/catalog',
+      read: 'products.view',
+      write: 'products.manage',
+    },
+    {
+      prefix: '/api/customers',
+      read: 'customers.view',
+      write: 'customers.manage',
+    },
+    {
+      prefix: '/api/inventory',
+      read: 'inventory.view',
+      write: 'inventory.adjust',
+    },
+    {
+      prefix: '/api/sales',
+      read: 'sales.view',
+      write: 'sales.create',
+    },
+    {
+      prefix: '/api/returns',
+      read: 'returns.view',
+      write: 'returns.create',
+    },
+    {
+      prefix: '/api/reports',
+      read: 'reports.view',
+    },
+    {
+      // البحث عن صنف داخل POS جزء من إنشاء البيع.
+      prefix: '/api/pos',
+      read: 'sales.create',
+      write: 'sales.create',
+    },
+  ]
+
+  const rule = rules.find(
+    (currentRule) =>
+      path === currentRule.prefix || path.startsWith(`${currentRule.prefix}/`),
+  )
+
+  // سياسة آمنة: أي Business API غير مسجلة تُرفض.
+  if (!rule) {
+    return res.status(403).json({
+      error: 'Permission policy is missing for this API',
+    })
+  }
+
+  const isReadRequest = ['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+
+  const permissionCode = isReadRequest ? rule.read : rule.write || rule.read
+
+  return requirePermission(permissionCode)(req, res, next)
+}
