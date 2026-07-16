@@ -158,6 +158,72 @@ accessRouter.get('/api/permissions', async (_req, res, next) => {
 })
 
 // ======================================================
+// GET /api/users/options
+//
+// يرجع البيانات المطلوبة لإنشاء مستخدم جديد:
+// - الفروع النشطة التابعة للشركة الحالية.
+// - الأدوار التابعة للشركة أو الأدوار العامة.
+//
+// الحماية:
+// - users.manage مطلوبة من requireBusinessPermission.
+// - roles.manage مطلوبة لأن المستخدم سيمنح أدوارًا.
+// ======================================================
+accessRouter.get(
+  '/api/users/options',
+
+  requirePermission('roles.manage'),
+
+  async (_req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      // تحميل الفروع والأدوار بالتوازي.
+      const [branchesResult, rolesResult] = await Promise.all([
+        db.query(
+          `
+            SELECT
+              id,
+              code,
+              name
+            FROM branches
+            WHERE company_id = $1
+              AND is_active = TRUE
+            ORDER BY name;
+          `,
+          [auth.companyId],
+        ),
+
+        db.query(
+          `
+            SELECT
+              id,
+              name,
+              code,
+              is_system
+            FROM roles
+            WHERE company_id = $1
+               OR company_id IS NULL
+            ORDER BY
+              is_system DESC,
+              name;
+          `,
+          [auth.companyId],
+        ),
+      ])
+
+      res.json({
+        data: {
+          branches: branchesResult.rows,
+          roles: rolesResult.rows,
+        },
+      })
+    } catch (error) {
+      next(error)
+    }
+  },
+)
+
+// ======================================================
 // POST /api/users
 //
 // ينشئ مستخدمًا جديدًا داخل شركة المستخدم المسجل.

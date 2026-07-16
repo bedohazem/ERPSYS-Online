@@ -1,12 +1,10 @@
 import { useState } from 'react'
+import { useAuth } from '../auth/AuthContext'
+import { hasPermission } from '../auth/permissions'
 import { requestJson } from '../lib/http'
 
 // ======================================================
-// UserRow
-//
-// يمثل بيانات مستخدم واحد كما ترجع من Backend API.
-// الأدوار ترجع كمصفوفة أكواد مثل:
-// ['admin', 'cashier']
+// المستخدم كما يرجع من Backend API.
 // ======================================================
 type UserRow = {
   id: string
@@ -28,110 +26,384 @@ type UserRow = {
   updated_at: string
 }
 
+// ======================================================
+// فرع متاح عند إنشاء المستخدم.
+// ======================================================
+type BranchOption = {
+  id: string
+  code: string
+  name: string
+}
+
+// ======================================================
+// دور متاح عند إنشاء المستخدم.
+// ======================================================
+type RoleOption = {
+  id: string
+  name: string
+  code: string
+  is_system: boolean
+}
+
+type UserCreationOptions = {
+  branches: BranchOption[]
+  roles: RoleOption[]
+}
+
 type ApiResponse<T> = {
   data: T
 }
 
 function UsersPage() {
+  const { user } = useAuth()
+
+  // الصفحة نفسها تحتاج users.manage.
+  // الإنشاء يحتاج أيضًا roles.manage بسبب منح الأدوار.
+  const canCreateUser = hasPermission(user, 'roles.manage')
+
   const [users, setUsers] = useState<UserRow[]>([])
+  const [branches, setBranches] = useState<BranchOption[]>([])
+  const [roles, setRoles] = useState<RoleOption[]>([])
+
+  const [fullName, setFullName] = useState('')
+  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [branchId, setBranchId] = useState('')
+  const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([])
+
   const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+
   const [error, setError] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
 
   // ======================================================
-  // loadUsers
+  // تحميل المستخدمين وبيانات الإنشاء.
   //
-  // لا نرسل companyId من المتصفح.
-  // Backend يأخذ الشركة من Session الموثقة.
-  //
-  // هذا يمنع المستخدم من محاولة قراءة مستخدمي
-  // شركة أخرى عن طريق تعديل Query String.
+  // المستخدم الذي يملك users.manage فقط يستطيع العرض.
+  // بيانات الأدوار لا تُطلب إلا عند امتلاك roles.manage.
   // ======================================================
-  async function loadUsers() {
+  async function loadPageData() {
     setLoading(true)
     setError('')
+    setSuccessMessage('')
 
     try {
-      const response = await requestJson<ApiResponse<UserRow[]>>('/api/users')
+      const usersRequest = requestJson<ApiResponse<UserRow[]>>('/api/users')
 
-      setUsers(response.data)
+      if (canCreateUser) {
+        const [usersResponse, optionsResponse] = await Promise.all([
+          usersRequest,
+          requestJson<ApiResponse<UserCreationOptions>>('/api/users/options'),
+        ])
+
+        setUsers(usersResponse.data)
+        setBranches(optionsResponse.data.branches)
+        setRoles(optionsResponse.data.roles)
+      } else {
+        const usersResponse = await usersRequest
+
+        setUsers(usersResponse.data)
+        setBranches([])
+        setRoles([])
+      }
     } catch (currentError) {
       setError(
         currentError instanceof Error
           ? currentError.message
-          : 'حدث خطأ غير معروف أثناء تحميل المستخدمين',
+          : 'حدث خطأ أثناء تحميل بيانات المستخدمين',
       )
     } finally {
       setLoading(false)
     }
   }
 
+  // ======================================================
+  // تحديد أو إلغاء دور من المستخدم الجديد.
+  // ======================================================
+  function toggleRole(roleId: string) {
+    setSelectedRoleIds((currentRoleIds) =>
+      currentRoleIds.includes(roleId)
+        ? currentRoleIds.filter((currentRoleId) => currentRoleId !== roleId)
+        : [...currentRoleIds, roleId],
+    )
+  }
+
+  // ======================================================
+  // إنشاء مستخدم جديد.
+  //
+  // الشركة لا يتم إرسالها.
+  // Backend يأخذها من Session الموثقة.
+  // ======================================================
+  async function createUser(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    setError('')
+    setSuccessMessage('')
+
+    if (!fullName.trim()) {
+      setError('الاسم الكامل مطلوب')
+      return
+    }
+
+    if (!username.trim()) {
+      setError('اسم المستخدم مطلوب')
+      return
+    }
+
+    if (password.length < 8) {
+      setError('كلمة المرور يجب ألا تقل عن 8 حروف')
+      return
+    }
+
+    if (selectedRoleIds.length === 0) {
+      setError('يجب اختيار دور واحد على الأقل')
+      return
+    }
+
+    setSaving(true)
+
+    try {
+      const response = await requestJson<ApiResponse<UserRow>>('/api/users', {
+        method: 'POST',
+
+        headers: {
+          'Content-Type': 'application/json',
+        },
+
+        body: JSON.stringify({
+          fullName: fullName.trim(),
+          username: username.trim(),
+          email: email.trim() || null,
+          password,
+          branchId: branchId || null,
+          roleIds: selectedRoleIds,
+        }),
+      })
+
+      // إضافة المستخدم الجديد مباشرة داخل الجدول.
+      setUsers((currentUsers) =>
+        [...currentUsers, response.data].sort((firstUser, secondUser) =>
+          firstUser.full_name.localeCompare(secondUser.full_name, 'ar'),
+        ),
+      )
+
+      // تنظيف الفورم بعد الحفظ الناجح.
+      setFullName('')
+      setUsername('')
+      setEmail('')
+      setPassword('')
+      setBranchId('')
+      setSelectedRoleIds([])
+
+      setSuccessMessage(`تم إنشاء المستخدم ${response.data.full_name} بنجاح`)
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'حدث خطأ أثناء إنشاء المستخدم',
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <section className="panel">
-      <div className="section-header">
-        <div>
-          <h2>إدارة المستخدمين</h2>
+    <>
+      <section className="panel">
+        <div className="section-header">
+          <div>
+            <h2>إدارة المستخدمين</h2>
 
-          <p className="muted">
-            عرض مستخدمي الشركة والفروع والأدوار المرتبطة بكل مستخدم.
-          </p>
+            <p className="muted">
+              عرض مستخدمي الشركة وإنشاء مستخدمين جدد بأدوار وفروع محددة.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            className="primary-button small-button"
+            disabled={loading || saving}
+            onClick={loadPageData}
+          >
+            {loading ? 'جاري التحميل...' : 'تحميل بيانات المستخدمين'}
+          </button>
         </div>
 
-        <button
-          type="button"
-          className="primary-button small-button"
-          disabled={loading}
-          onClick={loadUsers}
-        >
-          {loading ? 'جاري التحميل...' : 'تحميل المستخدمين'}
-        </button>
-      </div>
+        {error ? <p className="error-message">{error}</p> : null}
 
-      {error ? <p className="error-message">{error}</p> : null}
+        {successMessage ? (
+          <p className="success-message">{successMessage}</p>
+        ) : null}
+      </section>
 
-      {users.length === 0 ? (
-        <p className="muted">لا توجد بيانات مستخدمين معروضة حتى الآن.</p>
-      ) : (
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>الاسم</th>
-                <th>اسم المستخدم</th>
-                <th>البريد الإلكتروني</th>
-                <th>الفرع</th>
-                <th>كود الفرع</th>
-                <th>الأدوار</th>
-                <th>الحالة</th>
-              </tr>
-            </thead>
+      {canCreateUser ? (
+        <section className="panel">
+          <div className="section-header">
+            <div>
+              <h2>مستخدم جديد</h2>
 
-            <tbody>
-              {users.map((currentUser) => (
-                <tr key={currentUser.id}>
-                  <td>{currentUser.full_name}</td>
+              <p className="muted">
+                حمّل بيانات المستخدمين أولًا حتى تظهر الفروع والأدوار.
+              </p>
+            </div>
+          </div>
 
-                  <td>{currentUser.username}</td>
+          <form onSubmit={createUser}>
+            <div className="form-grid">
+              <label>
+                الاسم الكامل
+                <input
+                  value={fullName}
+                  maxLength={150}
+                  disabled={saving}
+                  onChange={(event) => setFullName(event.target.value)}
+                  placeholder="مثال: أحمد محمد"
+                />
+              </label>
 
-                  <td>{currentUser.email || '-'}</td>
+              <label>
+                اسم المستخدم
+                <input
+                  value={username}
+                  maxLength={50}
+                  disabled={saving}
+                  onChange={(event) =>
+                    setUsername(event.target.value.toLowerCase())
+                  }
+                  placeholder="مثال: ahmed"
+                />
+              </label>
 
-                  <td>{currentUser.branch_name || 'كل الفروع'}</td>
+              <label>
+                البريد الإلكتروني
+                <input
+                  type="email"
+                  value={email}
+                  disabled={saving}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="اختياري"
+                />
+              </label>
 
-                  <td>{currentUser.branch_code || '-'}</td>
+              <label>
+                كلمة المرور
+                <input
+                  type="password"
+                  value={password}
+                  minLength={8}
+                  maxLength={128}
+                  disabled={saving}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="8 حروف على الأقل"
+                />
+              </label>
 
-                  <td>
-                    {currentUser.roles.length > 0
-                      ? currentUser.roles.join(', ')
-                      : 'بدون دور'}
-                  </td>
+              <label>
+                الفرع
+                <select
+                  value={branchId}
+                  disabled={saving}
+                  onChange={(event) => setBranchId(event.target.value)}
+                >
+                  <option value="">كل الفروع / مستوى الشركة</option>
 
-                  <td>{currentUser.is_active ? 'نشط' : 'غير نشط'}</td>
-                </tr>
+                  {branches.map((branch) => (
+                    <option key={branch.id} value={branch.id}>
+                      {branch.name} ({branch.code})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="section-header">
+              <div>
+                <h3>الأدوار</h3>
+
+                <p className="muted">اختر دورًا واحدًا على الأقل.</p>
+              </div>
+            </div>
+
+            <div className="form-grid">
+              {roles.map((role) => (
+                <label key={role.id}>
+                  <input
+                    type="checkbox"
+                    checked={selectedRoleIds.includes(role.id)}
+                    disabled={saving}
+                    onChange={() => toggleRole(role.id)}
+                  />
+                  {role.name} ({role.code})
+                </label>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </div>
+
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={
+                saving || roles.length === 0 || selectedRoleIds.length === 0
+              }
+            >
+              {saving ? 'جاري إنشاء المستخدم...' : 'إنشاء المستخدم'}
+            </button>
+          </form>
+        </section>
+      ) : (
+        <section className="panel">
+          <p className="muted">
+            لديك صلاحية عرض المستخدمين، لكن إنشاء مستخدم ومنح الأدوار يحتاج
+            صلاحية roles.manage.
+          </p>
+        </section>
       )}
-    </section>
+
+      <section className="panel">
+        <h2>المستخدمون</h2>
+
+        {users.length === 0 ? (
+          <p className="muted">لا توجد بيانات مستخدمين معروضة حتى الآن.</p>
+        ) : (
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>الاسم</th>
+                  <th>اسم المستخدم</th>
+                  <th>البريد الإلكتروني</th>
+                  <th>الفرع</th>
+                  <th>كود الفرع</th>
+                  <th>الأدوار</th>
+                  <th>الحالة</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {users.map((currentUser) => (
+                  <tr key={currentUser.id}>
+                    <td>{currentUser.full_name}</td>
+                    <td>{currentUser.username}</td>
+                    <td>{currentUser.email || '-'}</td>
+                    <td>{currentUser.branch_name || 'كل الفروع'}</td>
+                    <td>{currentUser.branch_code || '-'}</td>
+
+                    <td>
+                      {currentUser.roles.length > 0
+                        ? currentUser.roles.join(', ')
+                        : 'بدون دور'}
+                    </td>
+
+                    <td>{currentUser.is_active ? 'نشط' : 'غير نشط'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </>
   )
 }
 
