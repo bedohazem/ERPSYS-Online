@@ -21,6 +21,8 @@ import { posRouter } from './modules/pos/pos.routes'
 import { customersRouter } from './modules/customers/customers.routes'
 import { returnsRouter } from './modules/returns/returns.routes'
 import { reportsRouter } from './modules/reports/reports.routes'
+// إدارة المستخدمين والأدوار والصلاحيات.
+import { accessRouter } from './modules/access/access.routes'
 
 export const app = express()
 
@@ -73,7 +75,7 @@ app.use(posRouter)
 app.use(customersRouter)
 app.use(returnsRouter)
 app.use(reportsRouter)
-
+app.use(accessRouter)
 // ======================================================
 // 404 Handler
 // ======================================================

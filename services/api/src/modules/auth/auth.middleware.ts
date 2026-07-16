@@ -377,6 +377,24 @@ export function requireBusinessPermission(
       read: 'reports.view',
     },
     {
+      // عرض وإدارة مستخدمي الشركة.
+      prefix: '/api/users',
+      read: 'users.manage',
+      write: 'users.manage',
+    },
+    {
+      // عرض وإدارة الأدوار.
+      prefix: '/api/roles',
+      read: 'roles.manage',
+      write: 'roles.manage',
+    },
+    {
+      // كتالوج الصلاحيات يتحكم فيه مدير الأدوار.
+      prefix: '/api/permissions',
+      read: 'roles.manage',
+      write: 'roles.manage',
+    },
+    {
       // البحث عن صنف داخل POS جزء من إنشاء البيع.
       prefix: '/api/pos',
       read: 'sales.create',
