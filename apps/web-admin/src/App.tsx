@@ -10,6 +10,8 @@ import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
 // شاشة إدارة مستخدمي الشركة.
 import UsersPage from './pages/UsersPage'
+// شاشة عرض الأدوار والصلاحيات.
+import RolesPage from './pages/RolesPage'
 
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from './lib/http'
@@ -22,6 +24,7 @@ type PageName =
   | 'returns'
   | 'inventory'
   | 'users'
+  | 'roles'
   | 'new-sale'
   | 'new-return'
 
@@ -66,6 +69,12 @@ const pageDefinitions: Array<{
     name: 'users',
     label: 'Users',
     permission: 'users.manage',
+  },
+  {
+    // الصفحة تظهر فقط لمن يملك إدارة الأدوار.
+    name: 'roles',
+    label: 'Roles',
+    permission: 'roles.manage',
   },
   {
     name: 'new-sale',
@@ -462,6 +471,8 @@ function App() {
       ) : null}
 
       {activePage === 'users' ? <UsersPage /> : null}
+
+      {activePage === 'roles' ? <RolesPage /> : null}
 
       {activePage === 'new-sale' ? (
         <NewSalePage companyId={companyId} branchId={branchId} />
