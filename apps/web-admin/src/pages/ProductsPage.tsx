@@ -80,9 +80,10 @@ function ProductsPage({ companyId }: ProductsPageProps) {
         `${API_BASE_URL}/api/catalog/variants` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
+      // تشغيل الطلبين بالتوازي لتسريع تحميل الصفحة.
       const [productsResponse, variantsResponse] = await Promise.all([
-        await requestJson<ApiResponse<Product[]>>(productsUrl),
-        await requestJson<ApiResponse<Variant[]>>(variantsUrl),
+        requestJson<ApiResponse<Product[]>>(productsUrl),
+        requestJson<ApiResponse<Variant[]>>(variantsUrl),
       ])
 
       setProducts(productsResponse.data)

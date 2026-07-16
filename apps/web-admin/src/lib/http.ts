@@ -141,7 +141,21 @@ export async function requestJson<T>(
   path: string,
   options?: RequestInit,
 ): Promise<T> {
-  const response = await window.fetch(`${API_BASE_URL}${path}`, options)
+  // ======================================================
+  // دعم المسار النسبي والرابط الكامل
+  //
+  // أمثلة صالحة:
+  // /api/products
+  // http://localhost:3000/api/products
+  //
+  // هذا يمنع تكرار API_BASE_URL لو الصفحة أرسلت
+  // رابطًا كاملًا أثناء مرحلة نقل الكود للـ Shared Client.
+  // ======================================================
+  const requestUrl = /^https?:\/\//i.test(path)
+    ? path
+    : `${API_BASE_URL}${path}`
+
+  const response = await window.fetch(requestUrl, options)
 
   const responseText = await response.text()
 
