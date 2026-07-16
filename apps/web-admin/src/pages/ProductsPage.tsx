@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission } from '../auth/permissions'
-import { API_BASE_URL, requestJson } from '../lib/http'
+// requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
+import { requestJson } from '../lib/http'
 
 type Product = {
   id: string
@@ -73,11 +74,11 @@ function ProductsPage({ companyId }: ProductsPageProps) {
       const selectedCompanyId = companyId.trim()
 
       const productsUrl =
-        `${API_BASE_URL}/api/catalog/products` +
+        `/api/catalog/products` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const variantsUrl =
-        `${API_BASE_URL}/api/catalog/variants` +
+        `/api/catalog/variants` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       // تشغيل الطلبين بالتوازي لتسريع تحميل الصفحة.

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { API_BASE_URL, requestJson } from '../lib/http'
+// requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
+import { requestJson } from '../lib/http'
 
 type Sale = {
   id: string
@@ -252,7 +253,7 @@ function NewReturnPage({
       }
 
       const salesUrl =
-        `${API_BASE_URL}/api/sales` +
+        `/api/sales` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
         (selectedBranchId
           ? `&branchId=${encodeURIComponent(selectedBranchId)}`
@@ -288,7 +289,7 @@ function NewReturnPage({
       }
 
       const saleDetailsUrl =
-        `${API_BASE_URL}/api/sales/${encodeURIComponent(saleId)}` +
+        `/api/sales/${encodeURIComponent(saleId)}` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const saleDetailsResponse =
@@ -489,7 +490,7 @@ function NewReturnPage({
       }
 
       const returnResponse = await requestJson<ApiResponse<CreatedReturn>>(
-        `${API_BASE_URL}/api/returns`,
+        `/api/returns`,
         {
           method: 'POST',
           headers: {

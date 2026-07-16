@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { API_BASE_URL, requestJson } from '../lib/http'
+// requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
+import { requestJson } from '../lib/http'
 
 type LookupItem = {
   id?: string
@@ -128,12 +129,13 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       }
 
       const lookupUrl =
-        `${API_BASE_URL}/api/pos/lookup-item` +
+        `/api/pos/lookup-item` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
         `&stockLocationId=${encodeURIComponent(selectedStockLocationId)}` +
         `&code=${encodeURIComponent(selectedCode)}`
 
-      const lookupResponse = await requestJson<ApiResponse<LookupItem>>(lookupUrl)
+      const lookupResponse =
+        await requestJson<ApiResponse<LookupItem>>(lookupUrl)
       const lookupItem = lookupResponse.data
 
       const variantId = lookupItem.variant_id || lookupItem.id
@@ -232,7 +234,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       }
 
       const customersUrl =
-        `${API_BASE_URL}/api/customers` +
+        `/api/customers` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
         (query ? `&q=${encodeURIComponent(query)}` : '')
 
@@ -333,7 +335,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       }
 
       const saleResponse = await requestJson<ApiResponse<SaleResponse>>(
-        `${API_BASE_URL}/api/sales`,
+        `/api/sales`,
         {
           method: 'POST',
           headers: {

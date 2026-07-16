@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { API_BASE_URL, requestJson } from '../lib/http'
+// requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
+import { requestJson } from '../lib/http'
 
 type StockBalance = {
   id: string
@@ -80,11 +81,11 @@ function InventoryPage({ companyId }: InventoryPageProps) {
       const selectedCompanyId = companyId.trim()
 
       const balancesUrl =
-        `${API_BASE_URL}/api/inventory/stock-balances` +
+        `/api/inventory/stock-balances` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const movementsUrl =
-        `${API_BASE_URL}/api/inventory/stock-movements` +
+        `/api/inventory/stock-movements` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
         '&limit=50'
 

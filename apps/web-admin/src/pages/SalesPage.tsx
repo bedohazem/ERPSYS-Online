@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { API_BASE_URL, requestJson } from '../lib/http'
+// requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
+import { requestJson } from '../lib/http'
 
 type Sale = {
   id: string
@@ -86,10 +87,6 @@ type SalesPageProps = {
 
 function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
   const { user } = useAuth()
-  const canCreateSale =
-    user?.roles.includes('admin') ||
-    user?.permissions.includes('sales.create') ||
-    false
   const canCreateReturn =
     user?.roles.includes('admin') ||
     user?.permissions.includes('returns.create') ||
@@ -122,7 +119,7 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
       const selectedBranchId = branchId.trim()
 
       const salesUrl =
-        `${API_BASE_URL}/api/sales` +
+        `/api/sales` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
         (selectedBranchId
           ? `&branchId=${encodeURIComponent(selectedBranchId)}`
@@ -160,7 +157,7 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
       const selectedCompanyId = companyId.trim()
 
       const saleDetailsUrl =
-        `${API_BASE_URL}/api/sales/${encodeURIComponent(saleId)}` +
+        `/api/sales/${encodeURIComponent(saleId)}` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const saleDetailsResponse =

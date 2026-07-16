@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission } from '../auth/permissions'
-import { API_BASE_URL, requestJson } from '../lib/http'
+// requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
+import { requestJson } from '../lib/http'
 
 type ReturnDocument = {
   id: string
@@ -103,7 +104,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
       const selectedBranchId = branchId.trim()
 
       const returnsUrl =
-        `${API_BASE_URL}/api/returns` +
+        `/api/returns` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
         (selectedBranchId
           ? `&branchId=${encodeURIComponent(selectedBranchId)}`
@@ -142,7 +143,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
       const selectedCompanyId = companyId.trim()
 
       const returnDetailsUrl =
-        `${API_BASE_URL}/api/returns/${encodeURIComponent(returnId)}` +
+        `/api/returns/${encodeURIComponent(returnId)}` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const returnDetailsResponse =

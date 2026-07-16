@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { API_BASE_URL, requestJson } from '../lib/http'
+// requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
+import { requestJson } from '../lib/http'
 
 type Customer = {
   id: string
@@ -84,7 +85,7 @@ function CustomersPage({ companyId }: CustomersPageProps) {
       const query = searchText.trim()
 
       const customersUrl =
-        `${API_BASE_URL}/api/customers` +
+        `/api/customers` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
         (query ? `&q=${encodeURIComponent(query)}` : '')
 
@@ -121,7 +122,7 @@ function CustomersPage({ companyId }: CustomersPageProps) {
       const selectedCompanyId = companyId.trim()
 
       const activityUrl =
-        `${API_BASE_URL}/api/customers/${encodeURIComponent(customerId)}` +
+        `/api/customers/${encodeURIComponent(customerId)}` +
         `/activity?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const activityResponse =

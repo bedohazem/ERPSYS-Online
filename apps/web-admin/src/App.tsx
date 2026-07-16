@@ -9,7 +9,8 @@ import InventoryPage from './pages/InventoryPage'
 import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
 
-import { API_BASE_URL, requestJson } from './lib/http'
+// requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
+import { requestJson } from './lib/http'
 
 type PageName =
   | 'dashboard'
@@ -193,7 +194,7 @@ function App() {
       const selectedBranchId = branchId.trim()
 
       const dailySummaryUrl =
-        `${API_BASE_URL}/api/reports/daily-summary` +
+        `/api/reports/daily-summary` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
         `&date=${encodeURIComponent(date)}` +
         (selectedBranchId
@@ -201,7 +202,7 @@ function App() {
           : '')
 
       const stockMovementsUrl =
-        `${API_BASE_URL}/api/inventory/stock-movements` +
+        `/api/inventory/stock-movements` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
         '&limit=10'
 
