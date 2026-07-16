@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-
-const API_BASE_URL = 'http://localhost:3000'
+import { API_BASE_URL, requestJson } from '../lib/http'
 
 type Sale = {
   id: string
@@ -85,24 +84,6 @@ type SalesPageProps = {
   onCreateReturn: (saleId: string) => void
 }
 
-// ======================================================
-// fetchJson
-// دالة قراءة من الـ Backend API
-//
-// لو الـ API رجع Error
-// بنعرضه للمستخدم بدل ما الشاشة تقع
-// ======================================================
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url)
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data?.error || 'Request failed')
-  }
-
-  return data as T
-}
-
 function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
   const { user } = useAuth()
   const canCreateSale =
@@ -147,7 +128,7 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
           ? `&branchId=${encodeURIComponent(selectedBranchId)}`
           : '')
 
-      const salesResponse = await fetchJson<ApiResponse<Sale[]>>(salesUrl)
+      const salesResponse = await requestJson<ApiResponse<Sale[]>>(salesUrl)
 
       setSales(salesResponse.data)
       setSelectedSaleDetails(null)
@@ -183,7 +164,7 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const saleDetailsResponse =
-        await fetchJson<ApiResponse<SaleDetails>>(saleDetailsUrl)
+        await requestJson<ApiResponse<SaleDetails>>(saleDetailsUrl)
 
       setSelectedSaleDetails(saleDetailsResponse.data)
     } catch (currentError) {

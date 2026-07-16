@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-
-const API_BASE_URL = 'http://localhost:3000'
+import { API_BASE_URL, requestJson } from '../lib/http'
 
 type StockBalance = {
   id: string
@@ -53,21 +52,6 @@ type InventoryPageProps = {
   companyId: string
 }
 
-// ======================================================
-// fetchJson
-// دالة قراءة من الـ Backend API
-// ======================================================
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url)
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data?.error || 'Request failed')
-  }
-
-  return data as T
-}
-
 function InventoryPage({ companyId }: InventoryPageProps) {
   const [stockBalances, setStockBalances] = useState<StockBalance[]>([])
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([])
@@ -105,8 +89,8 @@ function InventoryPage({ companyId }: InventoryPageProps) {
         '&limit=50'
 
       const [balancesResponse, movementsResponse] = await Promise.all([
-        fetchJson<ApiResponse<StockBalance[]>>(balancesUrl),
-        fetchJson<ApiResponse<StockMovement[]>>(movementsUrl),
+        requestJson<ApiResponse<StockBalance[]>>(balancesUrl),
+        requestJson<ApiResponse<StockMovement[]>>(movementsUrl),
       ])
 
       setStockBalances(balancesResponse.data)

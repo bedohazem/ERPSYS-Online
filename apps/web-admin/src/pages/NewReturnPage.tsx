@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-
-const API_BASE_URL = 'http://localhost:3000'
+import { API_BASE_URL, requestJson } from '../lib/http'
 
 type Sale = {
   id: string
@@ -115,17 +114,6 @@ type NewReturnPageProps = {
   // يتم استدعاؤها بعد استلام رقم الفاتورة
   // حتى لا يعاد فتح نفس الفاتورة مرة ثانية
   onInitialSaleHandled: () => void
-}
-
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options)
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data?.error || 'Request failed')
-  }
-
-  return data as T
 }
 
 function createReturnNumber() {
@@ -271,7 +259,7 @@ function NewReturnPage({
           : '') +
         '&limit=100'
 
-      const salesResponse = await fetchJson<ApiResponse<Sale[]>>(salesUrl)
+      const salesResponse = await requestJson<ApiResponse<Sale[]>>(salesUrl)
 
       setSales(salesResponse.data)
       setSelectedSaleDetails(null)
@@ -304,7 +292,7 @@ function NewReturnPage({
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const saleDetailsResponse =
-        await fetchJson<ApiResponse<SaleDetails>>(saleDetailsUrl)
+        await requestJson<ApiResponse<SaleDetails>>(saleDetailsUrl)
 
       setSelectedSaleDetails(saleDetailsResponse.data)
       setReturnQuantities({})
@@ -500,7 +488,7 @@ function NewReturnPage({
         ],
       }
 
-      const returnResponse = await fetchJson<ApiResponse<CreatedReturn>>(
+      const returnResponse = await requestJson<ApiResponse<CreatedReturn>>(
         `${API_BASE_URL}/api/returns`,
         {
           method: 'POST',

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission } from '../auth/permissions'
-const API_BASE_URL = 'http://localhost:3000'
+import { API_BASE_URL, requestJson } from '../lib/http'
 
 type ReturnDocument = {
   id: string
@@ -71,24 +71,6 @@ type ReturnsPageProps = {
   branchId: string
 }
 
-// ======================================================
-// fetchJson
-// دالة قراءة من الـ Backend API
-//
-// لو الـ API رجع Error
-// بنعرضه في الشاشة
-// ======================================================
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url)
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data?.error || 'Request failed')
-  }
-
-  return data as T
-}
-
 function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
   const [returns, setReturns] = useState<ReturnDocument[]>([])
   const [selectedReturnDetails, setSelectedReturnDetails] =
@@ -128,7 +110,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
           : '')
 
       const returnsResponse =
-        await fetchJson<ApiResponse<ReturnDocument[]>>(returnsUrl)
+        await requestJson<ApiResponse<ReturnDocument[]>>(returnsUrl)
 
       setReturns(returnsResponse.data)
       setSelectedReturnDetails(null)
@@ -164,7 +146,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const returnDetailsResponse =
-        await fetchJson<ApiResponse<ReturnDetails>>(returnDetailsUrl)
+        await requestJson<ApiResponse<ReturnDetails>>(returnDetailsUrl)
 
       setSelectedReturnDetails(returnDetailsResponse.data)
     } catch (currentError) {

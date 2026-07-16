@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-
-const API_BASE_URL = 'http://localhost:3000'
+import { API_BASE_URL, requestJson } from '../lib/http'
 
 type LookupItem = {
   id?: string
@@ -53,21 +52,6 @@ type ApiResponse<T> = {
 type NewSalePageProps = {
   companyId: string
   branchId: string
-}
-
-// ======================================================
-// fetchJson
-// دالة قراءة/إرسال للـ Backend API
-// ======================================================
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options)
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data?.error || 'Request failed')
-  }
-
-  return data as T
 }
 
 function createSaleNumber() {
@@ -149,7 +133,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
         `&stockLocationId=${encodeURIComponent(selectedStockLocationId)}` +
         `&code=${encodeURIComponent(selectedCode)}`
 
-      const lookupResponse = await fetchJson<ApiResponse<LookupItem>>(lookupUrl)
+      const lookupResponse = await requestJson<ApiResponse<LookupItem>>(lookupUrl)
       const lookupItem = lookupResponse.data
 
       const variantId = lookupItem.variant_id || lookupItem.id
@@ -253,7 +237,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
         (query ? `&q=${encodeURIComponent(query)}` : '')
 
       const customersResponse =
-        await fetchJson<ApiResponse<Customer[]>>(customersUrl)
+        await requestJson<ApiResponse<Customer[]>>(customersUrl)
 
       setCustomers(customersResponse.data)
     } catch (currentError) {
@@ -348,7 +332,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
         ],
       }
 
-      const saleResponse = await fetchJson<ApiResponse<SaleResponse>>(
+      const saleResponse = await requestJson<ApiResponse<SaleResponse>>(
         `${API_BASE_URL}/api/sales`,
         {
           method: 'POST',

@@ -9,7 +9,7 @@ import InventoryPage from './pages/InventoryPage'
 import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
 
-const API_BASE_URL = 'http://localhost:3000'
+import { API_BASE_URL, requestJson } from './lib/http'
 
 type PageName =
   | 'dashboard'
@@ -103,23 +103,6 @@ type StockMovement = {
 
 type ApiResponse<T> = {
   data: T
-}
-
-// ======================================================
-// fetchJson
-// دالة صغيرة مسؤولة عن قراءة البيانات من الـ Backend API
-//
-// لو الـ API رجع error، نعرض الرسالة في الشاشة بدل ما التطبيق يقع
-// ======================================================
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url)
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data?.error || 'Request failed')
-  }
-
-  return data as T
 }
 
 // ======================================================
@@ -223,8 +206,8 @@ function App() {
         '&limit=10'
 
       const [dailySummaryResponse, stockMovementsResponse] = await Promise.all([
-        fetchJson<ApiResponse<DailySummary>>(dailySummaryUrl),
-        fetchJson<ApiResponse<StockMovement[]>>(stockMovementsUrl),
+        requestJson<ApiResponse<DailySummary>>(dailySummaryUrl),
+        requestJson<ApiResponse<StockMovement[]>>(stockMovementsUrl),
       ])
 
       setDailySummary(dailySummaryResponse.data)

@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission } from '../auth/permissions'
+import { API_BASE_URL, requestJson } from '../lib/http'
 
 type Product = {
   id: string
@@ -41,26 +43,6 @@ type ApiResponse<T> = {
   data: T
 }
 
-const API_BASE_URL = 'http://localhost:3000'
-
-// ======================================================
-// fetchJson
-// نفس فكرة الدالة الموجودة في App
-// هنا بنستخدمها داخل صفحة المنتجات فقط
-// ======================================================
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url)
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data?.error || 'Request failed')
-  }
-
-  return data as T
-}
-
-import { useState } from 'react'
-
 function ProductsPage({ companyId }: ProductsPageProps) {
   const [products, setProducts] = useState<Product[]>([])
   const [variants, setVariants] = useState<Variant[]>([])
@@ -99,8 +81,8 @@ function ProductsPage({ companyId }: ProductsPageProps) {
         `?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const [productsResponse, variantsResponse] = await Promise.all([
-        fetchJson<ApiResponse<Product[]>>(productsUrl),
-        fetchJson<ApiResponse<Variant[]>>(variantsUrl),
+        await requestJson<ApiResponse<Product[]>>(productsUrl),
+        await requestJson<ApiResponse<Variant[]>>(variantsUrl),
       ])
 
       setProducts(productsResponse.data)

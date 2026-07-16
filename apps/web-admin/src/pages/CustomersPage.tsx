@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-
-const API_BASE_URL = 'http://localhost:3000'
+import { API_BASE_URL, requestJson } from '../lib/http'
 
 type Customer = {
   id: string
@@ -49,24 +48,6 @@ type CustomersPageProps = {
   companyId: string
 }
 
-// ======================================================
-// fetchJson
-// دالة قراءة عامة من الـ API
-//
-// لو الـ API رجع error
-// بنرمي Error عشان نعرضه في الشاشة
-// ======================================================
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url)
-  const data = await response.json()
-
-  if (!response.ok) {
-    throw new Error(data?.error || 'Request failed')
-  }
-
-  return data as T
-}
-
 function CustomersPage({ companyId }: CustomersPageProps) {
   const [searchText, setSearchText] = useState('')
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -108,7 +89,7 @@ function CustomersPage({ companyId }: CustomersPageProps) {
         (query ? `&q=${encodeURIComponent(query)}` : '')
 
       const customersResponse =
-        await fetchJson<ApiResponse<Customer[]>>(customersUrl)
+        await requestJson<ApiResponse<Customer[]>>(customersUrl)
 
       setCustomers(customersResponse.data)
     } catch (currentError) {
@@ -144,7 +125,7 @@ function CustomersPage({ companyId }: CustomersPageProps) {
         `/activity?companyId=${encodeURIComponent(selectedCompanyId)}`
 
       const activityResponse =
-        await fetchJson<ApiResponse<CustomerActivityResponse>>(activityUrl)
+        await requestJson<ApiResponse<CustomerActivityResponse>>(activityUrl)
 
       setSelectedCustomerActivity(activityResponse.data)
     } catch (currentError) {
