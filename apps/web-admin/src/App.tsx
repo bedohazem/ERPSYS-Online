@@ -8,6 +8,8 @@ import ReturnsPage from './pages/ReturnsPage'
 import InventoryPage from './pages/InventoryPage'
 import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
+// شاشة إدارة مستخدمي الشركة.
+import UsersPage from './pages/UsersPage'
 
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from './lib/http'
@@ -19,6 +21,7 @@ type PageName =
   | 'sales'
   | 'returns'
   | 'inventory'
+  | 'users'
   | 'new-sale'
   | 'new-return'
 
@@ -57,6 +60,12 @@ const pageDefinitions: Array<{
     name: 'inventory',
     label: 'Inventory',
     permission: 'inventory.view',
+  },
+  {
+    // الصفحة تظهر فقط لمن يملك إدارة المستخدمين.
+    name: 'users',
+    label: 'Users',
+    permission: 'users.manage',
   },
   {
     name: 'new-sale',
@@ -451,6 +460,8 @@ function App() {
       {activePage === 'inventory' ? (
         <InventoryPage companyId={companyId} />
       ) : null}
+
+      {activePage === 'users' ? <UsersPage /> : null}
 
       {activePage === 'new-sale' ? (
         <NewSalePage companyId={companyId} branchId={branchId} />
