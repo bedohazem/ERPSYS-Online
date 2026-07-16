@@ -657,3 +657,249 @@ accessRouter.post(
     }
   },
 )
+
+// ======================================================
+// PATCH /api/users/:userId/status
+//
+// تفعيل أو تعطيل مستخدم تابع للشركة الحالية.
+//
+// Body:
+// {
+//   isActive: boolean
+// }
+//
+// الحماية:
+// - لا يمكن تعديل مستخدم تابع لشركة أخرى.
+// - لا يمكن للمستخدم تعطيل حسابه الحالي.
+// - لا يمكن تعطيل آخر Admin نشط داخل الشركة.
+// - يتم تسجيل العملية داخل Audit Log.
+// ======================================================
+accessRouter.patch(
+  '/api/users/:userId/status',
+
+  async (req, res, next) => {
+    const client = await db.connect()
+
+    try {
+      const auth = getAuthContext(res)
+      const userId = req.params.userId
+      const { isActive } = req.body
+
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({
+          error: 'userId is invalid',
+        })
+      }
+
+      if (typeof isActive !== 'boolean') {
+        return res.status(400).json({
+          error: 'isActive must be a boolean',
+        })
+      }
+
+      // لا نسمح للمستخدم بتعطيل الجلسة التي يعمل بها.
+      if (userId === auth.userId && !isActive) {
+        return res.status(400).json({
+          error: 'You cannot deactivate your current account',
+        })
+      }
+
+      await client.query('BEGIN')
+
+      // ==================================================
+      // قراءة المستخدم وقفل صفه حتى نهاية الـ Transaction.
+      // ==================================================
+      const targetUserResult = await client.query(
+        `
+          SELECT
+            users.id,
+            users.full_name,
+            users.username,
+            users.is_active,
+
+            EXISTS (
+              SELECT 1
+              FROM user_roles
+              JOIN roles
+                ON roles.id = user_roles.role_id
+              WHERE user_roles.user_id = users.id
+                AND roles.code = 'admin'
+            ) AS is_admin
+
+          FROM users
+
+          WHERE users.id = $1
+            AND users.company_id = $2
+
+          FOR UPDATE;
+        `,
+        [userId, auth.companyId],
+      )
+
+      if ((targetUserResult.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK')
+
+        return res.status(404).json({
+          error: 'User not found',
+        })
+      }
+
+      const targetUser = targetUserResult.rows[0]
+
+      // ==================================================
+      // منع تعطيل آخر Admin نشط.
+      //
+      // نقفل كل حسابات Admin النشطة لمنع طلبين متزامنين
+      // من تعطيل آخر مديرين في نفس اللحظة.
+      // ==================================================
+      if (!isActive && targetUser.is_active && targetUser.is_admin) {
+        const activeAdminsResult = await client.query(
+          `
+            SELECT users.id
+
+            FROM users
+
+            WHERE users.company_id = $1
+              AND users.is_active = TRUE
+
+              AND EXISTS (
+                SELECT 1
+                FROM user_roles
+                JOIN roles
+                  ON roles.id = user_roles.role_id
+                WHERE user_roles.user_id = users.id
+                  AND roles.code = 'admin'
+              )
+
+            ORDER BY users.id
+
+            FOR UPDATE OF users;
+          `,
+          [auth.companyId],
+        )
+
+        if ((activeAdminsResult.rowCount ?? 0) <= 1) {
+          await client.query('ROLLBACK')
+
+          return res.status(400).json({
+            error: 'The last active admin cannot be deactivated',
+          })
+        }
+      }
+
+      // ==================================================
+      // تحديث حالة المستخدم.
+      // ==================================================
+      await client.query(
+        `
+          UPDATE users
+          SET
+            is_active = $1,
+            updated_at = NOW()
+          WHERE id = $2
+            AND company_id = $3;
+        `,
+        [isActive, userId, auth.companyId],
+      )
+
+      // ==================================================
+      // تسجيل العملية للمراجعة.
+      // ==================================================
+      await client.query(
+        `
+          INSERT INTO audit_logs (
+            company_id,
+            branch_id,
+            user_id,
+            action,
+            entity_type,
+            entity_id,
+            old_data,
+            new_data,
+            ip_address,
+            user_agent
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            'user.status.update',
+            'user',
+            $4,
+            jsonb_build_object(
+              'isActive',
+              $5::boolean
+            ),
+            jsonb_build_object(
+              'isActive',
+              $6::boolean
+            ),
+            $7,
+            $8
+          );
+        `,
+        [
+          auth.companyId,
+          auth.branchId,
+          auth.userId,
+          userId,
+          targetUser.is_active,
+          isActive,
+          req.ip || null,
+          req.get('user-agent')?.slice(0, 500) || null,
+        ],
+      )
+
+      // ==================================================
+      // إعادة المستخدم بعد التحديث بنفس شكل جدول الواجهة.
+      // ==================================================
+      const updatedUserResult = await client.query(
+        `
+          SELECT
+            users.id,
+            users.company_id,
+            users.branch_id,
+            users.full_name,
+            users.username,
+            users.email,
+            users.is_active,
+            users.created_at,
+            users.updated_at,
+
+            branches.code AS branch_code,
+            branches.name AS branch_name,
+
+            ARRAY(
+              SELECT roles.code
+              FROM user_roles
+              JOIN roles
+                ON roles.id = user_roles.role_id
+              WHERE user_roles.user_id = users.id
+              ORDER BY roles.code
+            ) AS roles
+
+          FROM users
+
+          LEFT JOIN branches
+            ON branches.id = users.branch_id
+            AND branches.company_id = users.company_id
+
+          WHERE users.id = $1
+            AND users.company_id = $2;
+        `,
+        [userId, auth.companyId],
+      )
+
+      await client.query('COMMIT')
+
+      return res.json({
+        data: updatedUserResult.rows[0],
+      })
+    } catch (error) {
+      await client.query('ROLLBACK')
+      next(error)
+    } finally {
+      client.release()
+    }
+  },
+)
