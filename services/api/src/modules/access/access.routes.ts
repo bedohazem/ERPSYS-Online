@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { db } from '../../db/pool'
-import { getAuthContext } from '../auth/auth.middleware'
+import { getAuthContext, requirePermission } from '../auth/auth.middleware'
 // تشفير كلمة المرور قبل حفظ المستخدم.
 import { hashPassword } from '../auth/password'
 
@@ -179,107 +179,125 @@ accessRouter.get('/api/permissions', async (_req, res, next) => {
 // - كلمة المرور تُحفظ Hash فقط.
 // - إنشاء المستخدم وربط الأدوار يتم داخل Transaction.
 // ======================================================
-accessRouter.post('/api/users', async (req, res, next) => {
-  try {
-    const auth = getAuthContext(res)
+accessRouter.post(
+  '/api/users',
 
-    const { fullName, username, email, password, branchId, roleIds } = req.body
+  // ====================================================
+  // إنشاء مستخدم يحتاج صلاحيتين:
+  //
+  // users.manage:
+  // لإنشاء المستخدم نفسه.
+  //
+  // roles.manage:
+  // لأن الطلب يختار الأدوار التي ستُمنح للمستخدم.
+  //
+  // requireBusinessPermission يتحقق من users.manage،
+  // وهذا Middleware يضيف التحقق من roles.manage.
+  // ====================================================
+  requirePermission('roles.manage'),
 
-    // ====================================================
-    // التحقق من الاسم الكامل
-    // ====================================================
-    if (typeof fullName !== 'string' || !fullName.trim()) {
-      return res.status(400).json({
-        error: 'fullName is required',
-      })
-    }
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
 
-    const normalizedFullName = fullName.trim()
+      const { fullName, username, email, password, branchId, roleIds } =
+        req.body
 
-    if (normalizedFullName.length > 150) {
-      return res.status(400).json({
-        error: 'fullName must not exceed 150 characters',
-      })
-    }
+      // ====================================================
+      // التحقق من الاسم الكامل
+      // ====================================================
+      if (typeof fullName !== 'string' || !fullName.trim()) {
+        return res.status(400).json({
+          error: 'fullName is required',
+        })
+      }
 
-    // ====================================================
-    // التحقق من اسم المستخدم
-    //
-    // نحفظه بحروف صغيرة لمنع وجود:
-    // admin
-    // Admin
-    // كاسمين مختلفين لنفس الشركة.
-    // ====================================================
-    if (typeof username !== 'string' || !username.trim()) {
-      return res.status(400).json({
-        error: 'username is required',
-      })
-    }
+      const normalizedFullName = fullName.trim()
 
-    const normalizedUsername = username.trim().toLowerCase()
+      if (normalizedFullName.length > 150) {
+        return res.status(400).json({
+          error: 'fullName must not exceed 150 characters',
+        })
+      }
 
-    if (normalizedUsername.length < 3 || normalizedUsername.length > 50) {
-      return res.status(400).json({
-        error: 'username must contain between 3 and 50 characters',
-      })
-    }
+      // ====================================================
+      // التحقق من اسم المستخدم
+      //
+      // نحفظه بحروف صغيرة لمنع وجود:
+      // admin
+      // Admin
+      // كاسمين مختلفين لنفس الشركة.
+      // ====================================================
+      if (typeof username !== 'string' || !username.trim()) {
+        return res.status(400).json({
+          error: 'username is required',
+        })
+      }
 
-    if (!/^[a-z0-9._-]+$/.test(normalizedUsername)) {
-      return res.status(400).json({
-        error:
-          'username may contain lowercase letters, numbers, dot, underscore and hyphen only',
-      })
-    }
+      const normalizedUsername = username.trim().toLowerCase()
 
-    // ====================================================
-    // التحقق من البريد الإلكتروني الاختياري
-    // ====================================================
-    const normalizedEmail =
-      typeof email === 'string' && email.trim()
-        ? email.trim().toLowerCase()
-        : null
+      if (normalizedUsername.length < 3 || normalizedUsername.length > 50) {
+        return res.status(400).json({
+          error: 'username must contain between 3 and 50 characters',
+        })
+      }
 
-    if (
-      normalizedEmail &&
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
-    ) {
-      return res.status(400).json({
-        error: 'email is invalid',
-      })
-    }
+      if (!/^[a-z0-9._-]+$/.test(normalizedUsername)) {
+        return res.status(400).json({
+          error:
+            'username may contain lowercase letters, numbers, dot, underscore and hyphen only',
+        })
+      }
 
-    // ====================================================
-    // التحقق من كلمة المرور
-    // ====================================================
-    if (typeof password !== 'string') {
-      return res.status(400).json({
-        error: 'password is required',
-      })
-    }
+      // ====================================================
+      // التحقق من البريد الإلكتروني الاختياري
+      // ====================================================
+      const normalizedEmail =
+        typeof email === 'string' && email.trim()
+          ? email.trim().toLowerCase()
+          : null
 
-    if (password.length < 8 || password.length > 128) {
-      return res.status(400).json({
-        error: 'password must contain between 8 and 128 characters',
-      })
-    }
+      if (
+        normalizedEmail &&
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
+      ) {
+        return res.status(400).json({
+          error: 'email is invalid',
+        })
+      }
 
-    // ====================================================
-    // التحقق من الفرع الاختياري
-    //
-    // null يعني أن المستخدم يعمل على مستوى الشركة.
-    // ====================================================
-    const normalizedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+      // ====================================================
+      // التحقق من كلمة المرور
+      // ====================================================
+      if (typeof password !== 'string') {
+        return res.status(400).json({
+          error: 'password is required',
+        })
+      }
 
-    if (normalizedBranchId && !UUID_PATTERN.test(normalizedBranchId)) {
-      return res.status(400).json({
-        error: 'branchId is invalid',
-      })
-    }
+      if (password.length < 8 || password.length > 128) {
+        return res.status(400).json({
+          error: 'password must contain between 8 and 128 characters',
+        })
+      }
 
-    if (normalizedBranchId) {
-      const branchResult = await db.query(
-        `
+      // ====================================================
+      // التحقق من الفرع الاختياري
+      //
+      // null يعني أن المستخدم يعمل على مستوى الشركة.
+      // ====================================================
+      const normalizedBranchId =
+        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+
+      if (normalizedBranchId && !UUID_PATTERN.test(normalizedBranchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      if (normalizedBranchId) {
+        const branchResult = await db.query(
+          `
           SELECT id
           FROM branches
           WHERE id = $1
@@ -287,46 +305,46 @@ accessRouter.post('/api/users', async (req, res, next) => {
             AND is_active = TRUE
           LIMIT 1;
         `,
-        [normalizedBranchId, auth.companyId],
-      )
+          [normalizedBranchId, auth.companyId],
+        )
 
-      if ((branchResult.rowCount ?? 0) === 0) {
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(400).json({
+            error: 'Selected branch does not belong to the current company',
+          })
+        }
+      }
+
+      // ====================================================
+      // التحقق من الأدوار
+      //
+      // يجب اختيار دور واحد على الأقل.
+      // ولا نسمح باستخدام Role تابع لشركة أخرى.
+      // ====================================================
+      if (!Array.isArray(roleIds) || roleIds.length === 0) {
         return res.status(400).json({
-          error: 'Selected branch does not belong to the current company',
+          error: 'At least one role is required',
         })
       }
-    }
 
-    // ====================================================
-    // التحقق من الأدوار
-    //
-    // يجب اختيار دور واحد على الأقل.
-    // ولا نسمح باستخدام Role تابع لشركة أخرى.
-    // ====================================================
-    if (!Array.isArray(roleIds) || roleIds.length === 0) {
-      return res.status(400).json({
-        error: 'At least one role is required',
-      })
-    }
+      if (
+        roleIds.some(
+          (roleId) =>
+            typeof roleId !== 'string' || !UUID_PATTERN.test(roleId.trim()),
+        )
+      ) {
+        return res.status(400).json({
+          error: 'One or more roleIds are invalid',
+        })
+      }
 
-    if (
-      roleIds.some(
-        (roleId) =>
-          typeof roleId !== 'string' || !UUID_PATTERN.test(roleId.trim()),
+      // إزالة أي Role مكرر قبل الحفظ.
+      const normalizedRoleIds = Array.from(
+        new Set(roleIds.map((roleId: string) => roleId.trim())),
       )
-    ) {
-      return res.status(400).json({
-        error: 'One or more roleIds are invalid',
-      })
-    }
 
-    // إزالة أي Role مكرر قبل الحفظ.
-    const normalizedRoleIds = Array.from(
-      new Set(roleIds.map((roleId: string) => roleId.trim())),
-    )
-
-    const rolesResult = await db.query(
-      `
+      const rolesResult = await db.query(
+        `
         SELECT
           id,
           code
@@ -337,21 +355,21 @@ accessRouter.post('/api/users', async (req, res, next) => {
             OR company_id IS NULL
           );
       `,
-      [normalizedRoleIds, auth.companyId],
-    )
+        [normalizedRoleIds, auth.companyId],
+      )
 
-    if ((rolesResult.rowCount ?? 0) !== normalizedRoleIds.length) {
-      return res.status(400).json({
-        error:
-          'One or more selected roles do not belong to the current company',
-      })
-    }
+      if ((rolesResult.rowCount ?? 0) !== normalizedRoleIds.length) {
+        return res.status(400).json({
+          error:
+            'One or more selected roles do not belong to the current company',
+        })
+      }
 
-    // ====================================================
-    // منع تكرار اسم المستخدم أو البريد داخل الشركة
-    // ====================================================
-    const duplicateResult = await db.query(
-      `
+      // ====================================================
+      // منع تكرار اسم المستخدم أو البريد داخل الشركة
+      // ====================================================
+      const duplicateResult = await db.query(
+        `
         SELECT
           username,
           email
@@ -366,36 +384,36 @@ accessRouter.post('/api/users', async (req, res, next) => {
           )
         LIMIT 1;
       `,
-      [auth.companyId, normalizedUsername, normalizedEmail],
-    )
+        [auth.companyId, normalizedUsername, normalizedEmail],
+      )
 
-    if ((duplicateResult.rowCount ?? 0) > 0) {
-      const duplicateUser = duplicateResult.rows[0]
+      if ((duplicateResult.rowCount ?? 0) > 0) {
+        const duplicateUser = duplicateResult.rows[0]
 
-      if (duplicateUser.username?.toLowerCase() === normalizedUsername) {
+        if (duplicateUser.username?.toLowerCase() === normalizedUsername) {
+          return res.status(409).json({
+            error: 'username already exists',
+          })
+        }
+
         return res.status(409).json({
-          error: 'username already exists',
+          error: 'email already exists',
         })
       }
 
-      return res.status(409).json({
-        error: 'email already exists',
-      })
-    }
+      // تشفير كلمة المرور خارج الـ Transaction لتقليل مدة القفل.
+      const passwordHash = await hashPassword(password)
 
-    // تشفير كلمة المرور خارج الـ Transaction لتقليل مدة القفل.
-    const passwordHash = await hashPassword(password)
+      const client = await db.connect()
 
-    const client = await db.connect()
+      try {
+        await client.query('BEGIN')
 
-    try {
-      await client.query('BEGIN')
-
-      // ==================================================
-      // إنشاء المستخدم
-      // ==================================================
-      const userResult = await client.query(
-        `
+        // ==================================================
+        // إنشاء المستخدم
+        // ==================================================
+        const userResult = await client.query(
+          `
           INSERT INTO users (
             company_id,
             branch_id,
@@ -423,23 +441,23 @@ accessRouter.post('/api/users', async (req, res, next) => {
             created_at,
             updated_at;
         `,
-        [
-          auth.companyId,
-          normalizedBranchId,
-          normalizedFullName,
-          normalizedUsername,
-          normalizedEmail,
-          passwordHash,
-        ],
-      )
+          [
+            auth.companyId,
+            normalizedBranchId,
+            normalizedFullName,
+            normalizedUsername,
+            normalizedEmail,
+            passwordHash,
+          ],
+        )
 
-      const createdUser = userResult.rows[0]
+        const createdUser = userResult.rows[0]
 
-      // ==================================================
-      // ربط المستخدم بالأدوار المختارة
-      // ==================================================
-      await client.query(
-        `
+        // ==================================================
+        // ربط المستخدم بالأدوار المختارة
+        // ==================================================
+        await client.query(
+          `
           INSERT INTO user_roles (
             user_id,
             role_id
@@ -448,16 +466,16 @@ accessRouter.post('/api/users', async (req, res, next) => {
             $1,
             UNNEST($2::uuid[]);
         `,
-        [createdUser.id, normalizedRoleIds],
-      )
+          [createdUser.id, normalizedRoleIds],
+        )
 
-      // ==================================================
-      // Audit Log
-      //
-      // لا يتم تسجيل password أو password_hash.
-      // ==================================================
-      await client.query(
-        `
+        // ==================================================
+        // Audit Log
+        //
+        // لا يتم تسجيل password أو password_hash.
+        // ==================================================
+        await client.query(
+          `
           INSERT INTO audit_logs (
             company_id,
             branch_id,
@@ -489,26 +507,26 @@ accessRouter.post('/api/users', async (req, res, next) => {
             $11
           );
         `,
-        [
-          auth.companyId,
-          auth.branchId,
-          auth.userId,
-          createdUser.id,
-          normalizedFullName,
-          normalizedUsername,
-          normalizedEmail,
-          normalizedBranchId,
-          JSON.stringify(normalizedRoleIds),
-          req.ip || null,
-          req.get('user-agent')?.slice(0, 500) || null,
-        ],
-      )
+          [
+            auth.companyId,
+            auth.branchId,
+            auth.userId,
+            createdUser.id,
+            normalizedFullName,
+            normalizedUsername,
+            normalizedEmail,
+            normalizedBranchId,
+            JSON.stringify(normalizedRoleIds),
+            req.ip || null,
+            req.get('user-agent')?.slice(0, 500) || null,
+          ],
+        )
 
-      // ==================================================
-      // إعادة المستخدم بالفرع والأدوار لواجهة الإدارة
-      // ==================================================
-      const createdUserResult = await client.query(
-        `
+        // ==================================================
+        // إعادة المستخدم بالفرع والأدوار لواجهة الإدارة
+        // ==================================================
+        const createdUserResult = await client.query(
+          `
           SELECT
             users.id,
             users.company_id,
@@ -541,34 +559,35 @@ accessRouter.post('/api/users', async (req, res, next) => {
           WHERE users.id = $1
             AND users.company_id = $2;
         `,
-        [createdUser.id, auth.companyId],
-      )
+          [createdUser.id, auth.companyId],
+        )
 
-      await client.query('COMMIT')
+        await client.query('COMMIT')
 
-      return res.status(201).json({
-        data: createdUserResult.rows[0],
-      })
-    } catch (error) {
-      await client.query('ROLLBACK')
-
-      // حماية إضافية من طلبين متزامنين بنفس البيانات.
-      if (
-        error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        error.code === '23505'
-      ) {
-        return res.status(409).json({
-          error: 'username or email already exists',
+        return res.status(201).json({
+          data: createdUserResult.rows[0],
         })
-      }
+      } catch (error) {
+        await client.query('ROLLBACK')
 
-      throw error
-    } finally {
-      client.release()
+        // حماية إضافية من طلبين متزامنين بنفس البيانات.
+        if (
+          error &&
+          typeof error === 'object' &&
+          'code' in error &&
+          error.code === '23505'
+        ) {
+          return res.status(409).json({
+            error: 'username or email already exists',
+          })
+        }
+
+        throw error
+      } finally {
+        client.release()
+      }
+    } catch (error) {
+      next(error)
     }
-  } catch (error) {
-    next(error)
-  }
-})
+  },
+)
