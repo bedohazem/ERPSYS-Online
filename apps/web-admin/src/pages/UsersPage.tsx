@@ -75,6 +75,12 @@ function UsersPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  // ======================================================
+  // رقم المستخدم الذي يتم تحديث حالته حاليًا.
+  //
+  // وجود القيمة يمنع الضغط المتكرر أثناء طلب الـ API.
+  // ======================================================
+  const [updatingUserId, setUpdatingUserId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
 
@@ -209,6 +215,70 @@ function UsersPage() {
     }
   }
 
+  // ======================================================
+  // updateUserStatus
+  //
+  // تفعيل أو تعطيل مستخدم موجود.
+  //
+  // Backend مسؤول عن الحماية النهائية، ومنها:
+  // - منع تعطيل الحساب الحالي.
+  // - منع تعطيل آخر Admin نشط.
+  // - منع تعديل مستخدم تابع لشركة أخرى.
+  // ======================================================
+  async function updateUserStatus(targetUser: UserRow) {
+    const nextIsActive = !targetUser.is_active
+
+    // نطلب تأكيدًا فقط عند التعطيل لأنه الإجراء الأخطر.
+    if (
+      !nextIsActive &&
+      !window.confirm(`هل أنت متأكد من تعطيل المستخدم ${targetUser.full_name}؟`)
+    ) {
+      return
+    }
+
+    setUpdatingUserId(targetUser.id)
+    setError('')
+    setSuccessMessage('')
+
+    try {
+      const response = await requestJson<ApiResponse<UserRow>>(
+        `/api/users/${encodeURIComponent(targetUser.id)}/status`,
+        {
+          method: 'PATCH',
+
+          headers: {
+            'Content-Type': 'application/json',
+          },
+
+          body: JSON.stringify({
+            isActive: nextIsActive,
+          }),
+        },
+      )
+
+      // استبدال المستخدم المعدل داخل الجدول بدون إعادة تحميل الصفحة.
+      setUsers((currentUsers) =>
+        currentUsers.map((currentUser) =>
+          currentUser.id === response.data.id ? response.data : currentUser,
+        ),
+      )
+
+      setSuccessMessage(
+        nextIsActive
+          ? `تم تفعيل المستخدم ${response.data.full_name}`
+          : `تم تعطيل المستخدم ${response.data.full_name}`,
+      )
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'حدث خطأ أثناء تحديث حالة المستخدم',
+      )
+    } finally {
+      setUpdatingUserId(null)
+    }
+  }
+
   return (
     <>
       <section className="panel">
@@ -224,7 +294,8 @@ function UsersPage() {
           <button
             type="button"
             className="primary-button small-button"
-            disabled={loading || saving}
+            // منع إعادة التحميل أثناء أي عملية حفظ أو تحديث حالة.
+            disabled={loading || saving || Boolean(updatingUserId)}
             onClick={loadPageData}
           >
             {loading ? 'جاري التحميل...' : 'تحميل بيانات المستخدمين'}
@@ -377,6 +448,7 @@ function UsersPage() {
                   <th>كود الفرع</th>
                   <th>الأدوار</th>
                   <th>الحالة</th>
+                  <th>الإجراء</th>
                 </tr>
               </thead>
 
@@ -396,6 +468,31 @@ function UsersPage() {
                     </td>
 
                     <td>{currentUser.is_active ? 'نشط' : 'غير نشط'}</td>
+                    <td>
+                      {currentUser.id === user?.userId ? (
+                        // لا نظهر زر تعطيل أمام الحساب المسجل حاليًا.
+                        <span className="muted">الحساب الحالي</span>
+                      ) : (
+                        <button
+                          type="button"
+                          className={
+                            currentUser.is_active
+                              ? 'table-button danger-button'
+                              : 'table-button'
+                          }
+                          disabled={Boolean(updatingUserId)}
+                          onClick={() => {
+                            void updateUserStatus(currentUser)
+                          }}
+                        >
+                          {updatingUserId === currentUser.id
+                            ? 'جاري التحديث...'
+                            : currentUser.is_active
+                              ? 'تعطيل'
+                              : 'تفعيل'}
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
