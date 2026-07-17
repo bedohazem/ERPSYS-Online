@@ -291,10 +291,10 @@ function UsersPage() {
             </p>
           </div>
 
+          {/* منع إعادة التحميل أثناء أي عملية حفظ أو تحديث حالة. */}
           <button
             type="button"
             className="primary-button small-button"
-            // منع إعادة التحميل أثناء أي عملية حفظ أو تحديث حالة.
             disabled={loading || saving || Boolean(updatingUserId)}
             onClick={loadPageData}
           >
