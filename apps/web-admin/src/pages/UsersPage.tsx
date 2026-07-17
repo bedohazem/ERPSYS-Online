@@ -22,6 +22,9 @@ type UserRow = {
 
   roles: string[]
 
+  // معرّفات الأدوار المستخدمة داخل نموذج التعديل.
+  role_ids: string[]
+
   created_at: string
   updated_at: string
 }

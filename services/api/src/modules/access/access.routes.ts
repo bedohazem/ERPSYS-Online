@@ -50,7 +50,18 @@ accessRouter.get('/api/users', async (_req, res, next) => {
               ON roles.id = user_roles.role_id
             WHERE user_roles.user_id = users.id
             ORDER BY roles.code
-          ) AS roles
+          ) AS roles,
+
+          -- معرّفات الأدوار مطلوبة لتحديد الاختيارات
+          -- الحالية عند فتح نموذج تعديل المستخدم.
+          ARRAY(
+            SELECT roles.id
+            FROM user_roles
+            JOIN roles
+              ON roles.id = user_roles.role_id
+            WHERE user_roles.user_id = users.id
+            ORDER BY roles.code
+          ) AS role_ids
 
         FROM users
 
@@ -614,7 +625,18 @@ accessRouter.post(
                 ON roles.id = user_roles.role_id
               WHERE user_roles.user_id = users.id
               ORDER BY roles.code
-            ) AS roles
+            ) AS roles,
+
+            -- معرّفات الأدوار مطلوبة لتحديد الاختيارات
+            -- الحالية عند فتح نموذج تعديل المستخدم.
+            ARRAY(
+              SELECT roles.id
+              FROM user_roles
+              JOIN roles
+                ON roles.id = user_roles.role_id
+              WHERE user_roles.user_id = users.id
+              ORDER BY roles.code
+            ) AS role_ids
 
           FROM users
 
@@ -876,7 +898,18 @@ accessRouter.patch(
                 ON roles.id = user_roles.role_id
               WHERE user_roles.user_id = users.id
               ORDER BY roles.code
-            ) AS roles
+            ) AS roles,
+
+            -- معرّفات الأدوار مطلوبة لتحديد الاختيارات
+            -- الحالية عند فتح نموذج تعديل المستخدم.
+            ARRAY(
+              SELECT roles.id
+              FROM user_roles
+              JOIN roles
+                ON roles.id = user_roles.role_id
+              WHERE user_roles.user_id = users.id
+              ORDER BY roles.code
+            ) AS role_ids
 
           FROM users
 
