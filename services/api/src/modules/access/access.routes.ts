@@ -728,6 +728,18 @@ accessRouter.patch(
 
       await client.query('BEGIN')
 
+      // توحيد عمليات تغيير حالة أو أدوار المستخدمين داخل الشركة.
+      // يمنع عمليتين متزامنتين من إزالة آخر Admin.
+      await client.query(
+        `
+          SELECT id
+          FROM companies
+          WHERE id = $1
+          FOR UPDATE;
+        `,
+        [auth.companyId],
+      )
+
       // ==================================================
       // قراءة المستخدم وقفل صفه حتى نهاية الـ Transaction.
       // ==================================================
@@ -930,6 +942,457 @@ accessRouter.patch(
       })
     } catch (error) {
       await client.query('ROLLBACK')
+      next(error)
+    } finally {
+      client.release()
+    }
+  },
+)
+
+// ======================================================
+// PATCH /api/users/:userId
+//
+// تعديل بيانات مستخدم داخل الشركة الحالية.
+//
+// Body:
+// {
+//   fullName: string
+//   email?: string | null
+//   branchId?: string | null
+//   roleIds: string[]
+// }
+//
+// لا يتم تعديل Username أو Password من هذا الـ Route.
+// ======================================================
+accessRouter.patch(
+  '/api/users/:userId',
+
+  // تغيير الأدوار يحتاج roles.manage بالإضافة إلى
+  // users.manage المفروضة من requireBusinessPermission.
+  requirePermission('roles.manage'),
+
+  async (req, res, next) => {
+    const client = await db.connect()
+
+    try {
+      const auth = getAuthContext(res)
+      // Express قد يعرّف Route Parameter كـ string أو string[].
+      // نحوله أولًا إلى قيمة واحدة ثم نتحقق منها.
+      const userIdParameter = req.params.userId
+
+      const userId = Array.isArray(userIdParameter)
+        ? userIdParameter[0]
+        : userIdParameter
+
+      const { fullName, email, branchId, roleIds } = req.body
+
+      if (typeof userId !== 'string' || !UUID_PATTERN.test(userId)) {
+        return res.status(400).json({
+          error: 'userId is invalid',
+        })
+      }
+
+      if (typeof fullName !== 'string' || !fullName.trim()) {
+        return res.status(400).json({
+          error: 'fullName is required',
+        })
+      }
+
+      const normalizedFullName = fullName.trim()
+
+      if (normalizedFullName.length > 150) {
+        return res.status(400).json({
+          error: 'fullName must not exceed 150 characters',
+        })
+      }
+
+      const normalizedEmail =
+        typeof email === 'string' && email.trim()
+          ? email.trim().toLowerCase()
+          : null
+
+      if (
+        normalizedEmail &&
+        (normalizedEmail.length > 254 ||
+          !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail))
+      ) {
+        return res.status(400).json({
+          error: 'email is invalid',
+        })
+      }
+
+      const normalizedBranchId =
+        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+
+      if (normalizedBranchId && !UUID_PATTERN.test(normalizedBranchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      if (!Array.isArray(roleIds) || roleIds.length === 0) {
+        return res.status(400).json({
+          error: 'At least one role is required',
+        })
+      }
+
+      if (
+        roleIds.some(
+          (roleId) =>
+            typeof roleId !== 'string' || !UUID_PATTERN.test(roleId.trim()),
+        )
+      ) {
+        return res.status(400).json({
+          error: 'One or more roleIds are invalid',
+        })
+      }
+
+      const normalizedRoleIds = Array.from(
+        new Set(roleIds.map((roleId: string) => roleId.trim())),
+      )
+
+      await client.query('BEGIN')
+
+      // كل تعديل أدوار أو حالات داخل الشركة يمر على نفس القفل.
+      await client.query(
+        `
+          SELECT id
+          FROM companies
+          WHERE id = $1
+          FOR UPDATE;
+        `,
+        [auth.companyId],
+      )
+
+      // قراءة المستخدم الحالي وقفل صفه حتى انتهاء العملية.
+      const targetUserResult = await client.query(
+        `
+          SELECT
+            users.id,
+            users.full_name,
+            users.email,
+            users.branch_id,
+            users.is_active,
+
+            ARRAY(
+              SELECT roles.id
+              FROM user_roles
+              JOIN roles
+                ON roles.id = user_roles.role_id
+              WHERE user_roles.user_id = users.id
+              ORDER BY roles.code
+            ) AS role_ids,
+
+            EXISTS (
+              SELECT 1
+              FROM user_roles
+              JOIN roles
+                ON roles.id = user_roles.role_id
+              WHERE user_roles.user_id = users.id
+                AND roles.code = 'admin'
+            ) AS is_admin
+
+          FROM users
+
+          WHERE users.id = $1
+            AND users.company_id = $2
+
+          FOR UPDATE;
+        `,
+        [userId, auth.companyId],
+      )
+
+      if ((targetUserResult.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK')
+
+        return res.status(404).json({
+          error: 'User not found',
+        })
+      }
+
+      const targetUser = targetUserResult.rows[0]
+
+      // التأكد أن الفرع تابع لنفس الشركة ونشط.
+      if (normalizedBranchId) {
+        const branchResult = await client.query(
+          `
+            SELECT id
+            FROM branches
+            WHERE id = $1
+              AND company_id = $2
+              AND is_active = TRUE
+            LIMIT 1;
+          `,
+          [normalizedBranchId, auth.companyId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          await client.query('ROLLBACK')
+
+          return res.status(400).json({
+            error: 'Selected branch does not belong to the current company',
+          })
+        }
+      }
+
+      // التأكد أن كل الأدوار تابعة للشركة أو أدوار عامة.
+      const rolesResult = await client.query(
+        `
+          SELECT
+            id,
+            code
+          FROM roles
+          WHERE id = ANY($1::uuid[])
+            AND (
+              company_id = $2
+              OR company_id IS NULL
+            );
+        `,
+        [normalizedRoleIds, auth.companyId],
+      )
+
+      if ((rolesResult.rowCount ?? 0) !== normalizedRoleIds.length) {
+        await client.query('ROLLBACK')
+
+        return res.status(400).json({
+          error:
+            'One or more selected roles do not belong to the current company',
+        })
+      }
+
+      // منع استخدام بريد خاص بمستخدم آخر داخل نفس الشركة.
+      if (normalizedEmail) {
+        const duplicateEmailResult = await client.query(
+          `
+            SELECT id
+            FROM users
+            WHERE company_id = $1
+              AND id <> $2
+              AND LOWER(email) = LOWER($3)
+            LIMIT 1;
+          `,
+          [auth.companyId, userId, normalizedEmail],
+        )
+
+        if ((duplicateEmailResult.rowCount ?? 0) > 0) {
+          await client.query('ROLLBACK')
+
+          return res.status(409).json({
+            error: 'email already exists',
+          })
+        }
+      }
+
+      const newHasAdminRole = rolesResult.rows.some(
+        (role) => role.code === 'admin',
+      )
+
+      // منع إزالة دور Admin من آخر Admin نشط.
+      if (targetUser.is_active && targetUser.is_admin && !newHasAdminRole) {
+        const activeAdminsResult = await client.query(
+          `
+            SELECT COUNT(*)::integer AS count
+
+            FROM users
+
+            WHERE users.company_id = $1
+              AND users.is_active = TRUE
+
+              AND EXISTS (
+                SELECT 1
+                FROM user_roles
+                JOIN roles
+                  ON roles.id = user_roles.role_id
+                WHERE user_roles.user_id = users.id
+                  AND roles.code = 'admin'
+              );
+          `,
+          [auth.companyId],
+        )
+
+        const activeAdminsCount = activeAdminsResult.rows[0]?.count ?? 0
+
+        if (activeAdminsCount <= 1) {
+          await client.query('ROLLBACK')
+
+          return res.status(400).json({
+            error:
+              'The admin role cannot be removed from the last active admin',
+          })
+        }
+      }
+
+      // تحديث البيانات الأساسية.
+      await client.query(
+        `
+          UPDATE users
+          SET
+            full_name = $1,
+            email = $2,
+            branch_id = $3,
+            updated_at = NOW()
+          WHERE id = $4
+            AND company_id = $5;
+        `,
+        [
+          normalizedFullName,
+          normalizedEmail,
+          normalizedBranchId,
+          userId,
+          auth.companyId,
+        ],
+      )
+
+      // استبدال الأدوار القديمة بالأدوار الجديدة.
+      await client.query(
+        `
+          DELETE FROM user_roles
+          WHERE user_id = $1;
+        `,
+        [userId],
+      )
+
+      await client.query(
+        `
+          INSERT INTO user_roles (
+            user_id,
+            role_id
+          )
+          SELECT
+            $1,
+            UNNEST($2::uuid[]);
+        `,
+        [userId, normalizedRoleIds],
+      )
+
+      // تسجيل التعديل بدون بيانات سرية.
+      await client.query(
+        `
+          INSERT INTO audit_logs (
+            company_id,
+            branch_id,
+            user_id,
+            action,
+            entity_type,
+            entity_id,
+            old_data,
+            new_data,
+            ip_address,
+            user_agent
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            'user.update',
+            'user',
+            $4,
+
+            jsonb_build_object(
+              'fullName', $5::text,
+              'email', $6::text,
+              'branchId', $7::text,
+              'roleIds', $8::jsonb
+            ),
+
+            jsonb_build_object(
+              'fullName', $9::text,
+              'email', $10::text,
+              'branchId', $11::text,
+              'roleIds', $12::jsonb
+            ),
+
+            $13,
+            $14
+          );
+        `,
+        [
+          auth.companyId,
+          auth.branchId,
+          auth.userId,
+          userId,
+
+          targetUser.full_name,
+          targetUser.email,
+          targetUser.branch_id,
+          JSON.stringify(targetUser.role_ids),
+
+          normalizedFullName,
+          normalizedEmail,
+          normalizedBranchId,
+          JSON.stringify(normalizedRoleIds),
+
+          req.ip || null,
+          req.get('user-agent')?.slice(0, 500) || null,
+        ],
+      )
+
+      // إعادة المستخدم بنفس شكل الجدول في Web Admin.
+      const updatedUserResult = await client.query(
+        `
+          SELECT
+            users.id,
+            users.company_id,
+            users.branch_id,
+            users.full_name,
+            users.username,
+            users.email,
+            users.is_active,
+            users.created_at,
+            users.updated_at,
+
+            branches.code AS branch_code,
+            branches.name AS branch_name,
+
+            ARRAY(
+              SELECT roles.code
+              FROM user_roles
+              JOIN roles
+                ON roles.id = user_roles.role_id
+              WHERE user_roles.user_id = users.id
+              ORDER BY roles.code
+            ) AS roles,
+
+            ARRAY(
+              SELECT roles.id
+              FROM user_roles
+              JOIN roles
+                ON roles.id = user_roles.role_id
+              WHERE user_roles.user_id = users.id
+              ORDER BY roles.code
+            ) AS role_ids
+
+          FROM users
+
+          LEFT JOIN branches
+            ON branches.id = users.branch_id
+            AND branches.company_id = users.company_id
+
+          WHERE users.id = $1
+            AND users.company_id = $2;
+        `,
+        [userId, auth.companyId],
+      )
+
+      await client.query('COMMIT')
+
+      return res.json({
+        data: updatedUserResult.rows[0],
+      })
+    } catch (error) {
+      await client.query('ROLLBACK')
+
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        error.code === '23505'
+      ) {
+        return res.status(409).json({
+          error: 'email already exists',
+        })
+      }
+
       next(error)
     } finally {
       client.release()
