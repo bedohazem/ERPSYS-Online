@@ -1399,3 +1399,176 @@ accessRouter.patch(
     }
   },
 )
+
+// ======================================================
+// PATCH /api/users/:userId/password
+//
+// إعادة تعيين كلمة مرور مستخدم داخل الشركة الحالية.
+//
+// Body:
+// {
+//   password: string
+// }
+//
+// بعد التغيير يتم إلغاء جميع جلسات المستخدم القديمة
+// لإجباره على تسجيل الدخول بكلمة المرور الجديدة.
+// ======================================================
+accessRouter.patch(
+  '/api/users/:userId/password',
+
+  // إعادة تعيين كلمات المرور عملية إدارية حساسة.
+  requirePermission('roles.manage'),
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      // Express قد يرجع Route Parameter كـ string أو string[].
+      const userIdParameter = req.params.userId
+
+      const userId = Array.isArray(userIdParameter)
+        ? userIdParameter[0]
+        : userIdParameter
+
+      const { password } = req.body
+
+      if (typeof userId !== 'string' || !UUID_PATTERN.test(userId)) {
+        return res.status(400).json({
+          error: 'userId is invalid',
+        })
+      }
+
+      if (typeof password !== 'string') {
+        return res.status(400).json({
+          error: 'password is required',
+        })
+      }
+
+      if (password.length < 8 || password.length > 128) {
+        return res.status(400).json({
+          error: 'password must contain between 8 and 128 characters',
+        })
+      }
+
+      // تشفير كلمة المرور قبل فتح الـ Transaction
+      // لتقليل مدة قفل صف المستخدم.
+      const passwordHash = await hashPassword(password)
+
+      const client = await db.connect()
+
+      try {
+        await client.query('BEGIN')
+
+        // قراءة المستخدم وقفل صفه حتى انتهاء العملية.
+        const targetUserResult = await client.query(
+          `
+            SELECT
+              id,
+              full_name,
+              username
+            FROM users
+            WHERE id = $1
+              AND company_id = $2
+            FOR UPDATE;
+          `,
+          [userId, auth.companyId],
+        )
+
+        if ((targetUserResult.rowCount ?? 0) === 0) {
+          await client.query('ROLLBACK')
+
+          return res.status(404).json({
+            error: 'User not found',
+          })
+        }
+
+        const targetUser = targetUserResult.rows[0]
+
+        // حفظ الـ Hash الجديد فقط.
+        await client.query(
+          `
+            UPDATE users
+            SET
+              password_hash = $1,
+              updated_at = NOW()
+            WHERE id = $2
+              AND company_id = $3;
+          `,
+          [passwordHash, userId, auth.companyId],
+        )
+
+        // إلغاء جميع الجلسات الحالية للمستخدم.
+        const revokedSessionsResult = await client.query(
+          `
+            UPDATE auth_sessions
+            SET revoked_at = NOW()
+            WHERE company_id = $1
+              AND user_id = $2
+              AND revoked_at IS NULL;
+          `,
+          [auth.companyId, userId],
+        )
+
+        // لا نسجل كلمة المرور أو الـ Hash داخل Audit Log.
+        await client.query(
+          `
+            INSERT INTO audit_logs (
+              company_id,
+              branch_id,
+              user_id,
+              action,
+              entity_type,
+              entity_id,
+              old_data,
+              new_data,
+              ip_address,
+              user_agent
+            )
+            VALUES (
+              $1,
+              $2,
+              $3,
+              'user.password.reset',
+              'user',
+              $4,
+              NULL,
+              jsonb_build_object(
+                'sessionsRevoked',
+                $5::integer
+              ),
+              $6,
+              $7
+            );
+          `,
+          [
+            auth.companyId,
+            auth.branchId,
+            auth.userId,
+            userId,
+            revokedSessionsResult.rowCount ?? 0,
+            req.ip || null,
+            req.get('user-agent')?.slice(0, 500) || null,
+          ],
+        )
+
+        await client.query('COMMIT')
+
+        return res.json({
+          data: {
+            userId,
+            fullName: targetUser.full_name,
+            username: targetUser.username,
+            sessionsRevoked: revokedSessionsResult.rowCount ?? 0,
+          },
+        })
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
+    } catch (error) {
+      next(error)
+    }
+  },
+)
