@@ -223,6 +223,17 @@ export function applyAuthenticatedTenant(
     const auth = getAuthContext(res)
 
     // ====================================================
+    // طلبات إدارة المستخدمين تختار فرع المستخدم المستهدف.
+    //
+    // لا نستخدم فرع المدير المسجل بدل الفرع المختار؛
+    // لأن Access Routes تتحقق بنفسها أن الفرع تابع للشركة.
+    // ====================================================
+    const requestPath = req.originalUrl.split('?')[0]
+
+    const isUserManagementRequest =
+      requestPath === '/api/users' || requestPath.startsWith('/api/users/')
+
+    // ====================================================
     // Query الموثقة
     //
     // ننشئ نسخة جديدة بدل تعديل الكائن الراجع من req.query.
@@ -266,13 +277,18 @@ export function applyAuthenticatedTenant(
 
       authenticatedBody.companyId = auth.companyId
 
-      if (auth.branchId) {
-        authenticatedBody.branchId = auth.branchId
-      } else {
-        // المستخدم غير المرتبط بفرع لا يُسمح له حاليًا
-        // بفرض branchId من Body حتى نضيف صلاحية اختيار الفرع.
-        delete authenticatedBody.branchId
+      if (!isUserManagementRequest) {
+        if (auth.branchId) {
+          authenticatedBody.branchId = auth.branchId
+        } else {
+          // المستخدم غير المرتبط بفرع لا يفرض فرعًا
+          // على عمليات البيع والمخزون وباقي Business APIs.
+          delete authenticatedBody.branchId
+        }
       }
+
+      // في /api/users نترك branchId كما أرسلته الواجهة.
+      // Access Route تتحقق أن الفرع تابع للشركة الحالية.
 
       // المستخدم الحالي هو صاحب العملية.
       authenticatedBody.createdBy = auth.userId
