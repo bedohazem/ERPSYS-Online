@@ -57,6 +57,16 @@ type ApiResponse<T> = {
   data: T
 }
 
+// ======================================================
+// نتيجة إعادة تعيين كلمة المرور.
+// ======================================================
+type PasswordResetResponse = {
+  userId: string
+  fullName: string
+  username: string
+  sessionsRevoked: number
+}
+
 function UsersPage() {
   const { user } = useAuth()
 
@@ -97,6 +107,17 @@ function UsersPage() {
   // وجود القيمة يمنع الضغط المتكرر أثناء طلب الـ API.
   // ======================================================
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null)
+  // ======================================================
+  // بيانات إعادة تعيين كلمة مرور مستخدم.
+  // ======================================================
+  const [passwordResetUserId, setPasswordResetUserId] = useState<string | null>(
+    null,
+  )
+
+  const [passwordResetUsername, setPasswordResetUsername] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmNewPassword, setConfirmNewPassword] = useState('')
+  const [savingPasswordReset, setSavingPasswordReset] = useState(false)
   const [error, setError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
 
@@ -349,6 +370,98 @@ function UsersPage() {
       )
     } finally {
       setSavingEdit(false)
+    }
+  }
+
+  // ======================================================
+  // startPasswordReset
+  //
+  // فتح نموذج إعادة تعيين كلمة المرور للمستخدم المحدد.
+  // لا نستخدم هذا الإجراء للحساب الحالي لأنه يلغي جلسته.
+  // ======================================================
+  function startPasswordReset(targetUser: UserRow) {
+    if (targetUser.id === user?.userId) {
+      setError('لا يمكن استخدام إعادة التعيين الإدارية للحساب الحالي')
+      return
+    }
+
+    setError('')
+    setSuccessMessage('')
+
+    setPasswordResetUserId(targetUser.id)
+    setPasswordResetUsername(targetUser.username)
+    setNewPassword('')
+    setConfirmNewPassword('')
+  }
+
+  // ======================================================
+  // cancelPasswordReset
+  //
+  // إغلاق النموذج وتنظيف كلمات المرور من الذاكرة.
+  // ======================================================
+  function cancelPasswordReset() {
+    setPasswordResetUserId(null)
+    setPasswordResetUsername('')
+    setNewPassword('')
+    setConfirmNewPassword('')
+  }
+
+  // ======================================================
+  // resetUserPassword
+  //
+  // تغيير كلمة المرور وإلغاء جلسات المستخدم القديمة.
+  // ======================================================
+  async function resetUserPassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (!passwordResetUserId) {
+      return
+    }
+
+    setError('')
+    setSuccessMessage('')
+
+    if (newPassword.length < 8) {
+      setError('كلمة المرور يجب ألا تقل عن 8 حروف')
+      return
+    }
+
+    if (newPassword !== confirmNewPassword) {
+      setError('كلمتا المرور غير متطابقتين')
+      return
+    }
+
+    setSavingPasswordReset(true)
+
+    try {
+      const response = await requestJson<ApiResponse<PasswordResetResponse>>(
+        `/api/users/${encodeURIComponent(passwordResetUserId)}/password`,
+        {
+          method: 'PATCH',
+
+          headers: {
+            'Content-Type': 'application/json',
+          },
+
+          body: JSON.stringify({
+            password: newPassword,
+          }),
+        },
+      )
+
+      setSuccessMessage(
+        `تم تغيير كلمة مرور ${response.data.fullName} وإلغاء ${response.data.sessionsRevoked} جلسة`,
+      )
+
+      cancelPasswordReset()
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'حدث خطأ أثناء إعادة تعيين كلمة المرور',
+      )
+    } finally {
+      setSavingPasswordReset(false)
     }
   }
 
@@ -668,6 +781,75 @@ function UsersPage() {
         </section>
       ) : null}
 
+      {passwordResetUserId ? (
+        <section className="panel">
+          <div className="section-header">
+            <div>
+              <h2>إعادة تعيين كلمة المرور</h2>
+
+              <p className="muted">
+                سيتم تغيير كلمة مرور @{passwordResetUsername} وإلغاء جميع جلساته
+                الحالية.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              className="table-button"
+              disabled={savingPasswordReset}
+              onClick={cancelPasswordReset}
+            >
+              إلغاء
+            </button>
+          </div>
+
+          <form onSubmit={resetUserPassword}>
+            <div className="form-grid">
+              <label>
+                كلمة المرور الجديدة
+                <input
+                  type="password"
+                  value={newPassword}
+                  minLength={8}
+                  maxLength={128}
+                  disabled={savingPasswordReset}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  placeholder="8 حروف على الأقل"
+                />
+              </label>
+
+              <label>
+                تأكيد كلمة المرور
+                <input
+                  type="password"
+                  value={confirmNewPassword}
+                  minLength={8}
+                  maxLength={128}
+                  disabled={savingPasswordReset}
+                  onChange={(event) =>
+                    setConfirmNewPassword(event.target.value)
+                  }
+                />
+              </label>
+            </div>
+
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={
+                savingPasswordReset ||
+                newPassword.length < 8 ||
+                newPassword !== confirmNewPassword
+              }
+            >
+              {savingPasswordReset
+                ? 'جاري تغيير كلمة المرور...'
+                : 'تغيير كلمة المرور'}
+            </button>
+          </form>
+        </section>
+      ) : null}
+
       <section className="panel">
         <h2>المستخدمون</h2>
 
@@ -711,11 +893,31 @@ function UsersPage() {
                           <button
                             type="button"
                             className="table-button"
-                            disabled={savingEdit || Boolean(updatingUserId)}
+                            disabled={
+                              savingEdit ||
+                              savingPasswordReset ||
+                              Boolean(updatingUserId)
+                            }
                             onClick={() => startEditingUser(currentUser)}
                           >
                             تعديل
                           </button>{' '}
+                          {currentUser.id !== user?.userId ? (
+                            <>
+                              <button
+                                type="button"
+                                className="table-button"
+                                disabled={
+                                  savingEdit ||
+                                  savingPasswordReset ||
+                                  Boolean(updatingUserId)
+                                }
+                                onClick={() => startPasswordReset(currentUser)}
+                              >
+                                تغيير الباسورد
+                              </button>{' '}
+                            </>
+                          ) : null}
                         </>
                       ) : null}
 
