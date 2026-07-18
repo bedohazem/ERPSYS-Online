@@ -75,8 +75,21 @@ function UsersPage() {
   const [branchId, setBranchId] = useState('')
   const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([])
 
+  // ======================================================
+  // بيانات المستخدم المفتوح حاليًا للتعديل.
+  // ======================================================
+  const [editingUserId, setEditingUserId] = useState<string | null>(null)
+  const [editUsername, setEditUsername] = useState('')
+  const [editFullName, setEditFullName] = useState('')
+  const [editEmail, setEditEmail] = useState('')
+  const [editBranchId, setEditBranchId] = useState('')
+  const [editRoleIds, setEditRoleIds] = useState<string[]>([])
+
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  // حفظ تعديلات مستخدم موجود.
+  const [savingEdit, setSavingEdit] = useState(false)
 
   // ======================================================
   // رقم المستخدم الذي يتم تحديث حالته حاليًا.
@@ -215,6 +228,127 @@ function UsersPage() {
       )
     } finally {
       setSaving(false)
+    }
+  }
+
+  // ======================================================
+  // startEditingUser
+  //
+  // نقل بيانات المستخدم المحدد إلى نموذج التعديل.
+  // ======================================================
+  function startEditingUser(targetUser: UserRow) {
+    if (roles.length === 0) {
+      setError('اضغط تحميل بيانات المستخدمين أولًا لإظهار الأدوار والفروع')
+      return
+    }
+
+    setError('')
+    setSuccessMessage('')
+
+    setEditingUserId(targetUser.id)
+    setEditUsername(targetUser.username)
+    setEditFullName(targetUser.full_name)
+    setEditEmail(targetUser.email || '')
+    setEditBranchId(targetUser.branch_id || '')
+    setEditRoleIds([...targetUser.role_ids])
+  }
+
+  // ======================================================
+  // cancelEditingUser
+  //
+  // إغلاق نموذج التعديل وتنظيف بياناته.
+  // ======================================================
+  function cancelEditingUser() {
+    setEditingUserId(null)
+    setEditUsername('')
+    setEditFullName('')
+    setEditEmail('')
+    setEditBranchId('')
+    setEditRoleIds([])
+  }
+
+  // ======================================================
+  // toggleEditRole
+  //
+  // تحديد أو إلغاء دور داخل نموذج التعديل.
+  // ======================================================
+  function toggleEditRole(roleId: string) {
+    setEditRoleIds((currentRoleIds) =>
+      currentRoleIds.includes(roleId)
+        ? currentRoleIds.filter((currentRoleId) => currentRoleId !== roleId)
+        : [...currentRoleIds, roleId],
+    )
+  }
+
+  // ======================================================
+  // updateUser
+  //
+  // حفظ الاسم والبريد والفرع والأدوار الجديدة.
+  // Username لا يتم تغييره من هذه العملية.
+  // ======================================================
+  async function updateUser(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (!editingUserId) {
+      return
+    }
+
+    setError('')
+    setSuccessMessage('')
+
+    if (!editFullName.trim()) {
+      setError('الاسم الكامل مطلوب')
+      return
+    }
+
+    if (editRoleIds.length === 0) {
+      setError('يجب اختيار دور واحد على الأقل')
+      return
+    }
+
+    setSavingEdit(true)
+
+    try {
+      const response = await requestJson<ApiResponse<UserRow>>(
+        `/api/users/${encodeURIComponent(editingUserId)}`,
+        {
+          method: 'PATCH',
+
+          headers: {
+            'Content-Type': 'application/json',
+          },
+
+          body: JSON.stringify({
+            fullName: editFullName.trim(),
+            email: editEmail.trim() || null,
+            branchId: editBranchId || null,
+            roleIds: editRoleIds,
+          }),
+        },
+      )
+
+      // استبدال المستخدم المعدل داخل الجدول.
+      setUsers((currentUsers) =>
+        currentUsers
+          .map((currentUser) =>
+            currentUser.id === response.data.id ? response.data : currentUser,
+          )
+          .sort((firstUser, secondUser) =>
+            firstUser.full_name.localeCompare(secondUser.full_name, 'ar'),
+          ),
+      )
+
+      setSuccessMessage(`تم تعديل المستخدم ${response.data.full_name} بنجاح`)
+
+      cancelEditingUser()
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'حدث خطأ أثناء تعديل المستخدم',
+      )
+    } finally {
+      setSavingEdit(false)
     }
   }
 
@@ -434,6 +568,106 @@ function UsersPage() {
         </section>
       )}
 
+      {editingUserId ? (
+        <section className="panel">
+          <div className="section-header">
+            <div>
+              <h2>تعديل المستخدم</h2>
+
+              <p className="muted">
+                تعديل البيانات والأدوار الخاصة بالمستخدم @{editUsername}.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              className="table-button"
+              disabled={savingEdit}
+              onClick={cancelEditingUser}
+            >
+              إلغاء التعديل
+            </button>
+          </div>
+
+          <form onSubmit={updateUser}>
+            <div className="form-grid">
+              <label>
+                الاسم الكامل
+                <input
+                  value={editFullName}
+                  maxLength={150}
+                  disabled={savingEdit}
+                  onChange={(event) => setEditFullName(event.target.value)}
+                />
+              </label>
+
+              <label>
+                اسم المستخدم
+                <input value={editUsername} disabled />
+              </label>
+
+              <label>
+                البريد الإلكتروني
+                <input
+                  type="email"
+                  value={editEmail}
+                  disabled={savingEdit}
+                  onChange={(event) => setEditEmail(event.target.value)}
+                  placeholder="اختياري"
+                />
+              </label>
+
+              <label>
+                الفرع
+                <select
+                  value={editBranchId}
+                  disabled={savingEdit}
+                  onChange={(event) => setEditBranchId(event.target.value)}
+                >
+                  <option value="">كل الفروع / مستوى الشركة</option>
+
+                  {branches.map((branch) => (
+                    <option key={branch.id} value={branch.id}>
+                      {branch.name} ({branch.code})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="section-header">
+              <div>
+                <h3>الأدوار</h3>
+
+                <p className="muted">يجب الاحتفاظ بدور واحد على الأقل.</p>
+              </div>
+            </div>
+
+            <div className="form-grid">
+              {roles.map((role) => (
+                <label key={role.id}>
+                  <input
+                    type="checkbox"
+                    checked={editRoleIds.includes(role.id)}
+                    disabled={savingEdit}
+                    onChange={() => toggleEditRole(role.id)}
+                  />
+                  {role.name} ({role.code})
+                </label>
+              ))}
+            </div>
+
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={savingEdit || editRoleIds.length === 0}
+            >
+              {savingEdit ? 'جاري حفظ التعديلات...' : 'حفظ التعديلات'}
+            </button>
+          </form>
+        </section>
+      ) : null}
+
       <section className="panel">
         <h2>المستخدمون</h2>
 
@@ -472,8 +706,20 @@ function UsersPage() {
 
                     <td>{currentUser.is_active ? 'نشط' : 'غير نشط'}</td>
                     <td>
+                      {canCreateUser ? (
+                        <>
+                          <button
+                            type="button"
+                            className="table-button"
+                            disabled={savingEdit || Boolean(updatingUserId)}
+                            onClick={() => startEditingUser(currentUser)}
+                          >
+                            تعديل
+                          </button>{' '}
+                        </>
+                      ) : null}
+
                       {currentUser.id === user?.userId ? (
-                        // لا نظهر زر تعطيل أمام الحساب المسجل حاليًا.
                         <span className="muted">الحساب الحالي</span>
                       ) : (
                         <button
@@ -483,7 +729,7 @@ function UsersPage() {
                               ? 'table-button danger-button'
                               : 'table-button'
                           }
-                          disabled={Boolean(updatingUserId)}
+                          disabled={savingEdit || Boolean(updatingUserId)}
                           onClick={() => {
                             void updateUserStatus(currentUser)
                           }}
