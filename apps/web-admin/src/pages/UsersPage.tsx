@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission } from '../auth/permissions'
 import { requestJson } from '../lib/http'
@@ -161,6 +161,15 @@ function UsersPage() {
       setLoading(false)
     }
   }
+
+  // ======================================================
+  // تحميل المستخدمين والفروع والأدوار تلقائيًا عند فتح الصفحة.
+  //
+  // زر التحديث سيبقى لإعادة جلب البيانات يدويًا فقط.
+  // ======================================================
+  useEffect(() => {
+    void loadPageData()
+  }, [canCreateUser])
 
   // ======================================================
   // تحديد أو إلغاء دور من المستخدم الجديد.
@@ -548,7 +557,7 @@ function UsersPage() {
             disabled={loading || saving || Boolean(updatingUserId)}
             onClick={loadPageData}
           >
-            {loading ? 'جاري التحميل...' : 'تحميل بيانات المستخدمين'}
+            {loading ? 'جاري التحديث...' : 'تحديث البيانات'}
           </button>
         </div>
 
@@ -566,7 +575,7 @@ function UsersPage() {
               <h2>مستخدم جديد</h2>
 
               <p className="muted">
-                حمّل بيانات المستخدمين أولًا حتى تظهر الفروع والأدوار.
+                أنشئ مستخدمًا جديدًا وحدد الفرع والأدوار المناسبة له.
               </p>
             </div>
           </div>
@@ -854,7 +863,11 @@ function UsersPage() {
         <h2>المستخدمون</h2>
 
         {users.length === 0 ? (
-          <p className="muted">لا توجد بيانات مستخدمين معروضة حتى الآن.</p>
+          <p className="muted">
+            {loading
+              ? 'جاري تحميل المستخدمين...'
+              : 'لا يوجد مستخدمون مسجلون حاليًا.'}
+          </p>
         ) : (
           <div className="table-wrapper">
             <table>
