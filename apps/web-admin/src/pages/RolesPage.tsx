@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { requestJson } from '../lib/http'
 
@@ -82,6 +82,16 @@ function RolesPage() {
       setLoading(false)
     }
   }
+
+  // ======================================================
+  // تحميل بيانات الصفحة تلقائيًا عند فتحها.
+  //
+  // زر التحميل الموجود بالأعلى سيستخدم بعد ذلك
+  // كتحديث يدوي فقط عند الحاجة.
+  // ======================================================
+  useEffect(() => {
+    void loadAccessData()
+  }, [])
 
   // ======================================================
   // togglePermission
@@ -190,7 +200,7 @@ function RolesPage() {
             disabled={loading}
             onClick={loadAccessData}
           >
-            {loading ? 'جاري التحميل...' : 'تحميل الأدوار والصلاحيات'}
+            {loading ? 'جاري التحديث...' : 'تحديث البيانات'}
           </button>
         </div>
 
@@ -206,7 +216,7 @@ function RolesPage() {
             <h2>دور مخصص جديد</h2>
 
             <p className="muted">
-              حمّل كتالوج الصلاحيات أولًا، ثم اختر صلاحيات الدور.
+              أنشئ دورًا مخصصًا وحدد الصلاحيات المناسبة له.
             </p>
           </div>
         </div>
@@ -249,7 +259,11 @@ function RolesPage() {
           </div>
 
           {permissions.length === 0 ? (
-            <p className="muted">اضغط تحميل الأدوار والصلاحيات أولًا.</p>
+            <p className="muted">
+              {loading
+                ? 'جاري تحميل كتالوج الصلاحيات...'
+                : 'لا توجد صلاحيات متاحة حاليًا.'}
+            </p>
           ) : (
             <div className="form-grid">
               {permissions.map((permission) => (
