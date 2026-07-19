@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from '../lib/http'
@@ -107,6 +107,17 @@ function InventoryPage({ companyId }: InventoryPageProps) {
     }
   }
 
+  // ======================================================
+  // تحميل رصيد وحركات المخزون تلقائيًا عند فتح الصفحة.
+  // ======================================================
+  useEffect(() => {
+    if (!canViewInventory || !companyId.trim()) {
+      return
+    }
+
+    void loadInventory()
+  }, [canViewInventory, companyId])
+
   return (
     <>
       <section className="panel">
@@ -134,7 +145,11 @@ function InventoryPage({ companyId }: InventoryPageProps) {
         <h2>رصيد المخزون الحالي</h2>
 
         {stockBalances.length === 0 ? (
-          <p className="muted">لا توجد أرصدة مخزون معروضة حتى الآن.</p>
+          <p className="muted">
+            {loading
+              ? 'جاري تحميل أرصدة المخزون...'
+              : 'لا توجد أرصدة مخزون مسجلة حاليًا.'}
+          </p>
         ) : (
           <div className="table-wrapper">
             <table>
@@ -175,7 +190,11 @@ function InventoryPage({ companyId }: InventoryPageProps) {
         <h2>حركات المخزون</h2>
 
         {stockMovements.length === 0 ? (
-          <p className="muted">لا توجد حركات مخزون معروضة حتى الآن.</p>
+          <p className="muted">
+            {loading
+              ? 'جاري تحميل حركات المخزون...'
+              : 'لا توجد حركات مخزون مسجلة حاليًا.'}
+          </p>
         ) : (
           <div className="table-wrapper">
             <table>

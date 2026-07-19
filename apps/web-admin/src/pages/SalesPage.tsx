@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from '../lib/http'
@@ -141,6 +141,18 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
   }
 
   // ======================================================
+  // تحميل الفواتير تلقائيًا عند فتح الصفحة
+  // أو تغير الشركة أو الفرع المرتبط بالجلسة.
+  // ======================================================
+  useEffect(() => {
+    if (!companyId.trim()) {
+      return
+    }
+
+    void loadSales()
+  }, [companyId, branchId])
+
+  // ======================================================
   // loadSaleDetails
   // تجيب تفاصيل فاتورة واحدة
   //
@@ -191,14 +203,18 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
             disabled={!companyId.trim() || loadingSales}
             onClick={loadSales}
           >
-            {loadingSales ? 'جاري التحميل...' : 'تحميل الفواتير'}
+            {loadingSales ? 'جاري التحديث...' : 'تحديث البيانات'}
           </button>
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
 
         {sales.length === 0 ? (
-          <p className="muted">لا توجد فواتير معروضة حتى الآن.</p>
+          <p className="muted">
+            {loadingSales
+              ? 'جاري تحميل الفواتير...'
+              : 'لا توجد فواتير مسجلة حاليًا.'}
+          </p>
         ) : (
           <div className="table-wrapper">
             <table>

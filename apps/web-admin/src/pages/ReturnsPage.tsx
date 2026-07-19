@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission } from '../auth/permissions'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
@@ -127,6 +127,18 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
   }
 
   // ======================================================
+  // تحميل المرتجعات تلقائيًا عند فتح الصفحة
+  // أو تغير الشركة أو الفرع المرتبط بالجلسة.
+  // ======================================================
+  useEffect(() => {
+    if (!canViewReturns || !companyId.trim()) {
+      return
+    }
+
+    void loadReturns()
+  }, [canViewReturns, companyId, branchId])
+
+  // ======================================================
   // loadReturnDetails
   // تجيب تفاصيل مرتجع واحد
   //
@@ -178,7 +190,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
               disabled={!companyId.trim() || loadingReturns}
               onClick={loadReturns}
             >
-              {loadingReturns ? 'جاري التحميل...' : 'تحميل المرتجعات'}
+              {loadingReturns ? 'جاري التحديث...' : 'تحديث البيانات'}
             </button>
           ) : null}
         </div>
@@ -186,7 +198,11 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
         {error ? <p className="error-message">{error}</p> : null}
 
         {returns.length === 0 ? (
-          <p className="muted">لا توجد مرتجعات معروضة حتى الآن.</p>
+          <p className="muted">
+            {loadingReturns
+              ? 'جاري تحميل المرتجعات...'
+              : 'لا توجد مرتجعات مسجلة حاليًا.'}
+          </p>
         ) : (
           <div className="table-wrapper">
             <table>
