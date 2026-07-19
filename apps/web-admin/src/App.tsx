@@ -243,6 +243,28 @@ function App() {
   }
 
   // ======================================================
+  // تحميل الداشبورد تلقائيًا.
+  //
+  // يتم التحديث عند:
+  // - فتح صفحة الداشبورد.
+  // - اكتمال بيانات Session.
+  // - تغيير الفرع.
+  // - تغيير تاريخ التقرير.
+  // ======================================================
+  useEffect(() => {
+    if (
+      activePage !== 'dashboard' ||
+      !canViewDashboard ||
+      !companyId.trim() ||
+      !date
+    ) {
+      return
+    }
+
+    void loadDashboard()
+  }, [activePage, canViewDashboard, companyId, branchId, date])
+
+  // ======================================================
   // openNewReturnFromSale
   //
   // تستقبل saleId من شاشة Sales
@@ -365,12 +387,15 @@ function App() {
                   disabled={!companyId.trim() || !date || loading}
                   onClick={loadDashboard}
                 >
-                  {loading ? 'جاري التحميل...' : 'تحميل الداشبورد'}
+                  {loading ? 'جاري التحديث...' : 'تحديث البيانات'}
                 </button>
               ) : null}
             </div>
 
             {error ? <p className="error-message">{error}</p> : null}
+            {loading && !dailySummary ? (
+              <p className="muted">جاري تحميل بيانات الداشبورد...</p>
+            ) : null}
           </section>
 
           {dailySummary ? (
@@ -411,7 +436,11 @@ function App() {
             <h2>آخر حركات المخزون</h2>
 
             {stockMovements.length === 0 ? (
-              <p className="muted">لا توجد حركات معروضة حتى الآن.</p>
+              <p className="muted">
+                {loading
+                  ? 'جاري تحميل حركات المخزون...'
+                  : 'لا توجد حركات مخزون مسجلة حاليًا.'}
+              </p>
             ) : (
               <div className="table-wrapper">
                 <table>
