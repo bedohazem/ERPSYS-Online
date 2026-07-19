@@ -256,12 +256,16 @@ function App() {
   useEffect(() => {
     const pageIsAllowed = visiblePages.some((page) => page.name === activePage)
 
+    // منع فتح صفحة لا يملك المستخدم صلاحيتها.
     if (!pageIsAllowed) {
       const firstAllowedPage = visiblePages[0]?.name
 
       if (firstAllowedPage) {
         navigateToPage(firstAllowedPage, true)
       }
+
+      // مهم: لا نكمل تصحيح الرابط باستخدام الصفحة القديمة.
+      return
     }
 
     // تصحيح الرابط القديم أو غير المعروف
