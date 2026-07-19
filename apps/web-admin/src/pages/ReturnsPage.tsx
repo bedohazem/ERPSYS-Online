@@ -67,6 +67,95 @@ type ApiResponse<T> = {
   data: T
 }
 
+// ======================================================
+// تنسيق مبالغ وكميات وتواريخ المرتجعات.
+// ======================================================
+const returnsCurrencyFormatter = new Intl.NumberFormat('ar-EG', {
+  style: 'currency',
+  currency: 'EGP',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+})
+
+const returnsQuantityFormatter = new Intl.NumberFormat('ar-EG', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 3,
+})
+
+const returnsDateTimeFormatter = new Intl.DateTimeFormat('ar-EG', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+})
+
+function formatReturnCurrency(value: number | string) {
+  const numericValue = Number(value)
+
+  return Number.isFinite(numericValue)
+    ? returnsCurrencyFormatter.format(numericValue)
+    : '-'
+}
+
+function formatReturnQuantity(value: number | string) {
+  const numericValue = Number(value)
+
+  return Number.isFinite(numericValue)
+    ? returnsQuantityFormatter.format(numericValue)
+    : '-'
+}
+
+function formatReturnDateTime(value: string) {
+  const parsedDate = new Date(value)
+
+  return Number.isNaN(parsedDate.getTime())
+    ? '-'
+    : returnsDateTimeFormatter.format(parsedDate)
+}
+
+// ======================================================
+// ترجمة حالات المرتجعات المعرفة في قاعدة البيانات.
+// ======================================================
+function translateReturnStatus(status: string) {
+  const statusLabels: Record<string, string> = {
+    draft: 'مسودة',
+    completed: 'مكتمل',
+    voided: 'ملغى',
+    pending_review: 'بانتظار المراجعة',
+  }
+
+  return statusLabels[status] || status
+}
+
+function getReturnStatusClass(status: string) {
+  if (status === 'completed') {
+    return 'status-badge status-badge-success'
+  }
+
+  if (status === 'voided') {
+    return 'status-badge status-badge-danger'
+  }
+
+  if (status === 'draft' || status === 'pending_review') {
+    return 'status-badge status-badge-warning'
+  }
+
+  return 'status-badge'
+}
+
+// ======================================================
+// ترجمة طرق رد المبلغ المعرفة في قاعدة البيانات.
+// ======================================================
+function translateRefundMethod(method: string) {
+  const methodLabels: Record<string, string> = {
+    cash: 'نقدي',
+    card: 'بطاقة بنكية',
+    wallet: 'محفظة إلكترونية',
+    bank_transfer: 'تحويل بنكي',
+    other: 'طريقة أخرى',
+  }
+
+  return methodLabels[method] || method
+}
+
 type ReturnsPageProps = {
   companyId: string
   branchId: string
@@ -185,13 +274,18 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
           </div>
 
           {canViewReturns ? (
-            <button
-              className="primary-button small-button"
-              disabled={!companyId.trim() || loadingReturns}
-              onClick={loadReturns}
-            >
-              {loadingReturns ? 'جاري التحديث...' : 'تحديث البيانات'}
-            </button>
+            <div className="section-actions">
+              <span className="record-count-badge">{returns.length} مرتجع</span>
+
+              <button
+                type="button"
+                className="primary-button small-button"
+                disabled={!companyId.trim() || loadingReturns}
+                onClick={loadReturns}
+              >
+                {loadingReturns ? 'جاري التحديث...' : 'تحديث البيانات'}
+              </button>
+            </div>
           ) : null}
         </div>
 
@@ -209,6 +303,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
               <thead>
                 <tr>
                   <th>رقم المرتجع</th>
+                  <th>التاريخ</th>
                   <th>الفاتورة الأصلية</th>
                   <th>العميل</th>
                   <th>الفرع</th>
@@ -222,17 +317,46 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
               <tbody>
                 {returns.map((returnDocument) => (
                   <tr key={returnDocument.id}>
-                    <td>{returnDocument.return_number}</td>
-                    <td>{returnDocument.original_sale_number || '-'}</td>
+                    <td>
+                      <strong className="document-number">
+                        {returnDocument.return_number}
+                      </strong>
+                    </td>
+
+                    <td>{formatReturnDateTime(returnDocument.created_at)}</td>
+
+                    <td>
+                      {returnDocument.original_sale_number ? (
+                        <span className="original-document-number">
+                          {returnDocument.original_sale_number}
+                        </span>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
                     <td>{returnDocument.customer_name || 'بدون عميل'}</td>
                     <td>{returnDocument.branch_name}</td>
-                    <td>{returnDocument.subtotal}</td>
-                    <td>{returnDocument.refund_total}</td>
+                    <td className="money-cell">
+                      {formatReturnCurrency(returnDocument.subtotal)}
+                    </td>
+
+                    <td className="money-cell refund-money-cell">
+                      {formatReturnCurrency(returnDocument.refund_total)}
+                    </td>
+
                     <td>{returnDocument.items_count}</td>
-                    <td>{returnDocument.status}</td>
+
+                    <td>
+                      <span
+                        className={getReturnStatusClass(returnDocument.status)}
+                      >
+                        {translateReturnStatus(returnDocument.status)}
+                      </span>
+                    </td>
                     <td>
                       {canViewReturns ? (
                         <button
+                          type="button"
                           className="table-button"
                           disabled={loadingDetails}
                           onClick={() => loadReturnDetails(returnDocument.id)}
@@ -255,21 +379,39 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
             <div>
               <h2>تفاصيل المرتجع</h2>
               <p className="muted">
-                {selectedReturnDetails.return.return_number} / فاتورة أصلية:{' '}
+                {selectedReturnDetails.return.return_number}
+                {' • '}
+                فاتورة أصلية:{' '}
                 {selectedReturnDetails.return.original_sale_number || '-'}
+                {' • '}
+                {formatReturnDateTime(selectedReturnDetails.return.created_at)}
               </p>
             </div>
+            <button
+              type="button"
+              className="table-button"
+              disabled={loadingDetails}
+              onClick={() => setSelectedReturnDetails(null)}
+            >
+              إغلاق التفاصيل
+            </button>
           </div>
 
           <section className="mini-cards-grid">
             <article className="mini-card">
               <span>الإجمالي</span>
-              <strong>{selectedReturnDetails.return.subtotal}</strong>
+              <strong>
+                {formatReturnCurrency(selectedReturnDetails.return.subtotal)}
+              </strong>
             </article>
 
             <article className="mini-card">
               <span>المبلغ المرتجع</span>
-              <strong>{selectedReturnDetails.return.refund_total}</strong>
+              <strong className="refund-total-value">
+                {formatReturnCurrency(
+                  selectedReturnDetails.return.refund_total,
+                )}
+              </strong>
             </article>
 
             <article className="mini-card">
@@ -286,9 +428,26 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
 
             <article className="mini-card">
               <span>الحالة</span>
-              <strong>{selectedReturnDetails.return.status}</strong>
+
+              <div className="mini-card-status">
+                <span
+                  className={getReturnStatusClass(
+                    selectedReturnDetails.return.status,
+                  )}
+                >
+                  {translateReturnStatus(selectedReturnDetails.return.status)}
+                </span>
+              </div>
             </article>
           </section>
+
+          {selectedReturnDetails.return.reason ? (
+            <div className="return-reason-card">
+              <span>سبب المرتجع</span>
+
+              <strong>{selectedReturnDetails.return.reason}</strong>
+            </div>
+          ) : null}
 
           <h3>الأصناف المرتجعة</h3>
 
@@ -315,11 +474,16 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
                     <td>{item.barcode_snapshot || '-'}</td>
                     <td>{item.size_snapshot || '-'}</td>
                     <td>{item.color_snapshot || '-'}</td>
-                    <td>{item.quantity}</td>
-                    <td>{item.unit_price}</td>
+                    <td>{formatReturnQuantity(item.quantity)}</td>
+
+                    <td className="money-cell">
+                      {formatReturnCurrency(item.unit_price)}
+                    </td>
 
                     {/* المبلغ الحقيقي الذي تم رده لهذا الصنف */}
-                    <td>{item.refund_amount}</td>
+                    <td className="money-cell refund-money-cell">
+                      {formatReturnCurrency(item.refund_amount)}
+                    </td>
 
                     <td>{item.reason || '-'}</td>
                   </tr>
@@ -345,8 +509,15 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
                 <tbody>
                   {selectedReturnDetails.refunds.map((refund) => (
                     <tr key={refund.id}>
-                      <td>{refund.method}</td>
-                      <td>{refund.amount}</td>
+                      <td>
+                        <span className="payment-method-badge">
+                          {translateRefundMethod(refund.method)}
+                        </span>
+                      </td>
+
+                      <td className="money-cell refund-money-cell">
+                        {formatReturnCurrency(refund.amount)}
+                      </td>
                       <td>{refund.reference || '-'}</td>
                     </tr>
                   ))}
