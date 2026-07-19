@@ -36,6 +36,8 @@ type ApiResponse<T> = {
 function RolesPage() {
   const [roles, setRoles] = useState<RoleRow[]>([])
   const [permissions, setPermissions] = useState<PermissionRow[]>([])
+  // التحكم في ظهور نموذج إنشاء دور جديد.
+  const [showCreateForm, setShowCreateForm] = useState(false)
   // ======================================================
   // بيانات إنشاء دور مخصص جديد.
   // ======================================================
@@ -169,7 +171,8 @@ function RolesPage() {
       setRoleName('')
       setRoleCode('')
       setSelectedPermissionIds([])
-
+      // إغلاق النموذج بعد الإنشاء الناجح.
+      setShowCreateForm(false)
       setSuccessMessage(`تم إنشاء الدور ${response.data.name} بنجاح`)
     } catch (currentError) {
       setError(
@@ -194,14 +197,29 @@ function RolesPage() {
             </p>
           </div>
 
-          <button
-            type="button"
-            className="primary-button small-button"
-            disabled={loading}
-            onClick={loadAccessData}
-          >
-            {loading ? 'جاري التحديث...' : 'تحديث البيانات'}
-          </button>
+          <div className="section-actions">
+            <button
+              type="button"
+              className="primary-button small-button"
+              disabled={saving}
+              onClick={() => {
+                setError('')
+                setSuccessMessage('')
+                setShowCreateForm((currentValue) => !currentValue)
+              }}
+            >
+              {showCreateForm ? 'إغلاق النموذج' : 'دور جديد'}
+            </button>
+
+            <button
+              type="button"
+              className="table-button"
+              disabled={loading || saving}
+              onClick={loadAccessData}
+            >
+              {loading ? 'جاري التحديث...' : 'تحديث'}
+            </button>
+          </div>
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
@@ -210,91 +228,95 @@ function RolesPage() {
         ) : null}
       </section>
 
-      <section className="panel">
-        <div className="section-header">
-          <div>
-            <h2>دور مخصص جديد</h2>
-
-            <p className="muted">
-              أنشئ دورًا مخصصًا وحدد الصلاحيات المناسبة له.
-            </p>
-          </div>
-        </div>
-
-        <form onSubmit={createRole}>
-          <div className="form-grid">
-            <label>
-              اسم الدور
-              <input
-                value={roleName}
-                maxLength={100}
-                disabled={saving}
-                onChange={(event) => setRoleName(event.target.value)}
-                placeholder="مثال: مدير المخزن"
-              />
-            </label>
-
-            <label>
-              كود الدور
-              <input
-                value={roleCode}
-                maxLength={50}
-                disabled={saving}
-                onChange={(event) =>
-                  setRoleCode(
-                    event.target.value.toLowerCase().replace(/\s+/g, '_'),
-                  )
-                }
-                placeholder="مثال: warehouse_manager"
-              />
-            </label>
-          </div>
-
+      {showCreateForm ? (
+        <section className="panel">
           <div className="section-header">
             <div>
-              <h3>صلاحيات الدور</h3>
+              <h2>دور مخصص جديد</h2>
 
-              <p className="muted">اختر صلاحية واحدة على الأقل.</p>
+              <p className="muted">
+                أنشئ دورًا مخصصًا وحدد الصلاحيات المناسبة له.
+              </p>
             </div>
           </div>
 
-          {permissions.length === 0 ? (
-            <p className="muted">
-              {loading
-                ? 'جاري تحميل كتالوج الصلاحيات...'
-                : 'لا توجد صلاحيات متاحة حاليًا.'}
-            </p>
-          ) : (
+          <form onSubmit={createRole}>
             <div className="form-grid">
-              {permissions.map((permission) => (
-                <label key={permission.id}>
-                  <input
-                    type="checkbox"
-                    checked={selectedPermissionIds.includes(permission.id)}
-                    disabled={saving}
-                    onChange={() => togglePermission(permission.id)}
-                  />
+              <label>
+                اسم الدور
+                <input
+                  value={roleName}
+                  maxLength={100}
+                  disabled={saving}
+                  onChange={(event) => setRoleName(event.target.value)}
+                  placeholder="مثال: مدير المخزن"
+                />
+              </label>
 
-                  {permission.code}
-                  {permission.description ? ` — ${permission.description}` : ''}
-                </label>
-              ))}
+              <label>
+                كود الدور
+                <input
+                  value={roleCode}
+                  maxLength={50}
+                  disabled={saving}
+                  onChange={(event) =>
+                    setRoleCode(
+                      event.target.value.toLowerCase().replace(/\s+/g, '_'),
+                    )
+                  }
+                  placeholder="مثال: warehouse_manager"
+                />
+              </label>
             </div>
-          )}
 
-          <button
-            type="submit"
-            className="primary-button"
-            disabled={
-              saving ||
-              permissions.length === 0 ||
-              selectedPermissionIds.length === 0
-            }
-          >
-            {saving ? 'جاري إنشاء الدور...' : 'إنشاء الدور'}
-          </button>
-        </form>
-      </section>
+            <div className="section-header">
+              <div>
+                <h3>صلاحيات الدور</h3>
+
+                <p className="muted">اختر صلاحية واحدة على الأقل.</p>
+              </div>
+            </div>
+
+            {permissions.length === 0 ? (
+              <p className="muted">
+                {loading
+                  ? 'جاري تحميل كتالوج الصلاحيات...'
+                  : 'لا توجد صلاحيات متاحة حاليًا.'}
+              </p>
+            ) : (
+              <div className="form-grid">
+                {permissions.map((permission) => (
+                  <label key={permission.id}>
+                    <input
+                      type="checkbox"
+                      checked={selectedPermissionIds.includes(permission.id)}
+                      disabled={saving}
+                      onChange={() => togglePermission(permission.id)}
+                    />
+
+                    {permission.code}
+                    {permission.description
+                      ? ` — ${permission.description}`
+                      : ''}
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={
+                saving ||
+                permissions.length === 0 ||
+                selectedPermissionIds.length === 0
+              }
+            >
+              {saving ? 'جاري إنشاء الدور...' : 'إنشاء الدور'}
+            </button>
+          </form>
+        </section>
+      ) : null}
 
       <section className="panel">
         <h2>الأدوار</h2>

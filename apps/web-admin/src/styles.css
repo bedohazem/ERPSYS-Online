@@ -1264,3 +1264,22 @@ body {
     width: 100%;
   }
 }
+
+/* مجموعة أزرار عنوان الصفحة. */
+.section-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+  .section-actions {
+    width: 100%;
+  }
+
+  .section-actions > button {
+    flex: 1 1 auto;
+  }
+}

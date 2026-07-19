@@ -77,7 +77,8 @@ function UsersPage() {
   const [users, setUsers] = useState<UserRow[]>([])
   const [branches, setBranches] = useState<BranchOption[]>([])
   const [roles, setRoles] = useState<RoleOption[]>([])
-
+  // التحكم في ظهور نموذج إنشاء مستخدم جديد.
+  const [showCreateForm, setShowCreateForm] = useState(false)
   const [fullName, setFullName] = useState('')
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
@@ -248,7 +249,8 @@ function UsersPage() {
       setPassword('')
       setBranchId('')
       setSelectedRoleIds([])
-
+      // إغلاق النموذج بعد إنشاء المستخدم بنجاح.
+      setShowCreateForm(false)
       setSuccessMessage(`تم إنشاء المستخدم ${response.data.full_name} بنجاح`)
     } catch (currentError) {
       setError(
@@ -274,7 +276,9 @@ function UsersPage() {
 
     setError('')
     setSuccessMessage('')
-
+    // نعرض عملية واحدة فقط في كل مرة.
+    setShowCreateForm(false)
+    cancelPasswordReset()
     setEditingUserId(targetUser.id)
     setEditUsername(targetUser.username)
     setEditFullName(targetUser.full_name)
@@ -396,7 +400,9 @@ function UsersPage() {
 
     setError('')
     setSuccessMessage('')
-
+    // نعرض عملية واحدة فقط في كل مرة.
+    setShowCreateForm(false)
+    cancelEditingUser()
     setPasswordResetUserId(targetUser.id)
     setPasswordResetUsername(targetUser.username)
     setNewPassword('')
@@ -550,15 +556,50 @@ function UsersPage() {
             </p>
           </div>
 
-          {/* منع إعادة التحميل أثناء أي عملية حفظ أو تحديث حالة. */}
-          <button
-            type="button"
-            className="primary-button small-button"
-            disabled={loading || saving || Boolean(updatingUserId)}
-            onClick={loadPageData}
-          >
-            {loading ? 'جاري التحديث...' : 'تحديث البيانات'}
-          </button>
+          <div className="section-actions">
+            {canCreateUser ? (
+              <button
+                type="button"
+                className="primary-button small-button"
+                disabled={
+                  saving ||
+                  savingEdit ||
+                  savingPasswordReset ||
+                  Boolean(updatingUserId)
+                }
+                onClick={() => {
+                  setError('')
+                  setSuccessMessage('')
+
+                  if (showCreateForm) {
+                    setShowCreateForm(false)
+                    return
+                  }
+
+                  cancelEditingUser()
+                  cancelPasswordReset()
+                  setShowCreateForm(true)
+                }}
+              >
+                {showCreateForm ? 'إغلاق النموذج' : 'مستخدم جديد'}
+              </button>
+            ) : null}
+
+            <button
+              type="button"
+              className="table-button"
+              disabled={
+                loading ||
+                saving ||
+                savingEdit ||
+                savingPasswordReset ||
+                Boolean(updatingUserId)
+              }
+              onClick={loadPageData}
+            >
+              {loading ? 'جاري التحديث...' : 'تحديث'}
+            </button>
+          </div>
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
@@ -568,7 +609,7 @@ function UsersPage() {
         ) : null}
       </section>
 
-      {canCreateUser ? (
+      {canCreateUser && showCreateForm ? (
         <section className="panel">
           <div className="section-header">
             <div>
@@ -578,6 +619,14 @@ function UsersPage() {
                 أنشئ مستخدمًا جديدًا وحدد الفرع والأدوار المناسبة له.
               </p>
             </div>
+            <button
+              type="button"
+              className="table-button"
+              disabled={saving}
+              onClick={() => setShowCreateForm(false)}
+            >
+              إلغاء
+            </button>
           </div>
 
           <form onSubmit={createUser}>
@@ -681,14 +730,14 @@ function UsersPage() {
             </button>
           </form>
         </section>
-      ) : (
+      ) : !canCreateUser ? (
         <section className="panel">
           <p className="muted">
             لديك صلاحية عرض المستخدمين، لكن إنشاء مستخدم ومنح الأدوار يحتاج
             صلاحية roles.manage.
           </p>
         </section>
-      )}
+      ) : null}
 
       {editingUserId ? (
         <section className="panel">
