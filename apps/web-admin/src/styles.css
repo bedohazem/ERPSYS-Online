@@ -10,7 +10,9 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -64,27 +66,104 @@ input {
 
 .form-grid {
   display: grid;
-  grid-template-columns: 1.5fr 1.5fr 0.8fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  align-items: start;
   gap: 16px;
 }
 
 label {
   display: grid;
   gap: 8px;
+  color: #334155;
+  font-size: 14px;
   font-weight: 700;
 }
 
-input {
+input:not([type='checkbox']):not([type='radio']),
+select,
+textarea {
   width: 100%;
-  padding: 12px 14px;
-  border: 1px solid #c9d7eb;
-  border-radius: 12px;
+  min-height: 44px;
+  padding: 10px 13px;
+  border: 1px solid #d6dfeb;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f172a;
   outline: none;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
 }
 
-input:focus {
-  border-color: #2f80ed;
-  box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.15);
+textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+input:not([type='checkbox']):not([type='radio']):focus,
+select:focus,
+textarea:focus {
+  border-color: #2563eb;
+  background: #ffffff;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
+}
+
+input:not([type='checkbox']):not([type='radio']):disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+/* Checkbox وRadio لا يأخذان عرض الحقل كاملًا. */
+input[type='checkbox'],
+input[type='radio'] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  accent-color: #2563eb;
+  cursor: pointer;
+}
+
+input[type='checkbox']:disabled,
+input[type='radio']:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.form-grid > label:has(> input[type='checkbox']),
+.form-grid > label:has(> input[type='radio']) {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 48px;
+  padding: 12px 13px;
+  border: 1px solid #e2e8f0;
+  border-radius: 11px;
+  background: #f8fafc;
+  color: #334155;
+  font-weight: 600;
+  line-height: 1.55;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.form-grid > label:has(> input[type='checkbox']):hover,
+.form-grid > label:has(> input[type='radio']):hover {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.form-grid > label:has(> input[type='checkbox']:checked),
+.form-grid > label:has(> input[type='radio']:checked) {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1e40af;
 }
 
 .primary-button {
@@ -140,23 +219,43 @@ input:focus {
 
 .table-wrapper {
   overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
 }
 
 table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
 }
 
 th,
 td {
-  padding: 14px;
-  border-bottom: 1px solid #e6edf7;
+  padding: 13px 15px;
+  border-bottom: 1px solid #edf1f6;
   text-align: right;
   white-space: nowrap;
 }
 
 th {
+  background: #f8fafc;
   color: #475569;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+td {
+  background: #ffffff;
+  color: #334155;
+  font-size: 14px;
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+tbody tr:hover td {
   background: #f8fbff;
 }
 
@@ -1282,4 +1381,38 @@ body {
   .section-actions > button {
     flex: 1 1 auto;
   }
+}
+
+/* ======================================================
+   تحسين تفاعل الأزرار
+====================================================== */
+
+.primary-button,
+.table-button,
+.logout-button {
+  min-height: 40px;
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease,
+    border-color 150ms ease,
+    background 150ms ease;
+}
+
+.primary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(15, 61, 145, 0.2);
+}
+
+.table-button:hover:not(:disabled) {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.logout-button:hover:not(:disabled) {
+  border-color: #fda4af;
+  background: #ffe4e6;
+}
+
+.app-content .panel form {
+  margin-top: 20px;
 }
