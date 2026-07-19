@@ -1416,3 +1416,184 @@ body {
 .app-content .panel form {
   margin-top: 20px;
 }
+
+/* ======================================================
+   Dashboard Polish
+====================================================== */
+
+.dashboard-overview-panel {
+  padding: 18px 22px;
+}
+
+.dashboard-overview-header {
+  min-height: 58px;
+}
+
+.dashboard-overview-header h2 {
+  margin-bottom: 4px;
+}
+
+.dashboard-overview-header .muted,
+.dashboard-table-header .muted {
+  margin: 0;
+}
+
+.dashboard-overview-header .primary-button {
+  margin: 0;
+}
+
+.dashboard-stats-grid {
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.dashboard-stat-card {
+  position: relative;
+  min-height: 132px;
+  padding: 19px 20px;
+  overflow: hidden;
+}
+
+.dashboard-stat-card::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 100%;
+  border-radius: 0 16px 16px 0;
+  background: #2563eb;
+  content: '';
+}
+
+.dashboard-stat-sales::before {
+  background: #2563eb;
+}
+
+.dashboard-stat-returns::before {
+  background: #f59e0b;
+}
+
+.dashboard-stat-net::before {
+  background: #16a34a;
+}
+
+.dashboard-stat-items::before {
+  background: #7c3aed;
+}
+
+.dashboard-stat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboard-stat-header > span:first-child {
+  color: #64748b;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.dashboard-stat-icon {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #2563eb !important;
+  font-size: 17px;
+  font-weight: 900;
+}
+
+.dashboard-stat-card strong {
+  margin: 13px 0 7px;
+  color: #0f172a;
+  font-size: clamp(24px, 2vw, 31px);
+  line-height: 1.2;
+}
+
+.dashboard-stat-card small {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.dashboard-movements-panel {
+  margin-top: 18px;
+}
+
+.dashboard-table-header {
+  margin-bottom: 18px;
+}
+
+.dashboard-record-count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 11px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.movement-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 68px;
+  padding: 5px 9px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.movement-badge-in {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.movement-badge-out {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.stock-quantity {
+  font-weight: 900;
+}
+
+.stock-quantity-in {
+  color: #15803d;
+}
+
+.stock-quantity-out {
+  color: #b91c1c;
+}
+
+@media (max-width: 1150px) {
+  .dashboard-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 650px) {
+  .dashboard-stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-table-header {
+    align-items: stretch;
+  }
+
+  .dashboard-record-count {
+    align-self: flex-start;
+  }
+}

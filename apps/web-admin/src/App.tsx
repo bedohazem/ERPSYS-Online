@@ -180,6 +180,73 @@ function createTodayDateValue() {
   return localDate.toISOString().slice(0, 10)
 }
 
+// ======================================================
+// تنسيق مبالغ الداشبورد بالجنيه المصري.
+// ======================================================
+const currencyFormatter = new Intl.NumberFormat('ar-EG', {
+  style: 'currency',
+  currency: 'EGP',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+})
+
+// ======================================================
+// تنسيق كميات المخزون بحد أقصى 3 أرقام عشرية.
+// ======================================================
+const quantityFormatter = new Intl.NumberFormat('ar-EG', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 3,
+})
+
+function formatCurrency(value: number | string) {
+  const numericValue = Number(value)
+
+  return Number.isFinite(numericValue)
+    ? currencyFormatter.format(numericValue)
+    : '-'
+}
+
+function formatQuantity(value: number | string) {
+  const numericValue = Number(value)
+
+  return Number.isFinite(numericValue)
+    ? quantityFormatter.format(numericValue)
+    : '-'
+}
+
+// ======================================================
+// ترجمة أنواع حركة المخزون.
+// ======================================================
+function translateStockMovement(movementType: string) {
+  const movementLabels: Record<string, string> = {
+    sale: 'بيع',
+    return: 'مرتجع',
+    purchase: 'شراء',
+    adjustment: 'تسوية',
+    opening_balance: 'رصيد افتتاحي',
+    transfer_in: 'تحويل وارد',
+    transfer_out: 'تحويل صادر',
+  }
+
+  return movementLabels[movementType] || movementType
+}
+
+function getMovementBadgeClass(movementType: string) {
+  if (
+    movementType === 'return' ||
+    movementType === 'purchase' ||
+    movementType === 'transfer_in'
+  ) {
+    return 'movement-badge movement-badge-in'
+  }
+
+  if (movementType === 'sale' || movementType === 'transfer_out') {
+    return 'movement-badge movement-badge-out'
+  }
+
+  return 'movement-badge'
+}
+
 function App() {
   // فتح آخر صفحة موجودة في الرابط عند تحميل التطبيق.
   const [activePage, setActivePage] = useState<PageName>(
@@ -497,8 +564,8 @@ function App() {
         <div className="app-content">
           {activePage === 'dashboard' ? (
             <>
-              <section className="panel">
-                <div className="section-header">
+              <section className="panel dashboard-overview-panel">
+                <div className="section-header dashboard-overview-header">
                   <div>
                     <h2>نظرة عامة</h2>
                     <p className="muted">
@@ -524,41 +591,81 @@ function App() {
               </section>
 
               {dailySummary ? (
-                <section className="cards-grid">
-                  <article className="card">
-                    <span>مبيعات اليوم</span>
-                    <strong>{dailySummary.sales.total}</strong>
+                <section className="cards-grid dashboard-stats-grid">
+                  <article className="card dashboard-stat-card dashboard-stat-sales">
+                    <div className="dashboard-stat-header">
+                      <span>مبيعات اليوم</span>
+                      <span className="dashboard-stat-icon">↗</span>
+                    </div>
+
+                    <strong>{formatCurrency(dailySummary.sales.total)}</strong>
+
                     <small>عدد الفواتير: {dailySummary.sales.count}</small>
                   </article>
 
-                  <article className="card">
-                    <span>المرتجعات</span>
-                    <strong>{dailySummary.returns.totalRefunded}</strong>
+                  <article className="card dashboard-stat-card dashboard-stat-returns">
+                    <div className="dashboard-stat-header">
+                      <span>المرتجعات</span>
+                      <span className="dashboard-stat-icon">↩</span>
+                    </div>
+
+                    <strong>
+                      {formatCurrency(dailySummary.returns.totalRefunded)}
+                    </strong>
+
                     <small>عدد المرتجعات: {dailySummary.returns.count}</small>
                   </article>
 
-                  <article className="card">
-                    <span>صافي اليوم</span>
-                    <strong>{dailySummary.net.netSales}</strong>
-                    <small>مبيعات - مرتجعات</small>
+                  <article className="card dashboard-stat-card dashboard-stat-net">
+                    <div className="dashboard-stat-header">
+                      <span>صافي اليوم</span>
+                      <span className="dashboard-stat-icon">Σ</span>
+                    </div>
+
+                    <strong>{formatCurrency(dailySummary.net.netSales)}</strong>
+
+                    <small>المبيعات بعد خصم المرتجعات</small>
                   </article>
 
-                  <article className="card">
-                    <span>حركة القطع</span>
+                  <article className="card dashboard-stat-card dashboard-stat-items">
+                    <div className="dashboard-stat-header">
+                      <span>صافي حركة القطع</span>
+                      <span className="dashboard-stat-icon">▥</span>
+                    </div>
+
                     <strong>
-                      {dailySummary.sales.soldItemsQuantity -
-                        dailySummary.returns.returnedItemsQuantity}
+                      {formatQuantity(
+                        dailySummary.sales.soldItemsQuantity -
+                          dailySummary.returns.returnedItemsQuantity,
+                      )}
                     </strong>
+
                     <small>
-                      مباع: {dailySummary.sales.soldItemsQuantity} / مرتجع:{' '}
-                      {dailySummary.returns.returnedItemsQuantity}
+                      مباع:{' '}
+                      {formatQuantity(dailySummary.sales.soldItemsQuantity)} /
+                      مرتجع:{' '}
+                      {formatQuantity(
+                        dailySummary.returns.returnedItemsQuantity,
+                      )}
                     </small>
                   </article>
                 </section>
               ) : null}
 
-              <section className="panel">
-                <h2>آخر حركات المخزون</h2>
+              <section className="panel dashboard-movements-panel">
+                <div className="section-header dashboard-table-header">
+                  <div>
+                    <h2>آخر حركات المخزون</h2>
+
+                    <p className="muted">
+                      أحدث عمليات البيع والمرتجعات والتسويات.
+                    </p>
+                  </div>
+
+                  <span className="dashboard-record-count">
+                    {stockMovements.length} حركة
+                  </span>
+                </div>
 
                 {stockMovements.length === 0 ? (
                   <p className="muted">
@@ -585,10 +692,31 @@ function App() {
                           <tr key={movement.id}>
                             <td>{movement.product_name}</td>
                             <td>{movement.sku}</td>
-                            <td>{movement.movement_type}</td>
-                            <td>{movement.quantity_before}</td>
-                            <td>{movement.quantity}</td>
-                            <td>{movement.quantity_after}</td>
+                            <td>
+                              <span
+                                className={getMovementBadgeClass(
+                                  movement.movement_type,
+                                )}
+                              >
+                                {translateStockMovement(movement.movement_type)}
+                              </span>
+                            </td>
+
+                            <td>{formatQuantity(movement.quantity_before)}</td>
+
+                            <td>
+                              <strong
+                                className={
+                                  Number(movement.quantity) < 0
+                                    ? 'stock-quantity stock-quantity-out'
+                                    : 'stock-quantity stock-quantity-in'
+                                }
+                              >
+                                {formatQuantity(movement.quantity)}
+                              </strong>
+                            </td>
+
+                            <td>{formatQuantity(movement.quantity_after)}</td>
                             <td>{movement.stock_location_name}</td>
                           </tr>
                         ))}
