@@ -76,6 +76,101 @@ type ApiResponse<T> = {
   data: T
 }
 
+// ======================================================
+// تنسيق مبالغ وكميات وتواريخ فواتير المبيعات.
+// ======================================================
+const salesCurrencyFormatter = new Intl.NumberFormat('ar-EG', {
+  style: 'currency',
+  currency: 'EGP',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+})
+
+const salesQuantityFormatter = new Intl.NumberFormat('ar-EG', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 3,
+})
+
+const salesDateTimeFormatter = new Intl.DateTimeFormat('ar-EG', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+})
+
+function formatSaleCurrency(value: number | string) {
+  const numericValue = Number(value)
+
+  return Number.isFinite(numericValue)
+    ? salesCurrencyFormatter.format(numericValue)
+    : '-'
+}
+
+function formatSaleQuantity(value: number | string) {
+  const numericValue = Number(value)
+
+  return Number.isFinite(numericValue)
+    ? salesQuantityFormatter.format(numericValue)
+    : '-'
+}
+
+function formatSaleDateTime(value: string) {
+  const parsedDate = new Date(value)
+
+  return Number.isNaN(parsedDate.getTime())
+    ? '-'
+    : salesDateTimeFormatter.format(parsedDate)
+}
+
+// ======================================================
+// ترجمة حالات الفواتير المعرفة داخل قاعدة البيانات.
+// ======================================================
+function translateSaleStatus(status: string) {
+  const statusLabels: Record<string, string> = {
+    draft: 'مسودة',
+    completed: 'مكتملة',
+    voided: 'ملغاة',
+    refunded: 'مرتجعة بالكامل',
+    pending_review: 'بانتظار المراجعة',
+  }
+
+  return statusLabels[status] || status
+}
+
+function getSaleStatusClass(status: string) {
+  if (status === 'completed') {
+    return 'status-badge status-badge-success'
+  }
+
+  if (status === 'refunded') {
+    return 'status-badge status-badge-info'
+  }
+
+  if (status === 'voided') {
+    return 'status-badge status-badge-danger'
+  }
+
+  if (status === 'draft' || status === 'pending_review') {
+    return 'status-badge status-badge-warning'
+  }
+
+  return 'status-badge'
+}
+
+// ======================================================
+// ترجمة طرق الدفع المعرفة داخل قاعدة البيانات.
+// ======================================================
+function translatePaymentMethod(method: string) {
+  const paymentLabels: Record<string, string> = {
+    cash: 'نقدي',
+    card: 'بطاقة بنكية',
+    wallet: 'محفظة إلكترونية',
+    bank_transfer: 'تحويل بنكي',
+    mixed: 'دفع متعدد',
+    other: 'طريقة أخرى',
+  }
+
+  return paymentLabels[method] || method
+}
+
 type SalesPageProps = {
   companyId: string
   branchId: string
@@ -198,13 +293,18 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
             </p>
           </div>
 
-          <button
-            className="primary-button small-button"
-            disabled={!companyId.trim() || loadingSales}
-            onClick={loadSales}
-          >
-            {loadingSales ? 'جاري التحديث...' : 'تحديث البيانات'}
-          </button>
+          <div className="section-actions">
+            <span className="record-count-badge">{sales.length} فاتورة</span>
+
+            <button
+              type="button"
+              className="primary-button small-button"
+              disabled={!companyId.trim() || loadingSales}
+              onClick={loadSales}
+            >
+              {loadingSales ? 'جاري التحديث...' : 'تحديث البيانات'}
+            </button>
+          </div>
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
@@ -221,6 +321,7 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
               <thead>
                 <tr>
                   <th>رقم الفاتورة</th>
+                  <th>التاريخ</th>
                   <th>العميل</th>
                   <th>الفرع</th>
                   <th>الإجمالي</th>
@@ -238,23 +339,56 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
               <tbody>
                 {sales.map((sale) => (
                   <tr key={sale.id}>
-                    <td>{sale.sale_number}</td>
+                    <td>
+                      <strong className="document-number">
+                        {sale.sale_number}
+                      </strong>
+                    </td>
+
+                    <td>{formatSaleDateTime(sale.created_at)}</td>
+
                     <td>{sale.customer_name || 'بيع عام'}</td>
                     <td>{sale.branch_name}</td>
-                    <td>{sale.total}</td>
-                    <td>{sale.paid_total}</td>
-                    <td>{sale.change_total}</td>
+                    <td className="money-cell">
+                      {formatSaleCurrency(sale.total)}
+                    </td>
+
+                    <td className="money-cell">
+                      {formatSaleCurrency(sale.paid_total)}
+                    </td>
+
+                    <td className="money-cell">
+                      {formatSaleCurrency(sale.change_total)}
+                    </td>
+
                     <td>{sale.items_count}</td>
 
                     {/* متابعة كميات البيع والمرتجعات */}
-                    <td>{sale.sold_quantity}</td>
-                    <td>{sale.returned_quantity}</td>
-                    <td>{sale.remaining_returnable_quantity}</td>
+                    <td>{formatSaleQuantity(sale.sold_quantity)}</td>
 
-                    <td>{sale.status}</td>
+                    <td>{formatSaleQuantity(sale.returned_quantity)}</td>
+
+                    <td>
+                      <strong
+                        className={
+                          Number(sale.remaining_returnable_quantity) > 0
+                            ? 'returnable-quantity'
+                            : 'muted'
+                        }
+                      >
+                        {formatSaleQuantity(sale.remaining_returnable_quantity)}
+                      </strong>
+                    </td>
+
+                    <td>
+                      <span className={getSaleStatusClass(sale.status)}>
+                        {translateSaleStatus(sale.status)}
+                      </span>
+                    </td>
 
                     <td>
                       <button
+                        type="button"
                         className="table-button"
                         disabled={loadingDetails}
                         onClick={() => loadSaleDetails(sale.id)}
@@ -266,14 +400,15 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
                     <td>
                       {canCreateReturn ? (
                         <button
-                          className="primary-button small-button"
+                          type="button"
+                          className="table-button sale-return-button"
                           disabled={
                             Number(sale.remaining_returnable_quantity) <= 0
                           }
                           onClick={() => onCreateReturn(sale.id)}
                         >
                           {Number(sale.remaining_returnable_quantity) <= 0
-                            ? 'تم الإرجاع بالكامل'
+                            ? 'مرتجع بالكامل'
                             : 'إنشاء مرتجع'}
                         </button>
                       ) : null}
@@ -292,8 +427,11 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
             <div>
               <h2>تفاصيل الفاتورة</h2>
               <p className="muted">
-                {selectedSaleDetails.sale.sale_number} /{' '}
+                {selectedSaleDetails.sale.sale_number}
+                {' • '}
                 {selectedSaleDetails.sale.customer_name || 'بيع عام'}
+                {' • '}
+                {formatSaleDateTime(selectedSaleDetails.sale.created_at)}
               </p>
             </div>
           </div>
@@ -301,27 +439,44 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
           <section className="mini-cards-grid">
             <article className="mini-card">
               <span>الإجمالي</span>
-              <strong>{selectedSaleDetails.sale.total}</strong>
+              <strong>
+                {formatSaleCurrency(selectedSaleDetails.sale.total)}
+              </strong>
             </article>
 
             <article className="mini-card">
               <span>المدفوع</span>
-              <strong>{selectedSaleDetails.sale.paid_total}</strong>
+              <strong>
+                {formatSaleCurrency(selectedSaleDetails.sale.paid_total)}
+              </strong>
             </article>
 
             <article className="mini-card">
               <span>الخصم</span>
-              <strong>{selectedSaleDetails.sale.discount_total}</strong>
+              <strong>
+                {formatSaleCurrency(selectedSaleDetails.sale.discount_total)}
+              </strong>
             </article>
 
             <article className="mini-card">
               <span>الضريبة</span>
-              <strong>{selectedSaleDetails.sale.tax_total}</strong>
+              <strong>
+                {formatSaleCurrency(selectedSaleDetails.sale.tax_total)}
+              </strong>
             </article>
 
             <article className="mini-card">
               <span>الحالة</span>
-              <strong>{selectedSaleDetails.sale.status}</strong>
+
+              <div className="mini-card-status">
+                <span
+                  className={getSaleStatusClass(
+                    selectedSaleDetails.sale.status,
+                  )}
+                >
+                  {translateSaleStatus(selectedSaleDetails.sale.status)}
+                </span>
+              </div>
             </article>
           </section>
 
@@ -349,9 +504,15 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
                     <td>{item.barcode_snapshot || '-'}</td>
                     <td>{item.size_snapshot || '-'}</td>
                     <td>{item.color_snapshot || '-'}</td>
-                    <td>{item.quantity}</td>
-                    <td>{item.unit_price}</td>
-                    <td>{item.line_total}</td>
+                    <td>{formatSaleQuantity(item.quantity)}</td>
+
+                    <td className="money-cell">
+                      {formatSaleCurrency(item.unit_price)}
+                    </td>
+
+                    <td className="money-cell">
+                      {formatSaleCurrency(item.line_total)}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -372,8 +533,15 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
               <tbody>
                 {selectedSaleDetails.payments.map((payment) => (
                   <tr key={payment.id}>
-                    <td>{payment.method}</td>
-                    <td>{payment.amount}</td>
+                    <td>
+                      <span className="payment-method-badge">
+                        {translatePaymentMethod(payment.method)}
+                      </span>
+                    </td>
+
+                    <td className="money-cell">
+                      {formatSaleCurrency(payment.amount)}
+                    </td>
                     <td>{payment.reference || '-'}</td>
                   </tr>
                 ))}

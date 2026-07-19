@@ -1597,3 +1597,96 @@ body {
     align-self: flex-start;
   }
 }
+
+/* ======================================================
+   Sales Page
+====================================================== */
+
+.record-count-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.document-number {
+  color: #1d4ed8;
+  font-weight: 900;
+}
+
+.money-cell {
+  color: #0f172a;
+  font-weight: 800;
+}
+
+.returnable-quantity {
+  color: #b45309;
+  font-weight: 900;
+}
+
+.status-badge,
+.payment-method-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.status-badge-success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.status-badge-info {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.status-badge-warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #a16207;
+}
+
+.status-badge-danger {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.payment-method-badge {
+  border-color: #ddd6fe;
+  background: #f5f3ff;
+  color: #6d28d9;
+}
+
+.sale-return-button {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.sale-return-button:hover:not(:disabled) {
+  border-color: #fdba74;
+  background: #ffedd5;
+}
+
+.mini-card-status {
+  margin-top: 13px;
+}
