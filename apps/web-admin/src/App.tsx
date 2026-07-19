@@ -108,6 +108,26 @@ const pageDefinitions: Array<{
   },
 ]
 
+// ======================================================
+// readPageFromHash
+//
+// قراءة اسم الصفحة من رابط المتصفح.
+//
+// أمثلة:
+// #/dashboard
+// #/products
+// #/sales
+//
+// أي قيمة غير معروفة ترجع null بدل فتح صفحة غير موجودة.
+// ======================================================
+function readPageFromHash(): PageName | null {
+  const hashValue = window.location.hash.replace(/^#\/?/, '').trim()
+
+  const pageExists = pageDefinitions.some((page) => page.name === hashValue)
+
+  return pageExists ? (hashValue as PageName) : null
+}
+
 type DailySummary = {
   companyId: string
   branchId: string | null
@@ -161,7 +181,10 @@ function createTodayDateValue() {
 }
 
 function App() {
-  const [activePage, setActivePage] = useState<PageName>('dashboard')
+  // فتح آخر صفحة موجودة في الرابط عند تحميل التطبيق.
+  const [activePage, setActivePage] = useState<PageName>(
+    () => readPageFromHash() ?? 'dashboard',
+  )
 
   // رقم الفاتورة التي سيتم فتح مرتجع لها مباشرة
   // null يعني فتح شاشة New Return بدون فاتورة محددة
@@ -172,6 +195,29 @@ function App() {
   // بيانات الشركة والفرع لا تُكتب يدويًا بعد الآن.
   // مصدرها Session المستخدم المسجل.
   const { user, logout } = useAuth()
+
+  // ======================================================
+  // navigateToPage
+  //
+  // تغيير الصفحة مع تحديث رابط المتصفح.
+  //
+  // replace:
+  // يستخدم عند تصحيح رابط غير مسموح حتى لا نضيفه
+  // إلى سجل زر الرجوع في المتصفح.
+  // ======================================================
+  function navigateToPage(pageName: PageName, replace = false) {
+    const nextHash = `#/${pageName}`
+
+    if (window.location.hash !== nextHash) {
+      if (replace) {
+        window.history.replaceState(null, '', nextHash)
+      } else {
+        window.history.pushState(null, '', nextHash)
+      }
+    }
+
+    setActivePage(pageName)
+  }
 
   const canViewDashboard =
     user?.roles.includes('admin') ||
@@ -187,6 +233,24 @@ function App() {
     })
   }, [user])
 
+  // ======================================================
+  // مزامنة الصفحة مع أزرار الرجوع والتقدم في المتصفح.
+  // ======================================================
+  useEffect(() => {
+    function handleLocationChange() {
+      setActivePage(readPageFromHash() ?? 'dashboard')
+    }
+
+    window.addEventListener('popstate', handleLocationChange)
+    window.addEventListener('hashchange', handleLocationChange)
+
+    return () => {
+      window.removeEventListener('popstate', handleLocationChange)
+
+      window.removeEventListener('hashchange', handleLocationChange)
+    }
+  }, [])
+
   // لو المستخدم لا يملك صلاحية الصفحة الحالية،
   // ننقله لأول صفحة مسموحة.
   useEffect(() => {
@@ -196,8 +260,14 @@ function App() {
       const firstAllowedPage = visiblePages[0]?.name
 
       if (firstAllowedPage) {
-        setActivePage(firstAllowedPage)
+        navigateToPage(firstAllowedPage, true)
       }
+    }
+
+    // تصحيح الرابط القديم أو غير المعروف
+    // بدون إضافة سجل جديد للمتصفح.
+    if (readPageFromHash() !== activePage) {
+      window.history.replaceState(null, '', `#/${activePage}`)
     }
   }, [activePage, visiblePages])
 
@@ -213,6 +283,11 @@ function App() {
     visiblePages.find((page) => page.name === activePage) ??
     pageDefinitions.find((page) => page.name === activePage) ??
     pageDefinitions[0]
+
+  // تحديث عنوان تبويب المتصفح حسب الصفحة المفتوحة.
+  useEffect(() => {
+    document.title = `${activePageDefinition.label} | ERPSYS Online`
+  }, [activePageDefinition.label])
 
   const [date, setDate] = useState(createTodayDateValue)
 
@@ -301,7 +376,7 @@ function App() {
   // ======================================================
   function openNewReturnFromSale(saleId: string) {
     setSelectedReturnSaleId(saleId)
-    setActivePage('new-return')
+    navigateToPage('new-return')
   }
 
   return (
@@ -339,7 +414,7 @@ function App() {
                   setSelectedReturnSaleId(null)
                 }
 
-                setActivePage(page.name)
+                navigateToPage(page.name)
               }}
             >
               <span className="sidebar-nav-icon">{page.icon}</span>
