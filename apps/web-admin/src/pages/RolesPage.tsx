@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import type { FormEvent } from 'react'
 import { requestJson } from '../lib/http'
 
 // ======================================================
@@ -35,6 +36,17 @@ type ApiResponse<T> = {
 function RolesPage() {
   const [roles, setRoles] = useState<RoleRow[]>([])
   const [permissions, setPermissions] = useState<PermissionRow[]>([])
+  // ======================================================
+  // بيانات إنشاء دور مخصص جديد.
+  // ======================================================
+  const [roleName, setRoleName] = useState('')
+  const [roleCode, setRoleCode] = useState('')
+  const [selectedPermissionIds, setSelectedPermissionIds] = useState<string[]>(
+    [],
+  )
+
+  const [saving, setSaving] = useState(false)
+  const [successMessage, setSuccessMessage] = useState('')
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -50,6 +62,7 @@ function RolesPage() {
   async function loadAccessData() {
     setLoading(true)
     setError('')
+    setSuccessMessage('')
 
     try {
       const [rolesResponse, permissionsResponse] = await Promise.all([
@@ -67,6 +80,95 @@ function RolesPage() {
       )
     } finally {
       setLoading(false)
+    }
+  }
+
+  // ======================================================
+  // togglePermission
+  //
+  // تحديد أو إلغاء صلاحية من الدور الجديد.
+  // ======================================================
+  function togglePermission(permissionId: string) {
+    setSelectedPermissionIds((currentPermissionIds) =>
+      currentPermissionIds.includes(permissionId)
+        ? currentPermissionIds.filter(
+            (currentPermissionId) => currentPermissionId !== permissionId,
+          )
+        : [...currentPermissionIds, permissionId],
+    )
+  }
+
+  // ======================================================
+  // createRole
+  //
+  // إنشاء دور مخصص داخل الشركة الحالية.
+  // Backend يأخذ companyId من Session الموثقة.
+  // ======================================================
+  async function createRole(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    setError('')
+    setSuccessMessage('')
+
+    if (!roleName.trim()) {
+      setError('اسم الدور مطلوب')
+      return
+    }
+
+    const normalizedCode = roleCode.trim().toLowerCase()
+
+    if (!/^[a-z][a-z0-9._-]{2,49}$/.test(normalizedCode)) {
+      setError('كود الدور يبدأ بحرف إنجليزي ويحتوي على 3 إلى 50 حرفًا')
+      return
+    }
+
+    if (normalizedCode === 'admin') {
+      setError('لا يمكن استخدام كود admin')
+      return
+    }
+
+    if (selectedPermissionIds.length === 0) {
+      setError('يجب اختيار صلاحية واحدة على الأقل')
+      return
+    }
+
+    setSaving(true)
+
+    try {
+      const response = await requestJson<ApiResponse<RoleRow>>('/api/roles', {
+        method: 'POST',
+
+        headers: {
+          'Content-Type': 'application/json',
+        },
+
+        body: JSON.stringify({
+          name: roleName.trim(),
+          code: normalizedCode,
+          permissionIds: selectedPermissionIds,
+        }),
+      })
+
+      // إضافة الدور الجديد مباشرة داخل الجدول.
+      setRoles((currentRoles) =>
+        [...currentRoles, response.data].sort((firstRole, secondRole) =>
+          firstRole.name.localeCompare(secondRole.name, 'ar'),
+        ),
+      )
+
+      setRoleName('')
+      setRoleCode('')
+      setSelectedPermissionIds([])
+
+      setSuccessMessage(`تم إنشاء الدور ${response.data.name} بنجاح`)
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'حدث خطأ أثناء إنشاء الدور',
+      )
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -93,6 +195,91 @@ function RolesPage() {
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
+        {successMessage ? (
+          <p className="success-message">{successMessage}</p>
+        ) : null}
+      </section>
+
+      <section className="panel">
+        <div className="section-header">
+          <div>
+            <h2>دور مخصص جديد</h2>
+
+            <p className="muted">
+              حمّل كتالوج الصلاحيات أولًا، ثم اختر صلاحيات الدور.
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={createRole}>
+          <div className="form-grid">
+            <label>
+              اسم الدور
+              <input
+                value={roleName}
+                maxLength={100}
+                disabled={saving}
+                onChange={(event) => setRoleName(event.target.value)}
+                placeholder="مثال: مدير المخزن"
+              />
+            </label>
+
+            <label>
+              كود الدور
+              <input
+                value={roleCode}
+                maxLength={50}
+                disabled={saving}
+                onChange={(event) =>
+                  setRoleCode(
+                    event.target.value.toLowerCase().replace(/\s+/g, '_'),
+                  )
+                }
+                placeholder="مثال: warehouse_manager"
+              />
+            </label>
+          </div>
+
+          <div className="section-header">
+            <div>
+              <h3>صلاحيات الدور</h3>
+
+              <p className="muted">اختر صلاحية واحدة على الأقل.</p>
+            </div>
+          </div>
+
+          {permissions.length === 0 ? (
+            <p className="muted">اضغط تحميل الأدوار والصلاحيات أولًا.</p>
+          ) : (
+            <div className="form-grid">
+              {permissions.map((permission) => (
+                <label key={permission.id}>
+                  <input
+                    type="checkbox"
+                    checked={selectedPermissionIds.includes(permission.id)}
+                    disabled={saving}
+                    onChange={() => togglePermission(permission.id)}
+                  />
+
+                  {permission.code}
+                  {permission.description ? ` — ${permission.description}` : ''}
+                </label>
+              ))}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            className="primary-button"
+            disabled={
+              saving ||
+              permissions.length === 0 ||
+              selectedPermissionIds.length === 0
+            }
+          >
+            {saving ? 'جاري إنشاء الدور...' : 'إنشاء الدور'}
+          </button>
+        </form>
       </section>
 
       <section className="panel">
