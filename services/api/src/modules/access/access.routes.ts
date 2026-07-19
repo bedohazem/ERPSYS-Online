@@ -15,6 +15,16 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 // ======================================================
+// ROLE_CODE_PATTERN
+//
+// كود الدور:
+// - يبدأ بحرف إنجليزي صغير.
+// - يقبل حروفًا وأرقامًا والنقطة والشرطة.
+// - من 3 إلى 50 حرفًا.
+// ======================================================
+const ROLE_CODE_PATTERN = /^[a-z][a-z0-9._-]{2,49}$/
+
+// ======================================================
 // GET /api/users
 //
 // يعرض مستخدمي الشركة الحالية فقط.
@@ -1572,3 +1582,329 @@ accessRouter.patch(
     }
   },
 )
+
+// ======================================================
+// POST /api/roles
+//
+// إنشاء دور مخصص داخل الشركة الحالية وربطه بالصلاحيات.
+//
+// Body:
+// {
+//   name: string
+//   code: string
+//   permissionIds: string[]
+// }
+//
+// الحماية:
+// - companyId يؤخذ من Session فقط.
+// - لا يمكن إنشاء دور System من الواجهة.
+// - لا يمكن استخدام كود admin.
+// - لا يمكن تقليد كود Role نظام موجود.
+// - كل الصلاحيات يجب أن تكون موجودة في الكتالوج.
+// - الإنشاء والربط وAudit Log داخل Transaction واحدة.
+// ======================================================
+accessRouter.post('/api/roles', async (req, res, next) => {
+  const { name, code, permissionIds } = req.body
+
+  // ====================================================
+  // التحقق من اسم الدور
+  // ====================================================
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({
+      error: 'name is required',
+    })
+  }
+
+  const normalizedName = name.trim()
+
+  if (normalizedName.length > 100) {
+    return res.status(400).json({
+      error: 'name must not exceed 100 characters',
+    })
+  }
+
+  // ====================================================
+  // التحقق من كود الدور
+  //
+  // يتم تخزينه بحروف صغيرة لتجنب الاختلاف بين:
+  // warehouse_manager
+  // Warehouse_Manager
+  // ====================================================
+  if (typeof code !== 'string' || !code.trim()) {
+    return res.status(400).json({
+      error: 'code is required',
+    })
+  }
+
+  const normalizedCode = code.trim().toLowerCase()
+
+  if (!ROLE_CODE_PATTERN.test(normalizedCode)) {
+    return res.status(400).json({
+      error:
+        'code must contain 3-50 lowercase letters, numbers, dot, underscore or hyphen',
+    })
+  }
+
+  // admin له معاملة خاصة داخل نظام الصلاحيات.
+  // لذلك لا يمكن إنشاؤه كدور مخصص.
+  if (normalizedCode === 'admin') {
+    return res.status(400).json({
+      error: 'admin is a reserved role code',
+    })
+  }
+
+  // ====================================================
+  // التحقق من الصلاحيات
+  // ====================================================
+  if (!Array.isArray(permissionIds) || permissionIds.length === 0) {
+    return res.status(400).json({
+      error: 'At least one permission is required',
+    })
+  }
+
+  if (
+    permissionIds.some(
+      (permissionId: unknown) =>
+        typeof permissionId !== 'string' ||
+        !UUID_PATTERN.test(permissionId.trim()),
+    )
+  ) {
+    return res.status(400).json({
+      error: 'One or more permissionIds are invalid',
+    })
+  }
+
+  // إزالة أي صلاحية مكررة قبل الحفظ.
+  const normalizedPermissionIds = Array.from(
+    new Set(permissionIds.map((permissionId: string) => permissionId.trim())),
+  )
+
+  const client = await db.connect()
+
+  try {
+    const auth = getAuthContext(res)
+
+    await client.query('BEGIN')
+
+    // ==================================================
+    // قفل الشركة أثناء إنشاء الدور.
+    //
+    // يمنع طلبين متزامنين من إنشاء نفس الكود
+    // قبل أن يرى أحدهما نتيجة الآخر.
+    // ==================================================
+    await client.query(
+      `
+        SELECT id
+        FROM companies
+        WHERE id = $1
+        FOR UPDATE;
+      `,
+      [auth.companyId],
+    )
+
+    // ==================================================
+    // منع تكرار أو تقليد أكواد الأدوار.
+    //
+    // نمنع:
+    // - نفس الكود داخل الشركة.
+    // - أي كود Role عام.
+    // - أي كود Role نظام حتى لو تابع لشركة أخرى.
+    // ==================================================
+    const duplicateRoleResult = await client.query(
+      `
+        SELECT
+          id,
+          code,
+          is_system
+        FROM roles
+        WHERE LOWER(code) = LOWER($1)
+          AND (
+            company_id = $2
+            OR company_id IS NULL
+            OR is_system = TRUE
+          )
+        LIMIT 1;
+      `,
+      [normalizedCode, auth.companyId],
+    )
+
+    if ((duplicateRoleResult.rowCount ?? 0) > 0) {
+      await client.query('ROLLBACK')
+
+      return res.status(409).json({
+        error: 'Role code is reserved or already exists',
+      })
+    }
+
+    // ==================================================
+    // التأكد أن جميع الصلاحيات موجودة.
+    // ==================================================
+    const permissionsResult = await client.query(
+      `
+        SELECT
+          id,
+          code
+        FROM permissions
+        WHERE id = ANY($1::uuid[])
+        ORDER BY code;
+      `,
+      [normalizedPermissionIds],
+    )
+
+    if ((permissionsResult.rowCount ?? 0) !== normalizedPermissionIds.length) {
+      await client.query('ROLLBACK')
+
+      return res.status(400).json({
+        error: 'One or more selected permissions do not exist',
+      })
+    }
+
+    // ==================================================
+    // إنشاء الدور كدور مخصص تابع للشركة.
+    // ==================================================
+    const roleResult = await client.query(
+      `
+        INSERT INTO roles (
+          company_id,
+          name,
+          code,
+          is_system
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          FALSE
+        )
+        RETURNING
+          id,
+          company_id,
+          name,
+          code,
+          is_system,
+          created_at;
+      `,
+      [auth.companyId, normalizedName, normalizedCode],
+    )
+
+    const createdRole = roleResult.rows[0]
+
+    // ==================================================
+    // ربط الدور بالصلاحيات المختارة.
+    // ==================================================
+    await client.query(
+      `
+        INSERT INTO role_permissions (
+          role_id,
+          permission_id
+        )
+        SELECT
+          $1,
+          UNNEST($2::uuid[]);
+      `,
+      [createdRole.id, normalizedPermissionIds],
+    )
+
+    // ==================================================
+    // تسجيل إنشاء الدور.
+    // ==================================================
+    await client.query(
+      `
+        INSERT INTO audit_logs (
+          company_id,
+          branch_id,
+          user_id,
+          action,
+          entity_type,
+          entity_id,
+          old_data,
+          new_data,
+          ip_address,
+          user_agent
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          'role.create',
+          'role',
+          $4,
+          NULL,
+          jsonb_build_object(
+            'name', $5::text,
+            'code', $6::text,
+            'permissionIds', $7::jsonb
+          ),
+          $8,
+          $9
+        );
+      `,
+      [
+        auth.companyId,
+        auth.branchId,
+        auth.userId,
+        createdRole.id,
+        normalizedName,
+        normalizedCode,
+        JSON.stringify(normalizedPermissionIds),
+        req.ip || null,
+        req.get('user-agent')?.slice(0, 500) || null,
+      ],
+    )
+
+    // ==================================================
+    // إعادة الدور بنفس شكل جدول RolesPage.
+    // ==================================================
+    const createdRoleResult = await client.query(
+      `
+        SELECT
+          roles.id,
+          roles.company_id,
+          roles.name,
+          roles.code,
+          roles.is_system,
+          roles.created_at,
+
+          ARRAY(
+            SELECT permissions.code
+            FROM role_permissions
+            JOIN permissions
+              ON permissions.id =
+                 role_permissions.permission_id
+            WHERE role_permissions.role_id = roles.id
+            ORDER BY permissions.code
+          ) AS permissions
+
+        FROM roles
+
+        WHERE roles.id = $1
+          AND roles.company_id = $2;
+      `,
+      [createdRole.id, auth.companyId],
+    )
+
+    await client.query('COMMIT')
+
+    return res.status(201).json({
+      data: createdRoleResult.rows[0],
+    })
+  } catch (error) {
+    await client.query('ROLLBACK')
+
+    // حماية إضافية لو وصل طلبان متزامنان بنفس الكود.
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === '23505'
+    ) {
+      return res.status(409).json({
+        error: 'Role code already exists',
+      })
+    }
+
+    next(error)
+  } finally {
+    client.release()
+  }
+})
