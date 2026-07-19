@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission } from '../auth/permissions'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
@@ -100,6 +100,17 @@ function ProductsPage({ companyId }: ProductsPageProps) {
     }
   }
 
+  // ======================================================
+  // تحميل المنتجات والأصناف تلقائيًا عند فتح الصفحة.
+  // ======================================================
+  useEffect(() => {
+    if (!canViewProducts || !companyId.trim()) {
+      return
+    }
+
+    void loadProductsData()
+  }, [canViewProducts, companyId])
+
   return (
     <section className="panel">
       <div className="section-header">
@@ -116,7 +127,7 @@ function ProductsPage({ companyId }: ProductsPageProps) {
             disabled={!companyId.trim() || loading}
             onClick={loadProductsData}
           >
-            {loading ? 'جاري التحميل...' : 'تحميل المنتجات'}
+            {loading ? 'جاري التحديث...' : 'تحديث البيانات'}
           </button>
         ) : null}
       </div>
@@ -126,7 +137,9 @@ function ProductsPage({ companyId }: ProductsPageProps) {
       <h3>Products</h3>
 
       {products.length === 0 ? (
-        <p className="muted">لا توجد منتجات معروضة حتى الآن.</p>
+        <p className="muted">
+          {loading ? 'جاري تحميل المنتجات...' : 'لا توجد منتجات مسجلة حاليًا.'}
+        </p>
       ) : (
         <div className="table-wrapper">
           <table>
@@ -159,7 +172,9 @@ function ProductsPage({ companyId }: ProductsPageProps) {
       <h3>Variants</h3>
 
       {variants.length === 0 ? (
-        <p className="muted">لا توجد Variants معروضة حتى الآن.</p>
+        <p className="muted">
+          {loading ? 'جاري تحميل الأصناف...' : 'لا توجد أصناف مسجلة حاليًا.'}
+        </p>
       ) : (
         <div className="table-wrapper">
           <table>

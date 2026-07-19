@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from '../lib/http'
@@ -105,6 +105,20 @@ function CustomersPage({ companyId }: CustomersPageProps) {
   }
 
   // ======================================================
+  // تحميل قائمة العملاء تلقائيًا عند فتح الصفحة.
+  //
+  // البحث لا يعمل مع كل حرف لتجنب إرسال طلبات كثيرة.
+  // زر البحث يستخدم لتطبيق النص المكتوب يدويًا.
+  // ======================================================
+  useEffect(() => {
+    if (!canViewCustomers || !companyId.trim()) {
+      return
+    }
+
+    void loadCustomers()
+  }, [canViewCustomers, companyId])
+
+  // ======================================================
   // loadCustomerActivity
   // تجيب نشاط عميل واحد
   //
@@ -157,7 +171,7 @@ function CustomersPage({ companyId }: CustomersPageProps) {
               disabled={!companyId.trim() || loadingCustomers}
               onClick={loadCustomers}
             >
-              {loadingCustomers ? 'جاري التحميل...' : 'تحميل العملاء'}
+              {loadingCustomers ? 'جاري البحث...' : 'بحث / تحديث'}
             </button>
           ) : null}
         </div>
@@ -176,7 +190,13 @@ function CustomersPage({ companyId }: CustomersPageProps) {
         {error ? <p className="error-message">{error}</p> : null}
 
         {customers.length === 0 ? (
-          <p className="muted">لا توجد عملاء معروضين حتى الآن.</p>
+          <p className="muted">
+            {loadingCustomers
+              ? 'جاري تحميل العملاء...'
+              : searchText.trim()
+                ? 'لا توجد نتائج مطابقة للبحث.'
+                : 'لا يوجد عملاء مسجلون حاليًا.'}
+          </p>
         ) : (
           <div className="table-wrapper">
             <table>
