@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission } from '../auth/permissions'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
@@ -44,11 +44,94 @@ type ApiResponse<T> = {
   data: T
 }
 
+// ======================================================
+// تنسيق أسعار المنتجات والأصناف.
+// ======================================================
+const catalogCurrencyFormatter = new Intl.NumberFormat('ar-EG', {
+  style: 'currency',
+  currency: 'EGP',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+})
+
+function formatCatalogCurrency(value: number | string) {
+  const numericValue = Number(value)
+
+  return Number.isFinite(numericValue)
+    ? catalogCurrencyFormatter.format(numericValue)
+    : '-'
+}
+
+// ======================================================
+// ترجمة أنواع المنتجات المعرفة في قاعدة البيانات.
+// ======================================================
+function translateProductType(productType: string) {
+  const typeLabels: Record<string, string> = {
+    general: 'منتج عام',
+    fashion: 'ملابس وأزياء',
+  }
+
+  return typeLabels[productType] || productType
+}
+
+function getProductTypeClass(productType: string) {
+  return productType === 'fashion'
+    ? 'catalog-type-badge catalog-type-fashion'
+    : 'catalog-type-badge catalog-type-general'
+}
+
+// ======================================================
+// ترجمة حالات المنتجات والأصناف.
+// ======================================================
+function translateCatalogStatus(status: string) {
+  const statusLabels: Record<string, string> = {
+    active: 'نشط',
+    inactive: 'غير نشط',
+    draft: 'مسودة',
+  }
+
+  return statusLabels[status] || status
+}
+
+function getCatalogStatusClass(status: string) {
+  if (status === 'active') {
+    return 'status-badge status-badge-success'
+  }
+
+  if (status === 'inactive') {
+    return 'status-badge status-badge-danger'
+  }
+
+  if (status === 'draft') {
+    return 'status-badge status-badge-warning'
+  }
+
+  return 'status-badge'
+}
+
 function ProductsPage({ companyId }: ProductsPageProps) {
   const [products, setProducts] = useState<Product[]>([])
   const [variants, setVariants] = useState<Variant[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  // ======================================================
+  // مؤشرات مختصرة محسوبة من المنتجات والأصناف المحملة.
+  // ======================================================
+  const catalogSummary = useMemo(() => {
+    return {
+      productsCount: products.length,
+      variantsCount: variants.length,
+
+      activeProductsCount: products.filter(
+        (product) => product.status === 'active',
+      ).length,
+
+      activeVariantsCount: variants.filter(
+        (variant) => variant.status === 'active',
+      ).length,
+    }
+  }, [products, variants])
 
   const { user } = useAuth()
 
@@ -112,102 +195,267 @@ function ProductsPage({ companyId }: ProductsPageProps) {
   }, [canViewProducts, companyId])
 
   return (
-    <section className="panel">
-      <div className="section-header">
-        <div>
-          <h2>المنتجات والأصناف</h2>
+    <>
+      {/* ==================================================
+        عنوان الصفحة
+    ================================================== */}
+      <section className="panel">
+        <div className="section-header">
+          <div>
+            <h2>المنتجات والأصناف</h2>
+
+            <p className="muted">
+              إدارة المنتجات العامة والأصناف الفعلية القابلة للبيع والتخزين.
+            </p>
+          </div>
+
+          {canViewProducts ? (
+            <div className="section-actions">
+              <span className="record-count-badge">{products.length} منتج</span>
+
+              <span className="record-count-badge">{variants.length} صنف</span>
+
+              <button
+                type="button"
+                className="primary-button small-button"
+                disabled={!companyId.trim() || loading}
+                onClick={loadProductsData}
+              >
+                {loading ? 'جاري التحديث...' : 'تحديث البيانات'}
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        {error ? <p className="error-message">{error}</p> : null}
+      </section>
+
+      {/* ==================================================
+        مؤشرات الكتالوج
+    ================================================== */}
+      <section className="mini-cards-grid catalog-summary-grid">
+        <article className="mini-card catalog-summary-card">
+          <span>إجمالي المنتجات</span>
+
+          <strong>{catalogSummary.productsCount}</strong>
+        </article>
+
+        <article className="mini-card catalog-summary-card">
+          <span>إجمالي الأصناف</span>
+
+          <strong>{catalogSummary.variantsCount}</strong>
+        </article>
+
+        <article className="mini-card catalog-summary-card">
+          <span>المنتجات النشطة</span>
+
+          <strong>{catalogSummary.activeProductsCount}</strong>
+        </article>
+
+        <article className="mini-card catalog-summary-card">
+          <span>الأصناف النشطة</span>
+
+          <strong>{catalogSummary.activeVariantsCount}</strong>
+        </article>
+      </section>
+
+      {/* ==================================================
+        المنتجات العامة
+    ================================================== */}
+      <section className="panel">
+        <div className="section-header catalog-table-header">
+          <div>
+            <h2>المنتجات العامة</h2>
+
+            <p className="muted">
+              تعريف المنتج الأساسي قبل تقسيمه إلى مقاسات وألوان.
+            </p>
+          </div>
+
+          <span className="record-count-badge">{products.length} منتج</span>
+        </div>
+
+        {products.length === 0 ? (
           <p className="muted">
-            هنا بنعرض المنتج العام والـ Variant الحقيقي اللي بيتباع ويتخزن.
+            {loading
+              ? 'جاري تحميل المنتجات...'
+              : 'لا توجد منتجات مسجلة حاليًا.'}
           </p>
-        </div>
-
-        {canViewProducts ? (
-          <button
-            className="primary-button small-button"
-            disabled={!companyId.trim() || loading}
-            onClick={loadProductsData}
-          >
-            {loading ? 'جاري التحديث...' : 'تحديث البيانات'}
-          </button>
-        ) : null}
-      </div>
-
-      {error ? <p className="error-message">{error}</p> : null}
-
-      <h3>Products</h3>
-
-      {products.length === 0 ? (
-        <p className="muted">
-          {loading ? 'جاري تحميل المنتجات...' : 'لا توجد منتجات مسجلة حاليًا.'}
-        </p>
-      ) : (
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>اسم المنتج</th>
-                <th>Base SKU</th>
-                <th>سعر البيع</th>
-                <th>التكلفة</th>
-                <th>عدد الـ Variants</th>
-                <th>الحالة</th>
-              </tr>
-            </thead>
-            <tbody>
-              {products.map((product) => (
-                <tr key={product.id}>
-                  <td>{product.name}</td>
-                  <td>{product.base_sku || '-'}</td>
-                  <td>{product.base_price}</td>
-                  <td>{product.cost_price}</td>
-                  <td>{product.variants_count}</td>
-                  <td>{product.status}</td>
+        ) : (
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>اسم المنتج</th>
+                  <th>النوع</th>
+                  <th>التصنيف</th>
+                  <th>العلامة التجارية</th>
+                  <th>Base SKU</th>
+                  <th>سعر البيع</th>
+                  <th>التكلفة</th>
+                  <th>عدد الأصناف</th>
+                  <th>الحالة</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+
+              <tbody>
+                {products.map((product) => (
+                  <tr key={product.id}>
+                    <td>
+                      <strong className="catalog-product-name">
+                        {product.name}
+                      </strong>
+                    </td>
+
+                    <td>
+                      <span
+                        className={getProductTypeClass(product.product_type)}
+                      >
+                        {translateProductType(product.product_type)}
+                      </span>
+                    </td>
+
+                    <td>{product.category_name || '-'}</td>
+                    <td>{product.brand_name || '-'}</td>
+
+                    <td>
+                      {product.base_sku ? (
+                        <span className="catalog-code">{product.base_sku}</span>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
+
+                    <td className="money-cell">
+                      {formatCatalogCurrency(product.base_price)}
+                    </td>
+
+                    <td className="money-cell">
+                      {formatCatalogCurrency(product.cost_price)}
+                    </td>
+
+                    <td>
+                      <strong className="catalog-count-value">
+                        {product.variants_count}
+                      </strong>
+                    </td>
+
+                    <td>
+                      <span className={getCatalogStatusClass(product.status)}>
+                        {translateCatalogStatus(product.status)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* ==================================================
+        الأصناف الفعلية
+    ================================================== */}
+      <section className="panel">
+        <div className="section-header catalog-table-header">
+          <div>
+            <h2>الأصناف الفعلية</h2>
+
+            <p className="muted">كل SKU مستقل بمقاسه ولونه وباركوده وسعره.</p>
+          </div>
+
+          <span className="record-count-badge">{variants.length} صنف</span>
         </div>
-      )}
 
-      <h3>Variants</h3>
-
-      {variants.length === 0 ? (
-        <p className="muted">
-          {loading ? 'جاري تحميل الأصناف...' : 'لا توجد أصناف مسجلة حاليًا.'}
-        </p>
-      ) : (
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>الصنف</th>
-                <th>SKU</th>
-                <th>Barcode</th>
-                <th>المقاس</th>
-                <th>اللون</th>
-                <th>سعر البيع</th>
-                <th>التكلفة</th>
-                <th>الحالة</th>
-              </tr>
-            </thead>
-            <tbody>
-              {variants.map((variant) => (
-                <tr key={variant.id}>
-                  <td>{variant.product_name}</td>
-                  <td>{variant.sku}</td>
-                  <td>{variant.primary_barcode || '-'}</td>
-                  <td>{variant.size_name || '-'}</td>
-                  <td>{variant.color_name || '-'}</td>
-                  <td>{variant.selling_price}</td>
-                  <td>{variant.cost_price}</td>
-                  <td>{variant.status}</td>
+        {variants.length === 0 ? (
+          <p className="muted">
+            {loading ? 'جاري تحميل الأصناف...' : 'لا توجد أصناف مسجلة حاليًا.'}
+          </p>
+        ) : (
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>الصنف</th>
+                  <th>SKU</th>
+                  <th>كود الموديل</th>
+                  <th>Barcode</th>
+                  <th>المقاس</th>
+                  <th>اللون</th>
+                  <th>الموسم / المجموعة</th>
+                  <th>سعر البيع</th>
+                  <th>التكلفة</th>
+                  <th>الحالة</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
+              </thead>
+
+              <tbody>
+                {variants.map((variant) => (
+                  <tr key={variant.id}>
+                    <td>
+                      <strong className="catalog-product-name">
+                        {variant.product_name}
+                      </strong>
+                    </td>
+
+                    <td>
+                      <span className="catalog-code">{variant.sku}</span>
+                    </td>
+
+                    <td>
+                      {variant.style_code ? (
+                        <span className="catalog-code">
+                          {variant.style_code}
+                        </span>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
+
+                    <td>
+                      {variant.primary_barcode ? (
+                        <span className="catalog-code">
+                          {variant.primary_barcode}
+                        </span>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
+
+                    <td>{variant.size_name || '-'}</td>
+                    <td>{variant.color_name || '-'}</td>
+
+                    <td>
+                      <div className="catalog-meta-stack">
+                        <span>{variant.season_name || '-'}</span>
+
+                        {variant.collection_name ? (
+                          <small>{variant.collection_name}</small>
+                        ) : null}
+                      </div>
+                    </td>
+
+                    <td className="money-cell">
+                      {formatCatalogCurrency(variant.selling_price)}
+                    </td>
+
+                    <td className="money-cell">
+                      {formatCatalogCurrency(variant.cost_price)}
+                    </td>
+
+                    <td>
+                      <span className={getCatalogStatusClass(variant.status)}>
+                        {translateCatalogStatus(variant.status)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </>
   )
 }
 
