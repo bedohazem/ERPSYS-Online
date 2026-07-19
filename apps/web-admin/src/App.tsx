@@ -28,63 +28,83 @@ type PageName =
   | 'new-sale'
   | 'new-return'
 
-// كل صفحة مرتبطة بصلاحية Backend.
+// ======================================================
+// صفحات لوحة الإدارة.
+//
+// label:
+// الاسم العربي الظاهر في Sidebar وTopbar.
+//
+// icon:
+// رمز بسيط لا يحتاج مكتبة Icons خارجية.
+//
+// permission:
+// صلاحية Backend المطلوبة لعرض الصفحة.
+// ======================================================
 const pageDefinitions: Array<{
   name: PageName
   label: string
+  icon: string
   permission: string
 }> = [
   {
     name: 'dashboard',
-    label: 'Dashboard',
+    label: 'الرئيسية',
+    icon: '▦',
     permission: 'dashboard.view',
   },
   {
-    name: 'products',
-    label: 'Products',
-    permission: 'products.view',
-  },
-  {
-    name: 'customers',
-    label: 'Customers',
-    permission: 'customers.view',
-  },
-  {
-    name: 'sales',
-    label: 'Sales',
-    permission: 'sales.view',
-  },
-  {
-    name: 'returns',
-    label: 'Returns',
-    permission: 'returns.view',
-  },
-  {
-    name: 'inventory',
-    label: 'Inventory',
-    permission: 'inventory.view',
-  },
-  {
-    // الصفحة تظهر فقط لمن يملك إدارة المستخدمين.
-    name: 'users',
-    label: 'Users',
-    permission: 'users.manage',
-  },
-  {
-    // الصفحة تظهر فقط لمن يملك إدارة الأدوار.
-    name: 'roles',
-    label: 'Roles',
-    permission: 'roles.manage',
-  },
-  {
     name: 'new-sale',
-    label: 'New Sale',
+    label: 'فاتورة بيع جديدة',
+    icon: '+',
     permission: 'sales.create',
   },
   {
+    name: 'sales',
+    label: 'فواتير المبيعات',
+    icon: '↗',
+    permission: 'sales.view',
+  },
+  {
     name: 'new-return',
-    label: 'New Return',
+    label: 'مرتجع جديد',
+    icon: '↩',
     permission: 'returns.create',
+  },
+  {
+    name: 'returns',
+    label: 'المرتجعات',
+    icon: '↙',
+    permission: 'returns.view',
+  },
+  {
+    name: 'products',
+    label: 'المنتجات والأصناف',
+    icon: '▤',
+    permission: 'products.view',
+  },
+  {
+    name: 'inventory',
+    label: 'المخزون',
+    icon: '▥',
+    permission: 'inventory.view',
+  },
+  {
+    name: 'customers',
+    label: 'العملاء',
+    icon: '◎',
+    permission: 'customers.view',
+  },
+  {
+    name: 'users',
+    label: 'المستخدمون',
+    icon: '♙',
+    permission: 'users.manage',
+  },
+  {
+    name: 'roles',
+    label: 'الأدوار والصلاحيات',
+    icon: '⚙',
+    permission: 'roles.manage',
   },
 ]
 
@@ -184,6 +204,15 @@ function App() {
   const companyId = user?.companyId || ''
 
   const branchId = user?.branchId || ''
+  // ======================================================
+  // بيانات الصفحة المفتوحة حاليًا.
+  //
+  // تستخدم داخل Topbar لإظهار اسم ورمز الصفحة.
+  // ======================================================
+  const activePageDefinition =
+    visiblePages.find((page) => page.name === activePage) ??
+    pageDefinitions.find((page) => page.name === activePage) ??
+    pageDefinitions[0]
 
   const [date, setDate] = useState(createTodayDateValue)
 
@@ -276,245 +305,264 @@ function App() {
   }
 
   return (
-    <main className="page">
-      <section className="hero">
-        <div>
-          <p className="eyebrow">ERPSYS Online</p>
-          <h1>لوحة الإدارة</h1>
-          <p>
-            Web Admin يقرأ من الـ Backend API ويعرض الداشبورد والمنتجات والعملاء
-            والفواتير.
-          </p>
-        </div>
-      </section>
+    <main className="app-shell" dir="rtl">
+      {/* ==================================================
+      Sidebar
 
-      <nav className="tabs">
-        {visiblePages.map((page) => (
-          <button
-            key={page.name}
-            className={activePage === page.name ? 'tab active-tab' : 'tab'}
-            onClick={() => {
-              if (page.name === 'new-return') {
-                setSelectedReturnSaleId(null)
-              }
+      تحتوي على:
+      - هوية النظام.
+      - الصفحات المسموح بها.
+      - بيانات المستخدم الحالي.
+  ================================================== */}
+      <aside className="app-sidebar">
+        <div className="sidebar-brand">
+          <div className="sidebar-logo">E</div>
 
-              setActivePage(page.name)
-            }}
-          >
-            {page.label}
-          </button>
-        ))}
-      </nav>
-
-      {/* =================================================
-          جلسة التشغيل
-
-          الشركة والفرع والمستخدم أصبحوا Read Only لأن
-          مصدرهم هو Session الموثقة من Backend.
-      ================================================= */}
-      <section className="panel session-panel">
-        <div className="section-header">
           <div>
-            <h2>جلسة التشغيل</h2>
+            <strong>ERPSYS Online</strong>
+            <span>نظام إدارة الأعمال</span>
+          </div>
+        </div>
 
-            <p className="muted">
-              بيانات الشركة والفرع مرتبطة بالمستخدم المسجل حاليًا.
-            </p>
+        <nav className="sidebar-nav" aria-label="التنقل الرئيسي">
+          {visiblePages.map((page) => (
+            <button
+              key={page.name}
+              type="button"
+              className={
+                activePage === page.name
+                  ? 'sidebar-nav-button sidebar-nav-button-active'
+                  : 'sidebar-nav-button'
+              }
+              onClick={() => {
+                if (page.name === 'new-return') {
+                  setSelectedReturnSaleId(null)
+                }
+
+                setActivePage(page.name)
+              }}
+            >
+              <span className="sidebar-nav-icon">{page.icon}</span>
+
+              <span>{page.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-session">
+          <div className="sidebar-user-avatar">
+            {(user?.fullName || 'م').trim().charAt(0) || 'م'}
           </div>
 
-          <button
-            type="button"
-            className="logout-button small-button"
-            onClick={() => {
-              void logout()
-            }}
-          >
-            تسجيل الخروج
-          </button>
-        </div>
-
-        <div className="session-info-grid">
-          <article>
-            <span>المستخدم</span>
-
+          <div className="sidebar-user-details">
             <strong>{user?.fullName || '-'}</strong>
-
-            <small>@{user?.username || '-'}</small>
-          </article>
-
-          <article>
-            <span>الشركة</span>
-
-            <strong>{user?.companyName || user?.companyCode || '-'}</strong>
-
-            <small>{user?.companyCode || '-'}</small>
-          </article>
-
-          <article>
-            <span>الفرع</span>
-
-            <strong>{user?.branchName || 'غير مرتبط بفرع'}</strong>
-
-            <small>Session Branch</small>
-          </article>
-
-          <label className="session-date-card">
-            <span>تاريخ الداشبورد</span>
-
-            <input
-              type="date"
-              value={date}
-              onChange={(event) => setDate(event.target.value)}
-            />
-          </label>
+            <span>@{user?.username || '-'}</span>
+          </div>
         </div>
-      </section>
+      </aside>
 
-      {activePage === 'dashboard' ? (
-        <>
-          <section className="panel">
-            <div className="section-header">
-              <div>
-                <h2>Dashboard</h2>
-                <p className="muted">
-                  تقرير اليوم وآخر حركات المخزون من قاعدة البيانات.
-                </p>
-              </div>
+      {/* ==================================================
+      مساحة العمل الرئيسية
+  ================================================== */}
+      <section className="app-workspace">
+        <header className="app-topbar">
+          <div className="topbar-heading">
+            <span className="topbar-page-icon">
+              {activePageDefinition.icon}
+            </span>
 
-              {canViewDashboard ? (
-                <button
-                  className="primary-button small-button"
-                  disabled={!companyId.trim() || !date || loading}
-                  onClick={loadDashboard}
-                >
-                  {loading ? 'جاري التحديث...' : 'تحديث البيانات'}
-                </button>
-              ) : null}
+            <div>
+              <p className="topbar-kicker">لوحة الإدارة</p>
+              <h1>{activePageDefinition.label}</h1>
+            </div>
+          </div>
+
+          <div className="topbar-actions">
+            {/* تاريخ التقرير يظهر داخل الداشبورد فقط. */}
+            {activePage === 'dashboard' ? (
+              <label className="topbar-date">
+                <span>تاريخ التقرير</span>
+
+                <input
+                  type="date"
+                  value={date}
+                  onChange={(event) => setDate(event.target.value)}
+                />
+              </label>
+            ) : null}
+
+            <div className="topbar-context">
+              <span>الشركة</span>
+
+              <strong>{user?.companyName || user?.companyCode || '-'}</strong>
             </div>
 
-            {error ? <p className="error-message">{error}</p> : null}
-            {loading && !dailySummary ? (
-              <p className="muted">جاري تحميل بيانات الداشبورد...</p>
-            ) : null}
-          </section>
+            <div className="topbar-context">
+              <span>الفرع</span>
 
-          {dailySummary ? (
-            <section className="cards-grid">
-              <article className="card">
-                <span>مبيعات اليوم</span>
-                <strong>{dailySummary.sales.total}</strong>
-                <small>عدد الفواتير: {dailySummary.sales.count}</small>
-              </article>
+              <strong>{user?.branchName || 'كل الفروع'}</strong>
+            </div>
 
-              <article className="card">
-                <span>المرتجعات</span>
-                <strong>{dailySummary.returns.totalRefunded}</strong>
-                <small>عدد المرتجعات: {dailySummary.returns.count}</small>
-              </article>
+            <button
+              type="button"
+              className="logout-button topbar-logout"
+              onClick={() => {
+                void logout()
+              }}
+            >
+              تسجيل الخروج
+            </button>
+          </div>
+        </header>
 
-              <article className="card">
-                <span>صافي اليوم</span>
-                <strong>{dailySummary.net.netSales}</strong>
-                <small>مبيعات - مرتجعات</small>
-              </article>
+        <div className="app-content">
+          {activePage === 'dashboard' ? (
+            <>
+              <section className="panel">
+                <div className="section-header">
+                  <div>
+                    <h2>نظرة عامة</h2>
+                    <p className="muted">
+                      تقرير اليوم وآخر حركات المخزون من قاعدة البيانات.
+                    </p>
+                  </div>
 
-              <article className="card">
-                <span>حركة القطع</span>
-                <strong>
-                  {dailySummary.sales.soldItemsQuantity -
-                    dailySummary.returns.returnedItemsQuantity}
-                </strong>
-                <small>
-                  مباع: {dailySummary.sales.soldItemsQuantity} / مرتجع:{' '}
-                  {dailySummary.returns.returnedItemsQuantity}
-                </small>
-              </article>
-            </section>
+                  {canViewDashboard ? (
+                    <button
+                      className="primary-button small-button"
+                      disabled={!companyId.trim() || !date || loading}
+                      onClick={loadDashboard}
+                    >
+                      {loading ? 'جاري التحديث...' : 'تحديث البيانات'}
+                    </button>
+                  ) : null}
+                </div>
+
+                {error ? <p className="error-message">{error}</p> : null}
+                {loading && !dailySummary ? (
+                  <p className="muted">جاري تحميل بيانات الداشبورد...</p>
+                ) : null}
+              </section>
+
+              {dailySummary ? (
+                <section className="cards-grid">
+                  <article className="card">
+                    <span>مبيعات اليوم</span>
+                    <strong>{dailySummary.sales.total}</strong>
+                    <small>عدد الفواتير: {dailySummary.sales.count}</small>
+                  </article>
+
+                  <article className="card">
+                    <span>المرتجعات</span>
+                    <strong>{dailySummary.returns.totalRefunded}</strong>
+                    <small>عدد المرتجعات: {dailySummary.returns.count}</small>
+                  </article>
+
+                  <article className="card">
+                    <span>صافي اليوم</span>
+                    <strong>{dailySummary.net.netSales}</strong>
+                    <small>مبيعات - مرتجعات</small>
+                  </article>
+
+                  <article className="card">
+                    <span>حركة القطع</span>
+                    <strong>
+                      {dailySummary.sales.soldItemsQuantity -
+                        dailySummary.returns.returnedItemsQuantity}
+                    </strong>
+                    <small>
+                      مباع: {dailySummary.sales.soldItemsQuantity} / مرتجع:{' '}
+                      {dailySummary.returns.returnedItemsQuantity}
+                    </small>
+                  </article>
+                </section>
+              ) : null}
+
+              <section className="panel">
+                <h2>آخر حركات المخزون</h2>
+
+                {stockMovements.length === 0 ? (
+                  <p className="muted">
+                    {loading
+                      ? 'جاري تحميل حركات المخزون...'
+                      : 'لا توجد حركات مخزون مسجلة حاليًا.'}
+                  </p>
+                ) : (
+                  <div className="table-wrapper">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>الصنف</th>
+                          <th>SKU</th>
+                          <th>الحركة</th>
+                          <th>قبل</th>
+                          <th>الكمية</th>
+                          <th>بعد</th>
+                          <th>المكان</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stockMovements.map((movement) => (
+                          <tr key={movement.id}>
+                            <td>{movement.product_name}</td>
+                            <td>{movement.sku}</td>
+                            <td>{movement.movement_type}</td>
+                            <td>{movement.quantity_before}</td>
+                            <td>{movement.quantity}</td>
+                            <td>{movement.quantity_after}</td>
+                            <td>{movement.stock_location_name}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            </>
           ) : null}
 
-          <section className="panel">
-            <h2>آخر حركات المخزون</h2>
+          {activePage === 'products' ? (
+            <ProductsPage companyId={companyId} />
+          ) : null}
 
-            {stockMovements.length === 0 ? (
-              <p className="muted">
-                {loading
-                  ? 'جاري تحميل حركات المخزون...'
-                  : 'لا توجد حركات مخزون مسجلة حاليًا.'}
-              </p>
-            ) : (
-              <div className="table-wrapper">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>الصنف</th>
-                      <th>SKU</th>
-                      <th>الحركة</th>
-                      <th>قبل</th>
-                      <th>الكمية</th>
-                      <th>بعد</th>
-                      <th>المكان</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stockMovements.map((movement) => (
-                      <tr key={movement.id}>
-                        <td>{movement.product_name}</td>
-                        <td>{movement.sku}</td>
-                        <td>{movement.movement_type}</td>
-                        <td>{movement.quantity_before}</td>
-                        <td>{movement.quantity}</td>
-                        <td>{movement.quantity_after}</td>
-                        <td>{movement.stock_location_name}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-        </>
-      ) : null}
+          {activePage === 'customers' ? (
+            <CustomersPage companyId={companyId} />
+          ) : null}
 
-      {activePage === 'products' ? (
-        <ProductsPage companyId={companyId} />
-      ) : null}
+          {activePage === 'sales' ? (
+            <SalesPage
+              companyId={companyId}
+              branchId={branchId}
+              onCreateReturn={openNewReturnFromSale}
+            />
+          ) : null}
 
-      {activePage === 'customers' ? (
-        <CustomersPage companyId={companyId} />
-      ) : null}
+          {activePage === 'returns' ? (
+            <ReturnsPage companyId={companyId} branchId={branchId} />
+          ) : null}
 
-      {activePage === 'sales' ? (
-        <SalesPage
-          companyId={companyId}
-          branchId={branchId}
-          onCreateReturn={openNewReturnFromSale}
-        />
-      ) : null}
+          {activePage === 'inventory' ? (
+            <InventoryPage companyId={companyId} />
+          ) : null}
 
-      {activePage === 'returns' ? (
-        <ReturnsPage companyId={companyId} branchId={branchId} />
-      ) : null}
+          {activePage === 'users' ? <UsersPage /> : null}
 
-      {activePage === 'inventory' ? (
-        <InventoryPage companyId={companyId} />
-      ) : null}
+          {activePage === 'roles' ? <RolesPage /> : null}
 
-      {activePage === 'users' ? <UsersPage /> : null}
+          {activePage === 'new-sale' ? (
+            <NewSalePage companyId={companyId} branchId={branchId} />
+          ) : null}
 
-      {activePage === 'roles' ? <RolesPage /> : null}
-
-      {activePage === 'new-sale' ? (
-        <NewSalePage companyId={companyId} branchId={branchId} />
-      ) : null}
-
-      {activePage === 'new-return' ? (
-        <NewReturnPage
-          companyId={companyId}
-          branchId={branchId}
-          initialSaleId={selectedReturnSaleId}
-          onInitialSaleHandled={() => setSelectedReturnSaleId(null)}
-        />
-      ) : null}
+          {activePage === 'new-return' ? (
+            <NewReturnPage
+              companyId={companyId}
+              branchId={branchId}
+              initialSaleId={selectedReturnSaleId}
+              onInitialSaleHandled={() => setSelectedReturnSaleId(null)}
+            />
+          ) : null}
+        </div>
+      </section>
     </main>
   )
 }
