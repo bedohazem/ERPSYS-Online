@@ -342,8 +342,10 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
         throw new Error('companyId is required')
       }
 
+      // بحث العملاء الخاص بإنشاء البيع.
+      // المسار يحتاج sales.create ولا يحتاج customers.view.
       const customersUrl =
-        `/api/customers` +
+        `/api/pos/customers` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
         (query ? `&q=${encodeURIComponent(query)}` : '')
 
@@ -355,7 +357,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       setError(
         currentError instanceof Error
           ? currentError.message
-          : 'Unknown customers error',
+          : 'تعذر البحث عن العملاء.',
       )
     } finally {
       setLoadingCustomers(false)

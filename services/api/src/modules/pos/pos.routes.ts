@@ -83,6 +83,63 @@ posRouter.get('/api/pos/stock-locations', async (req, res, next) => {
 })
 
 // ======================================================
+// GET /api/pos/customers
+//
+// بحث محدود عن العملاء النشطين أثناء إنشاء فاتورة بيع.
+//
+// وضعناه تحت /api/pos حتى يحتاج sales.create فقط،
+// ولا نضطر لمنح الكاشير صلاحية customers.view.
+//
+// companyId يتم فرضه من Session الموثقة.
+// ======================================================
+posRouter.get('/api/pos/customers', async (req, res, next) => {
+  try {
+    const companyId = req.query.companyId
+    const query = req.query.q
+
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res.status(400).json({
+        error: 'companyId query parameter is required',
+      })
+    }
+
+    const searchText =
+      typeof query === 'string' && query.trim() ? `%${query.trim()}%` : null
+
+    // حد صغير مناسب لقائمة الاختيار داخل شاشة البيع.
+    const result = await db.query(
+      `
+      SELECT
+        id,
+        name,
+        phone,
+        email,
+        address,
+        is_active
+      FROM customers
+      WHERE company_id = $1
+        AND is_active = TRUE
+        AND (
+          $2::text IS NULL
+          OR name ILIKE $2
+          OR phone ILIKE $2
+          OR email ILIKE $2
+        )
+      ORDER BY name ASC
+      LIMIT 20;
+      `,
+      [companyId.trim(), searchText],
+    )
+
+    res.json({
+      data: result.rows,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// ======================================================
 // GET /api/pos/lookup-item
 // الهدف:
 // الكاشير يكتب barcode أو SKU
