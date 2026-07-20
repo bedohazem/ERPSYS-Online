@@ -22,6 +22,86 @@ class ReturnsApiError extends Error {
   }
 }
 
+// طرق رد المبلغ المدعومة في قاعدة البيانات.
+const allowedRefundMethods = new Set([
+  'cash',
+  'card',
+  'wallet',
+  'bank_transfer',
+  'other',
+])
+
+// ======================================================
+// فحص خطأ Unique Constraint من PostgreSQL.
+// ======================================================
+function isPostgresUniqueViolation(error: unknown) {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: string }).code === '23505'
+  )
+}
+
+// ======================================================
+// استرجاع مرتجع محفوظ سابقًا بنفس Idempotency Key.
+//
+// ترجع نفس شكل استجابة إنشاء المرتجع:
+// data.return
+// data.items
+// data.refunds
+// ======================================================
+async function loadReturnByIdempotency(
+  companyId: string,
+  idempotencyKey: string,
+) {
+  const returnResult = await db.query(
+    `
+    SELECT *
+    FROM returns
+    WHERE company_id = $1
+      AND idempotency_key = $2
+    LIMIT 1;
+    `,
+    [companyId, idempotencyKey],
+  )
+
+  if ((returnResult.rowCount ?? 0) === 0) {
+    return null
+  }
+
+  const returnDocument = returnResult.rows[0]
+
+  const [itemsResult, refundsResult] = await Promise.all([
+    db.query(
+      `
+        SELECT *
+        FROM return_items
+        WHERE company_id = $1
+          AND return_id = $2
+        ORDER BY created_at ASC;
+        `,
+      [companyId, returnDocument.id],
+    ),
+
+    db.query(
+      `
+        SELECT *
+        FROM return_refunds
+        WHERE company_id = $1
+          AND return_id = $2
+        ORDER BY created_at ASC;
+        `,
+      [companyId, returnDocument.id],
+    ),
+  ])
+
+  return {
+    return: returnDocument,
+    items: itemsResult.rows,
+    refunds: refundsResult.rows,
+  }
+}
+
 // ======================================================
 // GET /api/returns
 // الهدف:
@@ -253,9 +333,10 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
   try {
     const {
       companyId,
+
+      // branchId تم فرضه من Session للمستخدم المرتبط بفرع.
       branchId,
-      stockLocationId,
-      customerId,
+
       originalSaleId,
       returnNumber,
       source,
@@ -274,13 +355,14 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       return res.status(400).json({ error: 'companyId is required' })
     }
 
-    if (!branchId || typeof branchId !== 'string') {
-      return res.status(400).json({ error: 'branchId is required' })
+    if (!originalSaleId || typeof originalSaleId !== 'string') {
+      return res.status(400).json({
+        error: 'originalSaleId is required',
+      })
     }
 
-    if (!stockLocationId || typeof stockLocationId !== 'string') {
-      return res.status(400).json({ error: 'stockLocationId is required' })
-    }
+    const authenticatedBranchId =
+      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
 
     if (!returnNumber || typeof returnNumber !== 'string') {
       return res.status(400).json({ error: 'returnNumber is required' })
@@ -298,31 +380,75 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       return res.status(400).json({ error: 'refunds are required' })
     }
 
-    await client.query('BEGIN')
-
-    // =========================
-    // Idempotency check
-    // =========================
-    // لو نفس المرتجع اتبعت مرتين بالغلط
-    // نرجع المرتجع القديم بدل ما نكرره
-    const existingReturn = await client.query(
-      `
-      SELECT id, return_number, refund_total, status
-      FROM returns
-      WHERE company_id = $1
-        AND idempotency_key = $2;
-      `,
-      [companyId, idempotencyKey],
+    const existingReturn = await loadReturnByIdempotency(
+      companyId,
+      idempotencyKey,
     )
 
-    if ((existingReturn.rowCount ?? 0) > 0) {
-      await client.query('COMMIT')
-
+    if (existingReturn) {
       return res.status(200).json({
         duplicated: true,
-        data: existingReturn.rows[0],
+        data: existingReturn,
       })
     }
+
+    await client.query('BEGIN')
+
+    // ======================================================
+    // استخراج الفرع والمخزن والعميل من الفاتورة الأصلية.
+    //
+    // لا نثق في أي branchId أو stockLocationId أو customerId
+    // قادم من المتصفح.
+    // ======================================================
+    const originalSaleResult = await client.query(
+      `
+  SELECT
+    s.id,
+    s.branch_id,
+    s.stock_location_id,
+    s.customer_id,
+    s.status
+  FROM sales s
+
+  JOIN branches b
+    ON b.id = s.branch_id
+    AND b.company_id = s.company_id
+    AND b.is_active = TRUE
+
+  JOIN stock_locations sl
+    ON sl.id = s.stock_location_id
+    AND sl.company_id = s.company_id
+    AND sl.is_active = TRUE
+
+  WHERE s.company_id = $1
+    AND s.id = $2
+    AND s.status = 'completed'
+
+    -- المستخدم المرتبط بفرع لا يرجع فاتورة فرع آخر.
+    AND (
+      $3::uuid IS NULL
+      OR s.branch_id = $3::uuid
+    )
+
+  FOR SHARE OF s;
+  `,
+      [companyId, originalSaleId, authenticatedBranchId],
+    )
+
+    if ((originalSaleResult.rowCount ?? 0) === 0) {
+      throw new ReturnsApiError(
+        404,
+        'Original sale was not found, inactive, or belongs to another branch',
+      )
+    }
+
+    const trustedOriginalSale = originalSaleResult.rows[0]
+
+    const trustedBranchId = trustedOriginalSale.branch_id
+
+    const trustedStockLocationId = trustedOriginalSale.stock_location_id
+
+    const trustedCustomerId = trustedOriginalSale.customer_id
 
     // =========================
     // Prepare return items
@@ -351,7 +477,20 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
     })
 
     for (const item of orderedItems) {
-      const originalSaleItemId = item.originalSaleItemId || null
+      const originalSaleItemId =
+        typeof item.originalSaleItemId === 'string' &&
+        item.originalSaleItemId.trim()
+          ? item.originalSaleItemId.trim()
+          : null
+
+      // المرتجعات اليدوية غير المرتبطة بفواتير غير مسموحة حاليًا.
+      // ستضاف لاحقًا بصلاحية منفصلة ومراجعة إدارية.
+      if (!originalSaleItemId) {
+        throw new ReturnsApiError(
+          400,
+          'originalSaleItemId is required. Manual returns are not supported',
+        )
+      }
       const variantId = item.variantId
       const quantity = Number(item.quantity)
       const unitPrice = Number(item.unitPrice)
@@ -404,6 +543,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           WHERE si.company_id = $1
             AND si.id = $2
             AND si.variant_id = $3
+            AND si.sale_id = $4
 
           -- ==================================================
           -- نقفل سطر الفاتورة حتى نهاية Transaction.
@@ -414,7 +554,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           -- ==================================================
           FOR UPDATE OF si;
           `,
-          [companyId, originalSaleItemId, variantId],
+          [companyId, originalSaleItemId, variantId, originalSaleId],
         )
 
         if ((saleItemResult.rowCount ?? 0) === 0) {
@@ -422,15 +562,6 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
         }
 
         const saleItem = saleItemResult.rows[0]
-
-        // لو المستخدم بعت originalSaleId
-        // نتأكد إن sale item تابع لنفس الفاتورة
-        if (originalSaleId && saleItem.sale_id !== originalSaleId) {
-          throw new ReturnsApiError(
-            400,
-            'originalSaleItemId does not belong to originalSaleId',
-          )
-        }
 
         // نجمع الكميات اللي اترجعت قبل كده لنفس sale item
         const alreadyReturnedResult = await client.query(
@@ -626,10 +757,10 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       `,
       [
         companyId,
-        branchId,
-        stockLocationId,
-        customerId || null,
-        originalSaleId || null,
+        trustedBranchId,
+        trustedStockLocationId,
+        trustedCustomerId,
+        originalSaleId,
         returnNumber.trim(),
         source || 'online_pos',
         idempotencyKey,
@@ -705,7 +836,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
         VALUES ($1, $2, $3, $4, 0)
         ON CONFLICT (company_id, stock_location_id, variant_id) DO NOTHING;
         `,
-        [companyId, branchId, stockLocationId, item.variantId],
+        [companyId, trustedBranchId, trustedStockLocationId, item.variantId],
       )
 
       // نقفل صف المخزون FOR UPDATE
@@ -719,7 +850,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           AND variant_id = $3
         FOR UPDATE;
         `,
-        [companyId, stockLocationId, item.variantId],
+        [companyId, trustedStockLocationId, item.variantId],
       )
 
       const quantityBefore = Number(balanceResult.rows[0].quantity)
@@ -736,7 +867,13 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           AND stock_location_id = $4
           AND variant_id = $5;
         `,
-        [quantityAfter, branchId, companyId, stockLocationId, item.variantId],
+        [
+          quantityAfter,
+          trustedBranchId,
+          companyId,
+          trustedStockLocationId,
+          item.variantId,
+        ],
       )
 
       // نسجل حركة مخزون return
@@ -769,8 +906,8 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
         `,
         [
           companyId,
-          branchId,
-          stockLocationId,
+          trustedBranchId,
+          trustedStockLocationId,
           item.variantId,
           item.quantity,
           quantityBefore,
@@ -791,8 +928,11 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       const method = refund.method
       const amount = Number(refund.amount)
 
-      if (!method || typeof method !== 'string') {
-        throw new ReturnsApiError(400, 'Refund method is required')
+      if (typeof method !== 'string' || !allowedRefundMethods.has(method)) {
+        throw new ReturnsApiError(
+          400,
+          `Unsupported refund method: ${String(method)}`,
+        )
       }
 
       if (!Number.isFinite(amount) || amount <= 0) {
@@ -833,12 +973,44 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
     // لو حصل أي خطأ، نلغي كل حاجة حصلت جوه transaction
     await client.query('ROLLBACK').catch(() => {})
 
+    // طلبان متزامنان بنفس Idempotency Key.
+    if (isPostgresUniqueViolation(error)) {
+      const requestBody =
+        req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+          ? (req.body as Record<string, unknown>)
+          : {}
+
+      const requestCompanyId =
+        typeof requestBody.companyId === 'string'
+          ? requestBody.companyId.trim()
+          : ''
+
+      const requestIdempotencyKey =
+        typeof requestBody.idempotencyKey === 'string'
+          ? requestBody.idempotencyKey.trim()
+          : ''
+
+      if (requestCompanyId && requestIdempotencyKey) {
+        const existingReturn = await loadReturnByIdempotency(
+          requestCompanyId,
+          requestIdempotencyKey,
+        )
+
+        if (existingReturn) {
+          return res.status(200).json({
+            duplicated: true,
+            data: existingReturn,
+          })
+        }
+      }
+    }
+
     // أخطاء المرتجعات المتوقعة ترجع برسالة واضحة
     if (error instanceof ReturnsApiError) {
       return res.status(error.statusCode).json({ error: error.message })
     }
 
-    next(error)
+    return next(error)
   } finally {
     client.release()
   }

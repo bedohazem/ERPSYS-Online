@@ -349,6 +349,34 @@ export function requireBusinessPermission(
 ) {
   const path = req.originalUrl.split('?')[0]
 
+  const isReadRequest = ['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+
+  // ======================================================
+  // منشئ المرتجع يحتاج قراءة الفاتورة الأصلية وأصنافها.
+  //
+  // لا نمنحه sales.create، بل قراءة الفواتير فقط
+  // أثناء تنفيذ دورة المرتجع.
+  // ======================================================
+  if (
+    isReadRequest &&
+    (path === '/api/sales' || path.startsWith('/api/sales/'))
+  ) {
+    const auth = getAuthContext(res)
+
+    const hasSalesReadAccess =
+      auth.roles.includes('admin') ||
+      auth.permissions.includes('sales.view') ||
+      auth.permissions.includes('returns.create')
+
+    if (!hasSalesReadAccess) {
+      return res.status(403).json({
+        error: 'Permission required: sales.view or returns.create',
+      })
+    }
+
+    return next()
+  }
+
   const rules = [
     {
       prefix: '/api/demo',
@@ -429,8 +457,6 @@ export function requireBusinessPermission(
       error: 'Permission policy is missing for this API',
     })
   }
-
-  const isReadRequest = ['GET', 'HEAD', 'OPTIONS'].includes(req.method)
 
   const permissionCode = isReadRequest ? rule.read : rule.write || rule.read
 

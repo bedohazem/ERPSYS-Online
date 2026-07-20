@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from '../lib/http'
@@ -23,6 +23,7 @@ type Sale = {
   status: string
   created_at: string
   items_count: number
+  remaining_returnable_quantity: string
 }
 
 type SaleItem = {
@@ -180,6 +181,8 @@ function NewReturnPage({
   const [loadingSales, setLoadingSales] = useState(false)
   const [loadingSaleDetails, setLoadingSaleDetails] = useState(false)
   const [savingReturn, setSavingReturn] = useState(false)
+  // يمنع إرسال طلبَي مرتجع متزامنين.
+  const savingReturnRequestRef = useRef(false)
   // يتحكم في ظهور نافذة تأكيد حفظ المرتجع
   const [showReturnConfirm, setShowReturnConfirm] = useState(false)
   const [error, setError] = useState('')
@@ -262,7 +265,16 @@ function NewReturnPage({
 
       const salesResponse = await requestJson<ApiResponse<Sale[]>>(salesUrl)
 
-      setSales(salesResponse.data)
+      // لا نعرض إلا الفواتير المكتملة التي ما زال بها
+      // كمية قابلة للإرجاع.
+      const returnableSales = salesResponse.data.filter((sale) => {
+        return (
+          sale.status === 'completed' &&
+          Number(sale.remaining_returnable_quantity) > 0
+        )
+      })
+
+      setSales(returnableSales)
       setSelectedSaleDetails(null)
       setReturnQuantities({})
     } catch (currentError) {
@@ -396,6 +408,11 @@ function NewReturnPage({
   }
 
   async function saveReturn() {
+    if (savingReturnRequestRef.current) {
+      return
+    }
+
+    savingReturnRequestRef.current = true
     setSavingReturn(true)
     setError('')
     setLastSavedReturn(null)
@@ -511,9 +528,10 @@ function NewReturnPage({
       setError(
         currentError instanceof Error
           ? currentError.message
-          : 'Unknown save return error',
+          : 'تعذر حفظ المرتجع.',
       )
     } finally {
+      savingReturnRequestRef.current = false
       setSavingReturn(false)
     }
   }
@@ -553,6 +571,7 @@ function NewReturnPage({
 
           <button
             className="primary-button small-button"
+            type="button"
             disabled={!companyId.trim() || loadingSales}
             onClick={loadSales}
           >
@@ -572,10 +591,7 @@ function NewReturnPage({
         <div className="form-grid">
           <label>
             رقم المرتجع
-            <input
-              value={returnNumber}
-              onChange={(event) => setReturnNumber(event.target.value)}
-            />
+            <input value={returnNumber} readOnly aria-readonly="true" />
           </label>
 
           <label>
@@ -634,6 +650,7 @@ function NewReturnPage({
                     <td>
                       <button
                         className="table-button"
+                        type="button"
                         disabled={loadingSaleDetails}
                         onClick={() => loadSaleDetails(sale.id)}
                       >
@@ -663,6 +680,7 @@ function NewReturnPage({
 
               <button
                 className="table-button danger-button"
+                type="button"
                 disabled={savingReturn}
                 onClick={clearSelectedSale}
               >
@@ -735,6 +753,7 @@ function NewReturnPage({
               {canCreateReturn ? (
                 <button
                   className="primary-button small-button"
+                  type="button"
                   disabled={selectedReturnItems.length === 0 || savingReturn}
                   onClick={saveReturn}
                 >
@@ -828,6 +847,7 @@ function NewReturnPage({
                         <td>
                           <button
                             className="table-button"
+                            type="button"
                             disabled={savingReturn || fullyReturned}
                             onClick={() => returnFullItemQuantity(saleItem)}
                           >
@@ -835,6 +855,7 @@ function NewReturnPage({
                           </button>{' '}
                           <button
                             className="table-button danger-button"
+                            type="button"
                             disabled={
                               savingReturn ||
                               fullyReturned ||
