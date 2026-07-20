@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from '../lib/http'
@@ -34,6 +34,15 @@ type Customer = {
   email: string | null
   address: string | null
   is_active: boolean
+}
+
+type StockLocation = {
+  id: string
+  branch_id: string | null
+  branch_name: string | null
+  code: string
+  name: string
+  location_type: string
 }
 
 type SaleResponse = {
@@ -72,9 +81,10 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
     user?.permissions.includes('sales.create') ||
     false
 
-  const [stockLocationId, setStockLocationId] = useState(
-    '9036fcdb-3931-4284-bf8a-f61e81b0ab40',
-  )
+  // مكان البيع يُختار من الداتا الموثقة ولا يُكتب يدويًا.
+  const [stockLocations, setStockLocations] = useState<StockLocation[]>([])
+
+  const [stockLocationId, setStockLocationId] = useState('')
 
   const [saleNumber, setSaleNumber] = useState(createSaleNumber())
   const [customerId, setCustomerId] = useState('')
@@ -88,6 +98,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   const [lastSavedSale, setLastSavedSale] = useState<SaleResponse | null>(null)
 
   const [loadingCustomers, setLoadingCustomers] = useState(false)
+  const [loadingStockLocations, setLoadingStockLocations] = useState(false)
   const [loadingLookup, setLoadingLookup] = useState(false)
   const [savingSale, setSavingSale] = useState(false)
   const [error, setError] = useState('')
@@ -97,6 +108,83 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       return sum + item.quantity * item.unitPrice
     }, 0)
   }, [cartItems])
+
+  // ======================================================
+  // loadStockLocations
+  //
+  // تحميل أماكن البيع المسموح بها لفرع المستخدم الحالي.
+  // ======================================================
+  async function loadStockLocations() {
+    setLoadingStockLocations(true)
+    setError('')
+
+    try {
+      const selectedCompanyId = companyId.trim()
+      const selectedBranchId = branchId.trim()
+
+      if (!selectedCompanyId || !selectedBranchId) {
+        setStockLocations([])
+        setStockLocationId('')
+        return
+      }
+
+      const locationsUrl =
+        `/api/pos/stock-locations` +
+        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
+        `&branchId=${encodeURIComponent(selectedBranchId)}`
+
+      const locationsResponse =
+        await requestJson<ApiResponse<StockLocation[]>>(locationsUrl)
+
+      const availableLocations = locationsResponse.data
+
+      setStockLocations(availableLocations)
+
+      // الاحتفاظ بالاختيار الحالي إن ظل صالحًا،
+      // وإلا اختيار أول مكان متاح تلقائيًا.
+      setStockLocationId((currentLocationId) => {
+        const currentLocationStillExists = availableLocations.some(
+          (location) => location.id === currentLocationId,
+        )
+
+        if (currentLocationStillExists) {
+          return currentLocationId
+        }
+
+        return availableLocations[0]?.id ?? ''
+      })
+
+      if (availableLocations.length === 0) {
+        setError('لا توجد صالة بيع أو مخزن نشط متاح لهذا الفرع.')
+      }
+    } catch (currentError) {
+      setStockLocations([])
+      setStockLocationId('')
+
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر تحميل أماكن البيع.',
+      )
+    } finally {
+      setLoadingStockLocations(false)
+    }
+  }
+
+  // إعادة تحميل الأماكن عند تغير شركة أو فرع Session.
+  useEffect(() => {
+    setCartItems([])
+    setCode('')
+    setQuantity(1)
+
+    if (!companyId.trim() || !branchId.trim()) {
+      setStockLocations([])
+      setStockLocationId('')
+      return
+    }
+
+    void loadStockLocations()
+  }, [companyId, branchId])
 
   // ======================================================
   // lookupAndAddItem
@@ -376,8 +464,14 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
 
           {canCreateSale ? (
             <button
+              type="button"
               className="primary-button small-button"
-              disabled={cartItems.length === 0 || savingSale}
+              disabled={
+                cartItems.length === 0 ||
+                savingSale ||
+                !branchId.trim() ||
+                !stockLocationId.trim()
+              }
               onClick={saveSale}
             >
               {savingSale ? 'جاري الحفظ...' : 'حفظ الفاتورة'}
@@ -387,6 +481,13 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
 
         {error ? <p className="error-message">{error}</p> : null}
 
+        {!branchId.trim() ? (
+          <p className="error-message">
+            المستخدم الحالي غير مرتبط بفرع، لذلك لا يمكن إنشاء فاتورة بيع قبل
+            تحديد فرع له.
+          </p>
+        ) : null}
+
         {lastSavedSale ? (
           <p className="success-message">
             تم حفظ الفاتورة {lastSavedSale.sale.sale_number} بإجمالي{' '}
@@ -394,33 +495,42 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
           </p>
         ) : null}
 
-        <div className="form-grid sale-form-grid">
+        <div className="form-grid sale-context-grid">
           <label>
             رقم الفاتورة
-            <input
-              value={saleNumber}
-              onChange={(event) => setSaleNumber(event.target.value)}
-            />
+            <input value={saleNumber} readOnly aria-readonly="true" />
+            <small className="field-note">
+              يتم إنشاء الرقم تلقائيًا بواسطة النظام.
+            </small>
           </label>
 
           <label>
-            stockLocationId
-            <input
+            مكان البيع والمخزون
+            <select
               value={stockLocationId}
+              disabled={
+                loadingStockLocations || savingSale || cartItems.length > 0
+              }
               onChange={(event) => setStockLocationId(event.target.value)}
-            />
-          </label>
+            >
+              <option value="">
+                {loadingStockLocations
+                  ? 'جاري تحميل الأماكن...'
+                  : 'اختر مكان البيع'}
+              </option>
 
-          <label>
-            customerId اختياري
-            <input
-              value={customerId}
-              onChange={(event) => {
-                setCustomerId(event.target.value)
-                setSelectedCustomerName('')
-              }}
-              placeholder="سيبه فاضي لو بيع عام"
-            />
+              {stockLocations.map((location) => (
+                <option key={location.id} value={location.id}>
+                  {location.name} ({location.code})
+                  {location.branch_name
+                    ? ` — ${location.branch_name}`
+                    : ' — مخزن مركزي'}
+                </option>
+              ))}
+            </select>
+            <small className="field-note">
+              لا يمكن تغيير المكان بعد إضافة أصناف للفاتورة.
+            </small>
           </label>
         </div>
 
@@ -441,6 +551,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
             </label>
 
             <button
+              type="button"
               className="primary-button small-button"
               disabled={!companyId.trim() || loadingCustomers}
               onClick={loadCustomers}
@@ -450,6 +561,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
 
             {customerId ? (
               <button
+                type="button"
                 className="table-button danger-button"
                 onClick={clearSelectedCustomer}
               >
@@ -468,6 +580,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
             <div className="customer-results">
               {customers.map((customer) => (
                 <button
+                  type="button"
                   className="customer-result-button"
                   key={customer.id}
                   onClick={() => selectCustomer(customer)}
@@ -488,12 +601,14 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
           <label>
             كود / باركود الصنف
             <input
+              disabled={!stockLocationId || loadingLookup || savingSale}
               value={code}
               onChange={(event) => setCode(event.target.value)}
               placeholder="مثال: 100000000001"
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
-                  lookupAndAddItem()
+                  event.preventDefault()
+                  void lookupAndAddItem()
                 }
               }}
             />
@@ -502,6 +617,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
           <label>
             الكمية
             <input
+              disabled={!stockLocationId || loadingLookup || savingSale}
               min="1"
               type="number"
               value={quantity}
@@ -511,8 +627,11 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
         </div>
 
         <button
+          type="button"
           className="primary-button small-button"
-          disabled={!code.trim() || loadingLookup}
+          disabled={
+            !stockLocationId || !code.trim() || loadingLookup || savingSale
+          }
           onClick={lookupAndAddItem}
         >
           {loadingLookup ? 'جاري البحث...' : 'إضافة للفاتورة'}
@@ -560,6 +679,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
                     <td>{item.quantity * item.unitPrice}</td>
                     <td>
                       <button
+                        type="button"
                         className="table-button danger-button"
                         onClick={() => removeCartItem(item.variantId)}
                       >

@@ -4,6 +4,85 @@ import { db } from '../../db/pool'
 export const posRouter = Router()
 
 // ======================================================
+// GET /api/pos/stock-locations
+//
+// يعرض أماكن البيع والمخازن الصالحة لإنشاء فاتورة.
+//
+// المسار موجود تحت /api/pos حتى يحتاج sales.create
+// بدل منح الكاشير صلاحية inventory.view.
+//
+// companyId وbranchId يتم فرضهما من Session الموثقة.
+// ======================================================
+posRouter.get('/api/pos/stock-locations', async (req, res, next) => {
+  try {
+    const companyId = req.query.companyId
+    const branchId = req.query.branchId
+
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res.status(400).json({
+        error: 'companyId query parameter is required',
+      })
+    }
+
+    if (typeof branchId !== 'string' || !branchId.trim()) {
+      return res.status(400).json({
+        error: 'branchId query parameter is required',
+      })
+    }
+
+    const result = await db.query(
+      `
+      SELECT
+        sl.id,
+        sl.branch_id,
+        b.name AS branch_name,
+        sl.code,
+        sl.name,
+        sl.location_type
+      FROM stock_locations sl
+
+      LEFT JOIN branches b
+        ON b.id = sl.branch_id
+        AND b.company_id = sl.company_id
+
+      WHERE sl.company_id = $1
+        AND sl.is_active = TRUE
+
+        -- أماكن مسموح بإجراء البيع منها فقط.
+        AND sl.location_type IN (
+          'sales_floor',
+          'branch_warehouse',
+          'main_warehouse'
+        )
+
+        -- المخزن المركزي مسموح، أو مكان تابع لفرع المستخدم.
+        AND (
+          sl.branch_id IS NULL
+          OR (
+            sl.branch_id::text = $2
+            AND b.is_active = TRUE
+          )
+        )
+
+      ORDER BY
+        CASE sl.location_type
+          WHEN 'sales_floor' THEN 1
+          WHEN 'branch_warehouse' THEN 2
+          WHEN 'main_warehouse' THEN 3
+          ELSE 4
+        END,
+        sl.name ASC;
+      `,
+      [companyId.trim(), branchId.trim()],
+    )
+
+    res.json({ data: result.rows })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// ======================================================
 // GET /api/pos/lookup-item
 // الهدف:
 // الكاشير يكتب barcode أو SKU
