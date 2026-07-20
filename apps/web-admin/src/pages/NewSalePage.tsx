@@ -109,6 +109,8 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   const [loadingCustomers, setLoadingCustomers] = useState(false)
   const [loadingStockLocations, setLoadingStockLocations] = useState(false)
   const [loadingLookup, setLoadingLookup] = useState(false)
+  // يمنع تنفيذ طلبَي بحث متزامنين عند الضغط السريع على Enter.
+  const lookupRequestRef = useRef(false)
   const [savingSale, setSavingSale] = useState(false)
   // يمنع إرسال طلبين متزامنين قبل تحديث React للزر.
   const savingSaleRequestRef = useRef(false)
@@ -213,6 +215,12 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   // وبعدها تضيفه للفاتورة
   // ======================================================
   async function lookupAndAddItem() {
+    // منع الضغط المزدوج قبل تحديث حالة الزر في React.
+    if (lookupRequestRef.current) {
+      return
+    }
+
+    lookupRequestRef.current = true
     setLoadingLookup(true)
     setError('')
 
@@ -254,41 +262,52 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       }
 
       const availableQuantity = Number(lookupItem.available_quantity)
+
       const unitPrice = Number(lookupItem.selling_price)
 
-      if (quantity > availableQuantity) {
+      if (!Number.isFinite(availableQuantity) || availableQuantity < 0) {
+        throw new Error('الكمية المتاحة للصنف غير صالحة.')
+      }
+
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        throw new Error('سعر بيع الصنف غير صالح.')
+      }
+
+      // ======================================================
+      // فحص الصنف قبل تحديث React State.
+      //
+      // ممنوع رمي Error من داخل setCartItems؛
+      // لأن React قد ينفذ دالة التحديث لاحقًا خارج try/catch.
+      // ======================================================
+      const existingItem = cartItems.find(
+        (item) => item.variantId === variantId,
+      )
+
+      const requestedTotalQuantity = (existingItem?.quantity ?? 0) + quantity
+
+      if (requestedTotalQuantity > availableQuantity) {
         throw new Error(
-          `Insufficient stock. Available: ${availableQuantity}, Requested: ${quantity}`,
+          `الكمية غير كافية. المتاح: ${availableQuantity}، المطلوب إجمالًا: ${requestedTotalQuantity}`,
         )
       }
 
-      setCartItems((currentItems) => {
-        const existingItem = currentItems.find(
-          (item) => item.variantId === variantId,
+      if (existingItem) {
+        setCartItems((currentItems) =>
+          currentItems.map((item) =>
+            item.variantId === variantId
+              ? {
+                  ...item,
+                  quantity: requestedTotalQuantity,
+
+                  // تحديث السعر والمتاح من أحدث استجابة للسيرفر.
+                  unitPrice,
+                  availableQuantity,
+                }
+              : item,
+          ),
         )
-
-        if (existingItem) {
-          return currentItems.map((item) => {
-            if (item.variantId !== variantId) {
-              return item
-            }
-
-            const newQuantity = item.quantity + quantity
-
-            if (newQuantity > item.availableQuantity) {
-              throw new Error(
-                `Insufficient stock. Available: ${item.availableQuantity}, Requested: ${newQuantity}`,
-              )
-            }
-
-            return {
-              ...item,
-              quantity: newQuantity,
-            }
-          })
-        }
-
-        return [
+      } else {
+        setCartItems((currentItems) => [
           ...currentItems,
           {
             variantId,
@@ -301,8 +320,8 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
             unitPrice,
             availableQuantity,
           },
-        ]
-      })
+        ])
+      }
 
       setCode('')
       setQuantity(1)
@@ -310,9 +329,10 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       setError(
         currentError instanceof Error
           ? currentError.message
-          : 'Unknown lookup error',
+          : 'تعذر إضافة الصنف إلى الفاتورة.',
       )
     } finally {
+      lookupRequestRef.current = false
       setLoadingLookup(false)
     }
   }
@@ -714,6 +734,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
                       <button
                         type="button"
                         className="table-button danger-button"
+                        disabled={loadingLookup || savingSale}
                         onClick={() => removeCartItem(item.variantId)}
                       >
                         حذف
