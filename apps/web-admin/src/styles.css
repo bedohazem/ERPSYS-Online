@@ -1935,3 +1935,101 @@ body {
     align-items: stretch;
   }
 }
+
+/* ======================================================
+   Customers Page
+====================================================== */
+
+.customer-list-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.customer-search-field {
+  min-width: 0;
+}
+
+.customer-search-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.customer-search-actions .primary-button {
+  margin: 0;
+}
+
+.customer-name {
+  color: #0f172a;
+  font-weight: 800;
+}
+
+.customer-contact-link {
+  direction: ltr;
+  unicode-bidi: plaintext;
+  color: #1d4ed8;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.customer-contact-link:hover {
+  text-decoration: underline;
+}
+
+.customer-activity-header {
+  margin: 26px 0 14px;
+}
+
+.customer-activity-header h3 {
+  margin: 0;
+}
+
+.customer-activity-header .muted {
+  margin: 5px 0 0;
+}
+
+.customer-activity-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.customer-activity-sale {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.customer-activity-return {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+@media (max-width: 760px) {
+  .customer-list-search {
+    grid-template-columns: 1fr;
+  }
+
+  .customer-search-actions {
+    width: 100%;
+  }
+
+  .customer-search-actions > button {
+    flex: 1 1 auto;
+  }
+
+  .customer-activity-header {
+    align-items: stretch;
+  }
+}

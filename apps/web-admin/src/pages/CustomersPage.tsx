@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from '../auth/AuthContext'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from '../lib/http'
@@ -45,6 +45,80 @@ type ApiResponse<T> = {
   data: T
 }
 
+// ======================================================
+// تنسيق مبالغ وتواريخ شاشة العملاء.
+// ======================================================
+const customerCurrencyFormatter = new Intl.NumberFormat('ar-EG', {
+  style: 'currency',
+  currency: 'EGP',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+})
+
+const customerDateTimeFormatter = new Intl.DateTimeFormat('ar-EG', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+})
+
+function formatCustomerCurrency(value: number | string) {
+  const numericValue = Number(value)
+
+  return Number.isFinite(numericValue)
+    ? customerCurrencyFormatter.format(numericValue)
+    : '-'
+}
+
+function formatCustomerDateTime(value: string) {
+  const parsedDate = new Date(value)
+
+  return Number.isNaN(parsedDate.getTime())
+    ? '-'
+    : customerDateTimeFormatter.format(parsedDate)
+}
+
+// ======================================================
+// ترجمة حالات مستندات نشاط العميل.
+// ======================================================
+function translateCustomerActivityStatus(status: string) {
+  const statusLabels: Record<string, string> = {
+    draft: 'مسودة',
+    completed: 'مكتمل',
+    voided: 'ملغى',
+    refunded: 'مرتجع بالكامل',
+    pending_review: 'بانتظار المراجعة',
+  }
+
+  return statusLabels[status] || status
+}
+
+function getCustomerActivityStatusClass(status: string) {
+  if (status === 'completed') {
+    return 'status-badge status-badge-success'
+  }
+
+  if (status === 'refunded') {
+    return 'status-badge status-badge-info'
+  }
+
+  if (status === 'voided') {
+    return 'status-badge status-badge-danger'
+  }
+
+  if (status === 'draft' || status === 'pending_review') {
+    return 'status-badge status-badge-warning'
+  }
+
+  return 'status-badge'
+}
+
+function getCustomerActivityTypeClass(
+  activityType: CustomerActivityItem['activity_type'],
+) {
+  return activityType === 'sale'
+    ? 'customer-activity-badge customer-activity-sale'
+    : 'customer-activity-badge customer-activity-return'
+}
+
 type CustomersPageProps = {
   companyId: string
 }
@@ -76,13 +150,13 @@ function CustomersPage({ companyId }: CustomersPageProps) {
   // لو searchText فيه قيمة:
   // تبحث بالاسم أو التليفون أو الإيميل
   // ======================================================
-  async function loadCustomers() {
+  async function loadCustomers(searchOverride?: string) {
     setLoadingCustomers(true)
     setError('')
 
     try {
       const selectedCompanyId = companyId.trim()
-      const query = searchText.trim()
+      const query = (searchOverride ?? searchText).trim()
 
       const customersUrl =
         `/api/customers` +
@@ -102,6 +176,24 @@ function CustomersPage({ companyId }: CustomersPageProps) {
     } finally {
       setLoadingCustomers(false)
     }
+  }
+
+  // ======================================================
+  // تنفيذ البحث عند الضغط على Enter أو زر البحث.
+  // ======================================================
+  function submitCustomerSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSelectedCustomerActivity(null)
+    void loadCustomers()
+  }
+
+  // ======================================================
+  // مسح نص البحث وإعادة آخر العملاء.
+  // ======================================================
+  function clearCustomerSearch() {
+    setSearchText('')
+    setSelectedCustomerActivity(null)
+    void loadCustomers('')
   }
 
   // ======================================================
@@ -166,26 +258,53 @@ function CustomersPage({ companyId }: CustomersPageProps) {
           </div>
 
           {canViewCustomers ? (
-            <button
-              className="primary-button small-button"
-              disabled={!companyId.trim() || loadingCustomers}
-              onClick={loadCustomers}
-            >
-              {loadingCustomers ? 'جاري البحث...' : 'بحث / تحديث'}
-            </button>
+            <div className="section-actions">
+              <span className="record-count-badge">
+                {customers.length} عميل
+              </span>
+
+              <button
+                type="button"
+                className="table-button"
+                disabled={!companyId.trim() || loadingCustomers}
+                onClick={() => void loadCustomers()}
+              >
+                {loadingCustomers ? 'جاري التحديث...' : 'تحديث'}
+              </button>
+            </div>
           ) : null}
         </div>
 
-        <div className="single-search-row">
-          <label>
-            بحث باسم العميل أو التليفون
+        <form className="customer-list-search" onSubmit={submitCustomerSearch}>
+          <label className="customer-search-field">
+            بحث بالاسم أو رقم الهاتف أو البريد الإلكتروني
             <input
               value={searchText}
+              disabled={loadingCustomers}
               onChange={(event) => setSearchText(event.target.value)}
-              placeholder="مثال: Ahmed أو 010"
+              placeholder="مثال: أحمد أو 010 أو البريد الإلكتروني"
             />
           </label>
-        </div>
+
+          <div className="customer-search-actions">
+            <button
+              type="submit"
+              className="primary-button small-button"
+              disabled={!companyId.trim() || loadingCustomers}
+            >
+              {loadingCustomers ? 'جاري البحث...' : 'بحث'}
+            </button>
+
+            <button
+              type="button"
+              className="table-button"
+              disabled={loadingCustomers || !searchText.trim()}
+              onClick={clearCustomerSearch}
+            >
+              مسح البحث
+            </button>
+          </div>
+        </form>
 
         {error ? <p className="error-message">{error}</p> : null}
 
@@ -206,6 +325,7 @@ function CustomersPage({ companyId }: CustomersPageProps) {
                   <th>التليفون</th>
                   <th>الإيميل</th>
                   <th>العنوان</th>
+                  <th>تاريخ التسجيل</th>
                   <th>الحالة</th>
                   <th>النشاط</th>
                 </tr>
@@ -213,14 +333,55 @@ function CustomersPage({ companyId }: CustomersPageProps) {
               <tbody>
                 {customers.map((customer) => (
                   <tr key={customer.id}>
-                    <td>{customer.name}</td>
-                    <td>{customer.phone || '-'}</td>
-                    <td>{customer.email || '-'}</td>
+                    <td>
+                      <strong className="customer-name">{customer.name}</strong>
+                    </td>
+
+                    <td>
+                      {customer.phone ? (
+                        <a
+                          className="customer-contact-link"
+                          href={`tel:${customer.phone}`}
+                        >
+                          {customer.phone}
+                        </a>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
+
+                    <td>
+                      {customer.email ? (
+                        <a
+                          className="customer-contact-link"
+                          href={`mailto:${customer.email}`}
+                        >
+                          {customer.email}
+                        </a>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
+
                     <td>{customer.address || '-'}</td>
-                    <td>{customer.is_active ? 'نشط' : 'غير نشط'}</td>
+
+                    <td>{formatCustomerDateTime(customer.created_at)}</td>
+
+                    <td>
+                      <span
+                        className={
+                          customer.is_active
+                            ? 'status-badge status-badge-success'
+                            : 'status-badge status-badge-danger'
+                        }
+                      >
+                        {customer.is_active ? 'نشط' : 'غير نشط'}
+                      </span>
+                    </td>
                     <td>
                       {canViewCustomers ? (
                         <button
+                          type="button"
                           className="table-button"
                           disabled={loadingActivity}
                           onClick={() => loadCustomerActivity(customer.id)}
@@ -247,6 +408,14 @@ function CustomersPage({ companyId }: CustomersPageProps) {
                 {selectedCustomerActivity.customer.phone || 'بدون تليفون'}
               </p>
             </div>
+            <button
+              type="button"
+              className="table-button"
+              disabled={loadingActivity}
+              onClick={() => setSelectedCustomerActivity(null)}
+            >
+              إغلاق النشاط
+            </button>
           </div>
 
           <section className="mini-cards-grid">
@@ -257,7 +426,11 @@ function CustomersPage({ companyId }: CustomersPageProps) {
 
             <article className="mini-card">
               <span>إجمالي المبيعات</span>
-              <strong>{selectedCustomerActivity.summary.total_sales}</strong>
+              <strong>
+                {formatCustomerCurrency(
+                  selectedCustomerActivity.summary.total_sales,
+                )}
+              </strong>
             </article>
 
             <article className="mini-card">
@@ -267,16 +440,34 @@ function CustomersPage({ companyId }: CustomersPageProps) {
 
             <article className="mini-card">
               <span>إجمالي المرتجع</span>
-              <strong>{selectedCustomerActivity.summary.total_refunded}</strong>
+              <strong className="refund-total-value">
+                {formatCustomerCurrency(
+                  selectedCustomerActivity.summary.total_refunded,
+                )}
+              </strong>
             </article>
 
             <article className="mini-card">
               <span>الصافي</span>
-              <strong>{selectedCustomerActivity.summary.net_sales}</strong>
+              <strong>
+                {formatCustomerCurrency(
+                  selectedCustomerActivity.summary.net_sales,
+                )}
+              </strong>
             </article>
           </section>
 
-          <h3>Timeline</h3>
+          <div className="section-header customer-activity-header">
+            <div>
+              <h3>سجل التعاملات</h3>
+
+              <p className="muted">فواتير البيع والمرتجعات مرتبة من الأحدث.</p>
+            </div>
+
+            <span className="record-count-badge">
+              {selectedCustomerActivity.activity.length} حركة
+            </span>
+          </div>
 
           {selectedCustomerActivity.activity.length === 0 ? (
             <p className="muted">لا توجد حركات لهذا العميل.</p>
@@ -287,11 +478,13 @@ function CustomersPage({ companyId }: CustomersPageProps) {
                   <tr>
                     <th>النوع</th>
                     <th>رقم المستند</th>
+                    <th>التاريخ</th>
                     <th>المبلغ</th>
                     <th>مدفوع</th>
                     <th>مرتجع</th>
                     <th>عدد الأصناف</th>
                     <th>الفرع</th>
+                    <th>مكان المخزون</th>
                     <th>الحالة</th>
                   </tr>
                 </thead>
@@ -301,15 +494,50 @@ function CustomersPage({ companyId }: CustomersPageProps) {
                       key={`${activity.activity_type}-${activity.activity_id}`}
                     >
                       <td>
-                        {activity.activity_type === 'sale' ? 'بيع' : 'مرتجع'}
+                        <span
+                          className={getCustomerActivityTypeClass(
+                            activity.activity_type,
+                          )}
+                        >
+                          {activity.activity_type === 'sale'
+                            ? 'فاتورة بيع'
+                            : 'مرتجع'}
+                        </span>
                       </td>
-                      <td>{activity.document_number}</td>
-                      <td>{activity.amount}</td>
-                      <td>{activity.paid_amount}</td>
-                      <td>{activity.refund_amount}</td>
+
+                      <td>
+                        <strong className="document-number">
+                          {activity.document_number}
+                        </strong>
+                      </td>
+
+                      <td>{formatCustomerDateTime(activity.created_at)}</td>
+
+                      <td className="money-cell">
+                        {formatCustomerCurrency(activity.amount)}
+                      </td>
+
+                      <td className="money-cell">
+                        {formatCustomerCurrency(activity.paid_amount)}
+                      </td>
+
+                      <td className="money-cell refund-money-cell">
+                        {formatCustomerCurrency(activity.refund_amount)}
+                      </td>
+
                       <td>{activity.items_count}</td>
                       <td>{activity.branch_name}</td>
-                      <td>{activity.status}</td>
+                      <td>{activity.stock_location_name}</td>
+
+                      <td>
+                        <span
+                          className={getCustomerActivityStatusClass(
+                            activity.status,
+                          )}
+                        >
+                          {translateCustomerActivityStatus(activity.status)}
+                        </span>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
