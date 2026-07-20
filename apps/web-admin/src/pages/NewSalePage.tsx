@@ -59,6 +59,30 @@ type ApiResponse<T> = {
   data: T
 }
 
+type SalePaymentMethod = 'cash' | 'card' | 'wallet' | 'bank_transfer'
+
+// ======================================================
+// تنسيق الأموال داخل شاشة البيع.
+// ======================================================
+const saleCurrencyFormatter = new Intl.NumberFormat('ar-EG', {
+  style: 'currency',
+  currency: 'EGP',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+})
+
+function formatSaleCurrency(value: number | string) {
+  const numericValue = Number(value)
+
+  return Number.isFinite(numericValue)
+    ? saleCurrencyFormatter.format(numericValue)
+    : '-'
+}
+
+function roundSaleMoney(value: number) {
+  return Number(value.toFixed(2))
+}
+
 type NewSalePageProps = {
   companyId: string
   branchId: string
@@ -102,11 +126,19 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   const [selectedCustomerName, setSelectedCustomerName] = useState('')
   const [code, setCode] = useState('')
   const [quantity, setQuantity] = useState(1)
+  const [paymentMethod, setPaymentMethod] = useState<SalePaymentMethod>('cash')
+
+  const [paidAmount, setPaidAmount] = useState(0)
+
+  // التركيز التلقائي على حقل الكود بعد كل عملية.
+  const codeInputRef = useRef<HTMLInputElement>(null)
 
   const [cartItems, setCartItems] = useState<CartItem[]>([])
   const [lastSavedSale, setLastSavedSale] = useState<SaleResponse | null>(null)
 
   const [loadingCustomers, setLoadingCustomers] = useState(false)
+  // يمنع تنفيذ بحثَي عملاء متزامنين.
+  const customerSearchRequestRef = useRef(false)
   const [loadingStockLocations, setLoadingStockLocations] = useState(false)
   const [loadingLookup, setLoadingLookup] = useState(false)
   // يمنع تنفيذ طلبَي بحث متزامنين عند الضغط السريع على Enter.
@@ -117,10 +149,78 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   const [error, setError] = useState('')
 
   const invoiceTotal = useMemo(() => {
+    return roundSaleMoney(
+      cartItems.reduce((sum, item) => {
+        return sum + item.quantity * item.unitPrice
+      }, 0),
+    )
+  }, [cartItems])
+
+  const invoiceQuantityTotal = useMemo(() => {
     return cartItems.reduce((sum, item) => {
-      return sum + item.quantity * item.unitPrice
+      return sum + item.quantity
     }, 0)
   }, [cartItems])
+
+  const changeTotal = useMemo(() => {
+    return roundSaleMoney(Math.max(Number(paidAmount) - invoiceTotal, 0))
+  }, [invoiceTotal, paidAmount])
+
+  const paymentIsValid =
+    invoiceTotal > 0 &&
+    Number.isFinite(Number(paidAmount)) &&
+    Number(paidAmount) >= invoiceTotal
+
+  // عند تغير الإجمالي أو طريقة الدفع نبدأ بالمبلغ الكامل.
+  useEffect(() => {
+    setPaidAmount(invoiceTotal)
+  }, [invoiceTotal, paymentMethod])
+
+  // ======================================================
+  // بدء مسودة فاتورة جديدة.
+  //
+  // نحافظ على مكان البيع الحالي لتسريع عمل الكاشير.
+  // ======================================================
+  function resetSaleDraft() {
+    setCartItems([])
+    setCode('')
+    setQuantity(1)
+
+    setSaleNumber(createSaleNumber())
+    setSaleIdempotencyKey(createIdempotencyKey())
+
+    setCustomerId('')
+    setSelectedCustomerName('')
+    setCustomerSearchText('')
+    setCustomers([])
+
+    setPaymentMethod('cash')
+    setPaidAmount(0)
+    setError('')
+
+    window.setTimeout(() => {
+      codeInputRef.current?.focus()
+    }, 0)
+  }
+
+  function clearSaleDraft() {
+    const hasSaleData =
+      cartItems.length > 0 ||
+      Boolean(customerId) ||
+      Boolean(customerSearchText.trim())
+
+    if (
+      hasSaleData &&
+      !window.confirm(
+        'سيتم حذف جميع بيانات الفاتورة الحالية. هل تريد المتابعة؟',
+      )
+    ) {
+      return
+    }
+
+    setLastSavedSale(null)
+    resetSaleDraft()
+  }
 
   // ======================================================
   // loadStockLocations
@@ -167,6 +267,12 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
         return availableLocations[0]?.id ?? ''
       })
 
+      if (availableLocations.length > 0) {
+        window.setTimeout(() => {
+          codeInputRef.current?.focus()
+        }, 0)
+      }
+
       if (availableLocations.length === 0) {
         setError('لا توجد صالة بيع أو مخزن نشط متاح لهذا الفرع.')
       }
@@ -187,18 +293,8 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   // إعادة تحميل الأماكن عند تغير شركة أو فرع Session.
   useEffect(() => {
     // تغير الشركة أو الفرع يعني بدء فاتورة جديدة بالكامل.
-    setCartItems([])
-    setCode('')
-    setQuantity(1)
-
-    setSaleNumber(createSaleNumber())
-    setSaleIdempotencyKey(createIdempotencyKey())
+    resetSaleDraft()
     setLastSavedSale(null)
-
-    setCustomerId('')
-    setSelectedCustomerName('')
-    setCustomerSearchText('')
-    setCustomers([])
 
     if (!companyId.trim() || !branchId.trim()) {
       setStockLocations([])
@@ -338,8 +434,47 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   }
 
   function removeCartItem(variantId: string) {
+    setError('')
+
     setCartItems((currentItems) =>
       currentItems.filter((item) => item.variantId !== variantId),
+    )
+
+    window.setTimeout(() => {
+      codeInputRef.current?.focus()
+    }, 0)
+  }
+
+  function updateCartItemQuantity(variantId: string, nextQuantity: number) {
+    const selectedItem = cartItems.find((item) => item.variantId === variantId)
+
+    if (!selectedItem) {
+      return
+    }
+
+    if (!Number.isFinite(nextQuantity) || nextQuantity < 1) {
+      setError('الكمية يجب أن تكون واحدًا أو أكثر.')
+      return
+    }
+
+    if (nextQuantity > selectedItem.availableQuantity) {
+      setError(
+        `الكمية غير كافية. المتاح للصنف: ${selectedItem.availableQuantity}`,
+      )
+      return
+    }
+
+    setError('')
+
+    setCartItems((currentItems) =>
+      currentItems.map((item) =>
+        item.variantId === variantId
+          ? {
+              ...item,
+              quantity: nextQuantity,
+            }
+          : item,
+      ),
     )
   }
 
@@ -351,6 +486,11 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   // نبحث بالاسم أو التليفون ثم نختار العميل
   // ======================================================
   async function loadCustomers() {
+    if (customerSearchRequestRef.current) {
+      return
+    }
+
+    customerSearchRequestRef.current = true
     setLoadingCustomers(true)
     setError('')
 
@@ -380,6 +520,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
           : 'تعذر البحث عن العملاء.',
       )
     } finally {
+      customerSearchRequestRef.current = false
       setLoadingCustomers(false)
     }
   }
@@ -426,6 +567,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       const selectedStockLocationId = stockLocationId.trim()
       const selectedSaleNumber = saleNumber.trim()
       const selectedCustomerId = customerId.trim()
+      const selectedPaidAmount = roundSaleMoney(Number(paidAmount))
 
       if (!selectedCompanyId) {
         throw new Error('companyId is required')
@@ -447,6 +589,18 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
         throw new Error('Add at least one item before saving')
       }
 
+      if (!Number.isFinite(selectedPaidAmount) || selectedPaidAmount <= 0) {
+        throw new Error('المبلغ المستلم غير صالح.')
+      }
+
+      if (selectedPaidAmount < invoiceTotal) {
+        throw new Error(
+          `المبلغ المستلم أقل من إجمالي الفاتورة بمقدار ${formatSaleCurrency(
+            invoiceTotal - selectedPaidAmount,
+          )}`,
+        )
+      }
+
       const saleBody = {
         companyId: selectedCompanyId,
         branchId: selectedBranchId,
@@ -465,8 +619,8 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
         })),
         payments: [
           {
-            method: 'cash',
-            amount: invoiceTotal,
+            method: paymentMethod,
+            amount: selectedPaidAmount,
             reference: null,
           },
         ],
@@ -484,19 +638,14 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       )
 
       setLastSavedSale(saleResponse.data)
-      setCartItems([])
-      setSaleNumber(createSaleNumber())
-      // النجاح المؤكد يبدأ هوية مستقلة للفاتورة التالية.
-      setSaleIdempotencyKey(createIdempotencyKey())
-      setCustomerId('')
-      setSelectedCustomerName('')
-      setCustomerSearchText('')
-      setCustomers([])
+
+      // نجاح الحفظ يبدأ فاتورة جديدة بنفس مكان البيع.
+      resetSaleDraft()
     } catch (currentError) {
       setError(
         currentError instanceof Error
           ? currentError.message
-          : 'Unknown save sale error',
+          : 'تعذر حفظ فاتورة البيع.',
       )
     } finally {
       savingSaleRequestRef.current = false
@@ -516,19 +665,32 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
           </div>
 
           {canCreateSale ? (
-            <button
-              type="button"
-              className="primary-button small-button"
-              disabled={
-                cartItems.length === 0 ||
-                savingSale ||
-                !branchId.trim() ||
-                !stockLocationId.trim()
-              }
-              onClick={saveSale}
-            >
-              {savingSale ? 'جاري الحفظ...' : 'حفظ الفاتورة'}
-            </button>
+            <div className="section-actions">
+              <button
+                type="button"
+                className="table-button"
+                disabled={savingSale || loadingLookup}
+                onClick={clearSaleDraft}
+              >
+                فاتورة جديدة
+              </button>
+
+              <button
+                type="button"
+                className="primary-button small-button"
+                disabled={
+                  cartItems.length === 0 ||
+                  savingSale ||
+                  loadingLookup ||
+                  !branchId.trim() ||
+                  !stockLocationId.trim() ||
+                  !paymentIsValid
+                }
+                onClick={saveSale}
+              >
+                {savingSale ? 'جاري إتمام البيع...' : 'حفظ وإتمام البيع'}
+              </button>
+            </div>
           ) : null}
         </div>
 
@@ -543,8 +705,9 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
 
         {lastSavedSale ? (
           <p className="success-message">
-            تم حفظ الفاتورة {lastSavedSale.sale.sale_number} بإجمالي{' '}
-            {lastSavedSale.sale.total}
+            تم حفظ الفاتورة <strong>{lastSavedSale.sale.sale_number}</strong>{' '}
+            بإجمالي{' '}
+            <strong>{formatSaleCurrency(lastSavedSale.sale.total)}</strong>
           </p>
         ) : null}
 
@@ -593,11 +756,13 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
               بحث عن عميل
               <input
                 value={customerSearchText}
+                disabled={loadingCustomers || savingSale}
                 onChange={(event) => setCustomerSearchText(event.target.value)}
                 placeholder="اكتب اسم العميل أو التليفون"
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
-                    loadCustomers()
+                    event.preventDefault()
+                    void loadCustomers()
                   }
                 }}
               />
@@ -607,7 +772,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
               type="button"
               className="primary-button small-button"
               disabled={!companyId.trim() || loadingCustomers}
-              onClick={loadCustomers}
+              onClick={() => void loadCustomers()}
             >
               {loadingCustomers ? 'جاري البحث...' : 'بحث العملاء'}
             </button>
@@ -654,6 +819,8 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
           <label>
             كود / باركود الصنف
             <input
+              ref={codeInputRef}
+              autoFocus
               disabled={!stockLocationId || loadingLookup || savingSale}
               value={code}
               onChange={(event) => setCode(event.target.value)}
@@ -695,7 +862,18 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
         <div className="section-header">
           <div>
             <h2>الأصناف داخل الفاتورة</h2>
-            <p className="muted">الإجمالي الحالي: {invoiceTotal}</p>
+
+            <p className="muted">
+              {invoiceQuantityTotal} قطعة داخل {cartItems.length} صنف.
+            </p>
+          </div>
+
+          <div className="section-actions">
+            <span className="record-count-badge">{cartItems.length} صنف</span>
+
+            <strong className="sale-total-value">
+              {formatSaleCurrency(invoiceTotal)}
+            </strong>
           </div>
         </div>
 
@@ -721,15 +899,90 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
               <tbody>
                 {cartItems.map((item) => (
                   <tr key={item.variantId}>
-                    <td>{item.productName}</td>
-                    <td>{item.sku}</td>
-                    <td>{item.barcode || '-'}</td>
+                    <td>
+                      <strong className="sale-product-name">
+                        {item.productName}
+                      </strong>
+                    </td>
+
+                    <td>
+                      <span className="sale-code">{item.sku}</span>
+                    </td>
+
+                    <td>
+                      {item.barcode ? (
+                        <span className="sale-code">{item.barcode}</span>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
+
                     <td>{item.sizeName || '-'}</td>
                     <td>{item.colorName || '-'}</td>
                     <td>{item.availableQuantity}</td>
-                    <td>{item.quantity}</td>
-                    <td>{item.unitPrice}</td>
-                    <td>{item.quantity * item.unitPrice}</td>
+
+                    <td>
+                      <div className="sale-quantity-editor">
+                        <button
+                          type="button"
+                          className="sale-quantity-button"
+                          disabled={
+                            item.quantity <= 1 || loadingLookup || savingSale
+                          }
+                          onClick={() =>
+                            updateCartItemQuantity(
+                              item.variantId,
+                              item.quantity - 1,
+                            )
+                          }
+                        >
+                          −
+                        </button>
+
+                        <input
+                          className="sale-quantity-input"
+                          type="number"
+                          min="1"
+                          max={item.availableQuantity}
+                          value={item.quantity}
+                          disabled={loadingLookup || savingSale}
+                          onChange={(event) =>
+                            updateCartItemQuantity(
+                              item.variantId,
+                              Number(event.target.value),
+                            )
+                          }
+                        />
+
+                        <button
+                          type="button"
+                          className="sale-quantity-button"
+                          disabled={
+                            item.quantity >= item.availableQuantity ||
+                            loadingLookup ||
+                            savingSale
+                          }
+                          onClick={() =>
+                            updateCartItemQuantity(
+                              item.variantId,
+                              item.quantity + 1,
+                            )
+                          }
+                        >
+                          +
+                        </button>
+                      </div>
+                    </td>
+
+                    <td className="money-cell">
+                      {formatSaleCurrency(item.unitPrice)}
+                    </td>
+
+                    <td className="money-cell">
+                      <strong>
+                        {formatSaleCurrency(item.quantity * item.unitPrice)}
+                      </strong>
+                    </td>
                     <td>
                       <button
                         type="button"
@@ -746,6 +999,91 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
             </table>
           </div>
         )}
+      </section>
+
+      <section className="panel">
+        <div className="section-header">
+          <div>
+            <h2>الدفع والإجماليات</h2>
+
+            <p className="muted">اختر طريقة الدفع وسجل المبلغ المستلم.</p>
+          </div>
+        </div>
+
+        <div className="form-grid sale-payment-grid">
+          <label>
+            طريقة الدفع
+            <select
+              value={paymentMethod}
+              disabled={savingSale}
+              onChange={(event) =>
+                setPaymentMethod(event.target.value as SalePaymentMethod)
+              }
+            >
+              <option value="cash">نقدي</option>
+              <option value="card">بطاقة بنكية</option>
+              <option value="wallet">محفظة إلكترونية</option>
+              <option value="bank_transfer">تحويل بنكي</option>
+            </select>
+          </label>
+
+          <label>
+            المبلغ المستلم
+            <input
+              type="number"
+              min={invoiceTotal}
+              step="0.01"
+              value={paidAmount}
+              readOnly={paymentMethod !== 'cash'}
+              disabled={savingSale || cartItems.length === 0}
+              onChange={(event) => {
+                const nextPaidAmount = Number(event.target.value)
+
+                setPaidAmount(
+                  Number.isFinite(nextPaidAmount) ? nextPaidAmount : 0,
+                )
+              }}
+            />
+            <small className="field-note">
+              في الدفع غير النقدي يتم استخدام إجمالي الفاتورة تلقائيًا.
+            </small>
+          </label>
+        </div>
+
+        <section className="mini-cards-grid sale-summary-grid">
+          <article className="mini-card">
+            <span>عدد الأصناف</span>
+            <strong>{cartItems.length}</strong>
+          </article>
+
+          <article className="mini-card">
+            <span>إجمالي القطع</span>
+            <strong>{invoiceQuantityTotal}</strong>
+          </article>
+
+          <article className="mini-card">
+            <span>إجمالي الفاتورة</span>
+            <strong>{formatSaleCurrency(invoiceTotal)}</strong>
+          </article>
+
+          <article className="mini-card">
+            <span>المبلغ المستلم</span>
+            <strong>{formatSaleCurrency(paidAmount)}</strong>
+          </article>
+
+          <article className="mini-card">
+            <span>الباقي للعميل</span>
+            <strong className="sale-change-value">
+              {formatSaleCurrency(changeTotal)}
+            </strong>
+          </article>
+        </section>
+
+        {!paymentIsValid && cartItems.length > 0 ? (
+          <p className="error-message">
+            المبلغ المستلم يجب ألا يقل عن إجمالي الفاتورة.
+          </p>
+        ) : null}
       </section>
     </>
   )

@@ -2055,3 +2055,103 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ======================================================
+   Core Sale Workflow
+====================================================== */
+
+.sale-total-value {
+  color: #0f3d91;
+  font-size: 21px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.sale-product-name {
+  color: #0f172a;
+  font-weight: 800;
+}
+
+.sale-code {
+  direction: ltr;
+  unicode-bidi: plaintext;
+  color: #1d4ed8;
+  font-weight: 800;
+}
+
+.sale-quantity-editor {
+  display: inline-grid;
+  grid-template-columns: 34px 62px 34px;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.sale-quantity-button {
+  height: 34px;
+  padding: 0;
+  border: 0;
+  background: #f1f5f9;
+  color: #0f3d91;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.sale-quantity-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.sale-quantity-input {
+  width: 62px;
+  min-width: 0;
+  height: 34px;
+  padding: 4px;
+  border: 0;
+  border-right: 1px solid #cbd5e1;
+  border-left: 1px solid #cbd5e1;
+  border-radius: 0;
+  text-align: center;
+}
+
+.sale-payment-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 20px;
+}
+
+.sale-summary-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.sale-summary-grid .mini-card strong {
+  font-size: 20px;
+}
+
+.sale-change-value {
+  color: #15803d !important;
+}
+
+@media (max-width: 1100px) {
+  .sale-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .sale-payment-grid,
+  .sale-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sale-quantity-editor {
+    grid-template-columns: 32px 54px 32px;
+  }
+
+  .sale-quantity-input {
+    width: 54px;
+  }
+}
