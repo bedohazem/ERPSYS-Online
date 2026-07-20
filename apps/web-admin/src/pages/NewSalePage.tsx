@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from '../lib/http'
@@ -87,6 +87,15 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   const [stockLocationId, setStockLocationId] = useState('')
 
   const [saleNumber, setSaleNumber] = useState(createSaleNumber())
+  // ======================================================
+  // مفتاح ثابت لمسودة الفاتورة الحالية.
+  //
+  // لا يتغير عند إعادة محاولة الحفظ بعد انقطاع الاتصال.
+  // يتم تغييره فقط بعد تأكيد نجاح الفاتورة أو تغير الفرع.
+  // ======================================================
+  const [saleIdempotencyKey, setSaleIdempotencyKey] = useState(
+    createIdempotencyKey(),
+  )
   const [customerId, setCustomerId] = useState('')
   const [customerSearchText, setCustomerSearchText] = useState('')
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -101,6 +110,8 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   const [loadingStockLocations, setLoadingStockLocations] = useState(false)
   const [loadingLookup, setLoadingLookup] = useState(false)
   const [savingSale, setSavingSale] = useState(false)
+  // يمنع إرسال طلبين متزامنين قبل تحديث React للزر.
+  const savingSaleRequestRef = useRef(false)
   const [error, setError] = useState('')
 
   const invoiceTotal = useMemo(() => {
@@ -173,9 +184,19 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
 
   // إعادة تحميل الأماكن عند تغير شركة أو فرع Session.
   useEffect(() => {
+    // تغير الشركة أو الفرع يعني بدء فاتورة جديدة بالكامل.
     setCartItems([])
     setCode('')
     setQuantity(1)
+
+    setSaleNumber(createSaleNumber())
+    setSaleIdempotencyKey(createIdempotencyKey())
+    setLastSavedSale(null)
+
+    setCustomerId('')
+    setSelectedCustomerName('')
+    setCustomerSearchText('')
+    setCustomers([])
 
     if (!companyId.trim() || !branchId.trim()) {
       setStockLocations([])
@@ -367,6 +388,12 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
   // 5. يسجل stock_movement
   // ======================================================
   async function saveSale() {
+    // منع طلب حفظ ثانٍ متزامن من الضغط السريع.
+    if (savingSaleRequestRef.current) {
+      return
+    }
+
+    savingSaleRequestRef.current = true
     setSavingSale(true)
     setError('')
     setLastSavedSale(null)
@@ -405,7 +432,8 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
         customerId: selectedCustomerId || null,
         saleNumber: selectedSaleNumber,
         source: 'web_admin',
-        idempotencyKey: createIdempotencyKey(),
+        // نفس المفتاح يُستخدم في جميع محاولات حفظ هذه الفاتورة.
+        idempotencyKey: saleIdempotencyKey,
         items: cartItems.map((item) => ({
           variantId: item.variantId,
           quantity: item.quantity,
@@ -436,6 +464,8 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       setLastSavedSale(saleResponse.data)
       setCartItems([])
       setSaleNumber(createSaleNumber())
+      // النجاح المؤكد يبدأ هوية مستقلة للفاتورة التالية.
+      setSaleIdempotencyKey(createIdempotencyKey())
       setCustomerId('')
       setSelectedCustomerName('')
       setCustomerSearchText('')
@@ -447,6 +477,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
           : 'Unknown save sale error',
       )
     } finally {
+      savingSaleRequestRef.current = false
       setSavingSale(false)
     }
   }

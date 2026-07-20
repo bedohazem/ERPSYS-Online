@@ -489,22 +489,60 @@ salesRouter.post('/api/sales', async (req, res, next) => {
 
     await client.query('BEGIN')
 
-    const existingSale = await client.query(
+    // ======================================================
+    // استرجاع الفاتورة السابقة عند تكرار نفس المفتاح.
+    //
+    // يجب أن تكون الاستجابة بنفس شكل استجابة الإنشاء العادية:
+    // data.sale
+    // data.items
+    // data.payments
+    // ======================================================
+    const existingSaleResult = await client.query(
       `
-      SELECT id, sale_number, total, status
-      FROM sales
-      WHERE company_id = $1
-        AND idempotency_key = $2;
-      `,
+  SELECT *
+  FROM sales
+  WHERE company_id = $1
+    AND idempotency_key = $2
+  LIMIT 1;
+  `,
       [companyId, idempotencyKey],
     )
 
-    if ((existingSale.rowCount ?? 0) > 0) {
+    if ((existingSaleResult.rowCount ?? 0) > 0) {
+      const existingSale = existingSaleResult.rows[0]
+
+      const existingItemsResult = await client.query(
+        `
+    SELECT *
+    FROM sale_items
+    WHERE company_id = $1
+      AND sale_id = $2
+    ORDER BY created_at ASC;
+    `,
+        [companyId, existingSale.id],
+      )
+
+      const existingPaymentsResult = await client.query(
+        `
+    SELECT *
+    FROM payments
+    WHERE company_id = $1
+      AND sale_id = $2
+    ORDER BY created_at ASC;
+    `,
+        [companyId, existingSale.id],
+      )
+
       await client.query('COMMIT')
 
       return res.status(200).json({
         duplicated: true,
-        data: existingSale.rows[0],
+
+        data: {
+          sale: existingSale,
+          items: existingItemsResult.rows,
+          payments: existingPaymentsResult.rows,
+        },
       })
     }
 
