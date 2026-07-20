@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from '../lib/http'
@@ -43,6 +43,38 @@ type StockMovement = {
   reference_id: string | null
   note: string | null
   created_at: string
+}
+
+type StockLocation = {
+  id: string
+  branch_id: string | null
+  code: string
+  name: string
+  location_type: string
+  is_active: boolean
+}
+
+type InventoryLookupItem = {
+  variant_id: string
+  product_name: string
+  sku: string
+  primary_barcode: string | null
+  size_name: string | null
+  color_name: string | null
+  current_quantity: string
+  stock_location_id: string
+  stock_location_name: string
+}
+
+type OpeningBalanceResponse = {
+  balance: {
+    quantity: string
+  }
+  item: {
+    product_name: string
+    sku: string
+    stock_location_name: string
+  }
 }
 
 type ApiResponse<T> = {
@@ -148,14 +180,39 @@ function translateInventoryReference(referenceType: string | null) {
 
 type InventoryPageProps = {
   companyId: string
+  branchId: string
 }
 
-function InventoryPage({ companyId }: InventoryPageProps) {
+function InventoryPage({ companyId, branchId }: InventoryPageProps) {
   const [stockBalances, setStockBalances] = useState<StockBalance[]>([])
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([])
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  const [stockLocations, setStockLocations] = useState<StockLocation[]>([])
+
+  const [openingStockLocationId, setOpeningStockLocationId] = useState('')
+
+  const [openingCode, setOpeningCode] = useState('')
+  const [openingItem, setOpeningItem] = useState<InventoryLookupItem | null>(
+    null,
+  )
+
+  const [openingQuantity, setOpeningQuantity] = useState(1)
+
+  const [openingNote, setOpeningNote] = useState('')
+
+  const [loadingLocations, setLoadingLocations] = useState(false)
+
+  const [loadingOpeningLookup, setLoadingOpeningLookup] = useState(false)
+
+  const [savingOpeningBalance, setSavingOpeningBalance] = useState(false)
+
+  const [success, setSuccess] = useState('')
+
+  const openingLookupRequestRef = useRef(false)
+  const openingSaveRequestRef = useRef(false)
 
   // ======================================================
   // مؤشرات مختصرة محسوبة من البيانات المحملة حاليًا.
@@ -188,6 +245,155 @@ function InventoryPage({ companyId }: InventoryPageProps) {
     user?.permissions.includes('inventory.view') ||
     false
 
+  const canAdjustInventory =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('inventory.adjust') ||
+    false
+
+  async function loadStockLocations() {
+    setLoadingLocations(true)
+    setError('')
+
+    try {
+      const selectedCompanyId = companyId.trim()
+      const selectedBranchId = branchId.trim()
+
+      const locationsUrl =
+        `/api/inventory/stock-locations` +
+        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
+        (selectedBranchId
+          ? `&branchId=${encodeURIComponent(selectedBranchId)}`
+          : '')
+
+      const response =
+        await requestJson<ApiResponse<StockLocation[]>>(locationsUrl)
+
+      setStockLocations(response.data)
+
+      setOpeningStockLocationId((currentLocationId) => {
+        const stillExists = response.data.some(
+          (location) => location.id === currentLocationId,
+        )
+
+        return stillExists ? currentLocationId : (response.data[0]?.id ?? '')
+      })
+    } catch (currentError) {
+      setStockLocations([])
+      setOpeningStockLocationId('')
+
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر تحميل أماكن التخزين.',
+      )
+    } finally {
+      setLoadingLocations(false)
+    }
+  }
+
+  async function lookupOpeningBalanceItem() {
+    if (openingLookupRequestRef.current) {
+      return
+    }
+
+    openingLookupRequestRef.current = true
+    setLoadingOpeningLookup(true)
+    setError('')
+    setSuccess('')
+    setOpeningItem(null)
+
+    try {
+      if (!openingStockLocationId) {
+        throw new Error('اختر مكان التخزين أولًا.')
+      }
+
+      if (!openingCode.trim()) {
+        throw new Error('اكتب باركود أو SKU الصنف.')
+      }
+
+      const lookupUrl =
+        `/api/inventory/lookup-item` +
+        `?companyId=${encodeURIComponent(companyId.trim())}` +
+        `&stockLocationId=${encodeURIComponent(openingStockLocationId)}` +
+        `&code=${encodeURIComponent(openingCode.trim())}`
+
+      const response =
+        await requestJson<ApiResponse<InventoryLookupItem>>(lookupUrl)
+
+      setOpeningItem(response.data)
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر العثور على الصنف.',
+      )
+    } finally {
+      openingLookupRequestRef.current = false
+      setLoadingOpeningLookup(false)
+    }
+  }
+
+  async function saveOpeningBalance() {
+    if (openingSaveRequestRef.current) {
+      return
+    }
+
+    openingSaveRequestRef.current = true
+    setSavingOpeningBalance(true)
+    setError('')
+    setSuccess('')
+
+    try {
+      if (!openingItem) {
+        throw new Error('ابحث عن الصنف واختره أولًا.')
+      }
+
+      if (!Number.isFinite(openingQuantity) || openingQuantity <= 0) {
+        throw new Error('الكمية الافتتاحية يجب أن تكون أكبر من صفر.')
+      }
+
+      const response = await requestJson<ApiResponse<OpeningBalanceResponse>>(
+        '/api/inventory/opening-balance',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            companyId: companyId.trim(),
+            branchId: branchId.trim() || null,
+            stockLocationId: openingStockLocationId,
+            variantId: openingItem.variant_id,
+            quantity: openingQuantity,
+            note: openingNote.trim() || null,
+          }),
+        },
+      )
+
+      setSuccess(
+        `تم تسجيل رصيد افتتاحي للصنف ${response.data.item.product_name} بكمية ${formatInventoryQuantity(
+          response.data.balance.quantity,
+        )}.`,
+      )
+
+      setOpeningCode('')
+      setOpeningItem(null)
+      setOpeningQuantity(1)
+      setOpeningNote('')
+
+      await loadInventory()
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر تسجيل الرصيد الافتتاحي.',
+      )
+    } finally {
+      openingSaveRequestRef.current = false
+      setSavingOpeningBalance(false)
+    }
+  }
+
   // ======================================================
   // loadInventory
   // تجيب:
@@ -201,13 +407,21 @@ function InventoryPage({ companyId }: InventoryPageProps) {
     try {
       const selectedCompanyId = companyId.trim()
 
+      const selectedBranchId = branchId.trim()
+
+      const branchQuery = selectedBranchId
+        ? `&branchId=${encodeURIComponent(selectedBranchId)}`
+        : ''
+
       const balancesUrl =
         `/api/inventory/stock-balances` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}`
+        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
+        branchQuery
 
       const movementsUrl =
         `/api/inventory/stock-movements` +
         `?companyId=${encodeURIComponent(selectedCompanyId)}` +
+        branchQuery +
         '&limit=50'
 
       const [balancesResponse, movementsResponse] = await Promise.all([
@@ -221,7 +435,7 @@ function InventoryPage({ companyId }: InventoryPageProps) {
       setError(
         currentError instanceof Error
           ? currentError.message
-          : 'Unknown inventory error',
+          : 'تعذر تحميل بيانات المخزون.',
       )
     } finally {
       setLoading(false)
@@ -237,7 +451,19 @@ function InventoryPage({ companyId }: InventoryPageProps) {
     }
 
     void loadInventory()
-  }, [canViewInventory, companyId])
+  }, [canViewInventory, companyId, branchId])
+
+  useEffect(() => {
+    setOpeningItem(null)
+    setOpeningCode('')
+    setSuccess('')
+
+    if (!canAdjustInventory || !companyId.trim()) {
+      return
+    }
+
+    void loadStockLocations()
+  }, [canAdjustInventory, companyId, branchId])
 
   return (
     <>
@@ -262,6 +488,144 @@ function InventoryPage({ companyId }: InventoryPageProps) {
 
         {error ? <p className="error-message">{error}</p> : null}
       </section>
+
+      {canAdjustInventory ? (
+        <section className="panel">
+          <div className="section-header">
+            <div>
+              <h2>تسجيل رصيد افتتاحي</h2>
+
+              <p className="muted">
+                يستخدم مرة واحدة فقط قبل بدء حركة الصنف داخل مكان التخزين.
+              </p>
+            </div>
+          </div>
+
+          {success ? <p className="success-message">{success}</p> : null}
+
+          <div className="form-grid opening-balance-grid">
+            <label>
+              مكان التخزين
+              <select
+                value={openingStockLocationId}
+                disabled={loadingLocations || savingOpeningBalance}
+                onChange={(event) => {
+                  setOpeningStockLocationId(event.target.value)
+                  setOpeningItem(null)
+                }}
+              >
+                <option value="">
+                  {loadingLocations
+                    ? 'جاري تحميل الأماكن...'
+                    : 'اختر مكان التخزين'}
+                </option>
+
+                {stockLocations.map((location) => (
+                  <option key={location.id} value={location.id}>
+                    {location.name} ({location.code})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              باركود أو SKU
+              <input
+                value={openingCode}
+                disabled={loadingOpeningLookup || savingOpeningBalance}
+                onChange={(event) => {
+                  setOpeningCode(event.target.value)
+                  setOpeningItem(null)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void lookupOpeningBalanceItem()
+                  }
+                }}
+                placeholder="امسح الباركود أو اكتب SKU"
+              />
+            </label>
+
+            <label>
+              الكمية الافتتاحية
+              <input
+                type="number"
+                min="0.001"
+                step="0.001"
+                value={openingQuantity}
+                disabled={savingOpeningBalance}
+                onChange={(event) =>
+                  setOpeningQuantity(Number(event.target.value))
+                }
+              />
+            </label>
+
+            <label>
+              ملاحظة
+              <input
+                value={openingNote}
+                disabled={savingOpeningBalance}
+                onChange={(event) => setOpeningNote(event.target.value)}
+                placeholder="اختياري"
+              />
+            </label>
+          </div>
+
+          <div className="inventory-opening-actions">
+            <button
+              type="button"
+              className="table-button"
+              disabled={
+                !openingStockLocationId ||
+                !openingCode.trim() ||
+                loadingOpeningLookup ||
+                savingOpeningBalance
+              }
+              onClick={() => void lookupOpeningBalanceItem()}
+            >
+              {loadingOpeningLookup ? 'جاري البحث...' : 'بحث عن الصنف'}
+            </button>
+
+            <button
+              type="button"
+              className="primary-button small-button"
+              disabled={
+                !openingItem ||
+                savingOpeningBalance ||
+                loadingOpeningLookup ||
+                openingQuantity <= 0
+              }
+              onClick={() => void saveOpeningBalance()}
+            >
+              {savingOpeningBalance
+                ? 'جاري التسجيل...'
+                : 'تسجيل الرصيد الافتتاحي'}
+            </button>
+          </div>
+
+          {openingItem ? (
+            <article className="inventory-selected-item">
+              <div>
+                <span>الصنف المختار</span>
+                <strong>{openingItem.product_name}</strong>
+              </div>
+
+              <div>
+                <span>SKU</span>
+                <strong>{openingItem.sku}</strong>
+              </div>
+
+              <div>
+                <span>الرصيد الحالي</span>
+                <strong>
+                  {formatInventoryQuantity(openingItem.current_quantity)}
+                </strong>
+              </div>
+            </article>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="mini-cards-grid inventory-summary-grid">
         <article className="mini-card inventory-summary-card">

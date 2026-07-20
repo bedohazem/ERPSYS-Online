@@ -749,7 +749,7 @@ function App() {
           ) : null}
 
           {activePage === 'inventory' ? (
-            <InventoryPage companyId={companyId} />
+            <InventoryPage companyId={companyId} branchId={branchId} />
           ) : null}
 
           {activePage === 'users' ? <UsersPage /> : null}

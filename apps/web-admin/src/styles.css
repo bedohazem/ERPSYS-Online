@@ -2155,3 +2155,69 @@ body {
     width: 54px;
   }
 }
+
+/* ======================================================
+   Inventory Opening Balance
+====================================================== */
+
+.opening-balance-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 20px;
+}
+
+.inventory-opening-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.inventory-selected-item {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #bfdbfe;
+  border-radius: 14px;
+  background: #eff6ff;
+}
+
+.inventory-selected-item div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.inventory-selected-item span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.inventory-selected-item strong {
+  color: #0f3d91;
+  font-weight: 900;
+}
+
+@media (max-width: 1000px) {
+  .opening-balance-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .opening-balance-grid,
+  .inventory-selected-item {
+    grid-template-columns: 1fr;
+  }
+
+  .inventory-opening-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .inventory-opening-actions button {
+    width: 100%;
+  }
+}
