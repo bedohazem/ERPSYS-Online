@@ -65,6 +65,20 @@ function isValidUuid(value: string) {
 }
 
 // ======================================================
+// PostgreSQL Unique Violation
+//
+// الكود 23505 يعني أن Unique Constraint منعت
+// إنشاء سجل مكرر.
+// ======================================================
+function isPostgresUniqueViolation(error: unknown) {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: string }).code === '23505'
+  )
+}
+
+// ======================================================
 // GET /api/sales
 // الهدف: عرض قائمة الفواتير المحفوظة
 // مثال:
@@ -1057,19 +1071,98 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       },
     })
   } catch (error) {
-    // لو حصل أي خطأ، نرجع كل اللي حصل جوه transaction
-    // يعني لو الفاتورة اتعملت وبعدها اكتشفنا إن المخزون غير كافي
-    // كل حاجة تتلغي: sale + sale_items + payments + stock movement
+    // إلغاء أي تغييرات غير مكتملة داخل Transaction الحالية.
     await client.query('ROLLBACK').catch(() => {})
 
-    // لو الخطأ من النوع اللي إحنا عاملينه للـ Sales
-    // نرجع status واضح ورسالة مفهومة
-    if (error instanceof SalesApiError) {
-      return res.status(error.statusCode).json({ error: error.message })
+    // ====================================================
+    // معالجة طلبين متزامنين بنفس Idempotency Key.
+    //
+    // في هذه الحالة PostgreSQL تسمح لطلب واحد فقط بالحفظ،
+    // والطلب الآخر يحصل على 23505.
+    //
+    // بدل إرجاع خطأ، نسترجع نفس الفاتورة التي حفظها
+    // الطلب الأول ونرجع استجابة نجاح موحدة.
+    // ====================================================
+    if (isPostgresUniqueViolation(error)) {
+      const requestBody =
+        req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+          ? (req.body as Record<string, unknown>)
+          : {}
+
+      const requestCompanyId =
+        typeof requestBody.companyId === 'string'
+          ? requestBody.companyId.trim()
+          : ''
+
+      const requestIdempotencyKey =
+        typeof requestBody.idempotencyKey === 'string'
+          ? requestBody.idempotencyKey.trim()
+          : ''
+
+      if (requestCompanyId && requestIdempotencyKey) {
+        const existingSaleResult = await db.query(
+          `
+        SELECT *
+        FROM sales
+        WHERE company_id = $1
+          AND idempotency_key = $2
+        LIMIT 1;
+        `,
+          [requestCompanyId, requestIdempotencyKey],
+        )
+
+        // وجود الفاتورة بنفس المفتاح يؤكد أن الخطأ
+        // ناتج عن طلب مكرر وليس Unique Constraint آخر.
+        if ((existingSaleResult.rowCount ?? 0) > 0) {
+          const existingSale = existingSaleResult.rows[0]
+
+          const [existingItemsResult, existingPaymentsResult] =
+            await Promise.all([
+              db.query(
+                `
+            SELECT *
+            FROM sale_items
+            WHERE company_id = $1
+              AND sale_id = $2
+            ORDER BY created_at ASC;
+            `,
+                [requestCompanyId, existingSale.id],
+              ),
+
+              db.query(
+                `
+            SELECT *
+            FROM payments
+            WHERE company_id = $1
+              AND sale_id = $2
+            ORDER BY created_at ASC;
+            `,
+                [requestCompanyId, existingSale.id],
+              ),
+            ])
+
+          return res.status(200).json({
+            duplicated: true,
+
+            data: {
+              sale: existingSale,
+              items: existingItemsResult.rows,
+              payments: existingPaymentsResult.rows,
+            },
+          })
+        }
+      }
     }
 
-    // أي خطأ تاني غير متوقع يروح للـ error handler العام
-    next(error)
+    // أخطاء البيع المتوقعة مثل عدم كفاية المخزون.
+    if (error instanceof SalesApiError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+      })
+    }
+
+    // أي خطأ غير متوقع يذهب إلى Error Handler العام.
+    return next(error)
   } finally {
     client.release()
   }
