@@ -7,7 +7,10 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "typecheck": "tsc --noEmit",
+    "build:web-admin": "npm --prefix apps/web-admin run build",
+    "check": "npm run typecheck && npm run build:web-admin",
+    "test": "npm run check",
     "db:migrate": "node packages/database/scripts/migrate.js",
     "db:seed": "node packages/database/scripts/seed.js",
     "api:dev": "tsx watch services/api/src/server.ts",
