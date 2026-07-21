@@ -448,6 +448,62 @@ export function requireBusinessPermission(
     return requirePermission(requiredPermission)(req, res, next)
   }
 
+  // ======================================================
+  // صلاحيات الموردين.
+  //
+  // منشئ المشتريات يحتاج قراءة الموردين لاختيار المورد،
+  // لكنه لا يستطيع إنشاء مورد إلا بصلاحية suppliers.manage.
+  // ======================================================
+  if (path === '/api/suppliers' || path.startsWith('/api/suppliers/')) {
+    if (isReadRequest) {
+      const auth = getAuthContext(res)
+
+      const canReadSuppliers =
+        auth.roles.includes('admin') ||
+        auth.permissions.includes('suppliers.view') ||
+        auth.permissions.includes('suppliers.manage') ||
+        auth.permissions.includes('purchases.create')
+
+      if (!canReadSuppliers) {
+        return res.status(403).json({
+          error:
+            'Permission required: suppliers.view, suppliers.manage or purchases.create',
+        })
+      }
+
+      return next()
+    }
+
+    return requirePermission('suppliers.manage')(req, res, next)
+  }
+
+  // ======================================================
+  // صلاحيات المشتريات.
+  //
+  // منشئ المشتريات يستطيع قراءة أذون الاستلام التي أنشأها
+  // أو المرتبطة بفرعه دون اشتراط purchases.view.
+  // ======================================================
+  if (path === '/api/purchases' || path.startsWith('/api/purchases/')) {
+    if (isReadRequest) {
+      const auth = getAuthContext(res)
+
+      const canReadPurchases =
+        auth.roles.includes('admin') ||
+        auth.permissions.includes('purchases.view') ||
+        auth.permissions.includes('purchases.create')
+
+      if (!canReadPurchases) {
+        return res.status(403).json({
+          error: 'Permission required: purchases.view or purchases.create',
+        })
+      }
+
+      return next()
+    }
+
+    return requirePermission('purchases.create')(req, res, next)
+  }
+
   const rules = [
     {
       prefix: '/api/demo',

@@ -16,6 +16,8 @@ import { companiesRouter } from './modules/companies/companies.routes'
 import { branchesRouter } from './modules/branches/branches.routes'
 import { catalogRouter } from './modules/catalog/catalog.routes'
 import { inventoryRouter } from './modules/inventory/inventory.routes'
+import { suppliersRouter } from './modules/suppliers/suppliers.routes'
+import { purchasesRouter } from './modules/purchases/purchases.routes'
 import { transfersRouter } from './modules/transfers/transfers.routes'
 import { salesRouter } from './modules/sales/sales.routes'
 import { posRouter } from './modules/pos/pos.routes'
@@ -71,6 +73,8 @@ app.use(companiesRouter)
 app.use(branchesRouter)
 app.use(catalogRouter)
 app.use(inventoryRouter)
+app.use(suppliersRouter)
+app.use(purchasesRouter)
 app.use(transfersRouter)
 app.use(salesRouter)
 app.use(posRouter)
