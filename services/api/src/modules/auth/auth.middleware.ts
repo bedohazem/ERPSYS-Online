@@ -233,6 +233,15 @@ export function applyAuthenticatedTenant(
     const isUserManagementRequest =
       requestPath === '/api/users' || requestPath.startsWith('/api/users/')
 
+    // إدارة أجهزة POS تحتاج أن يختار مدير الشركة
+    // الفرع الذي سيتم ربط الجهاز به.
+    //
+    // مستخدم الفرع لا يستطيع اختيار فرع آخر؛
+    // سيتم فرض فرعه من Session.
+    const isPosDeviceManagementRequest =
+      requestPath === '/api/pos-devices' ||
+      requestPath.startsWith('/api/pos-devices/')
+
     // ====================================================
     // Query الموثقة
     //
@@ -277,12 +286,26 @@ export function applyAuthenticatedTenant(
 
       authenticatedBody.companyId = auth.companyId
 
-      if (!isUserManagementRequest) {
+      // ====================================================
+      // فرع أجهزة POS
+      //
+      // مستخدم الفرع يتم فرض فرعه دائمًا.
+      //
+      // مدير الشركة غير المرتبط بفرع يستطيع اختيار
+      // الفرع المستهدف من شاشة إدارة الأجهزة.
+      // ====================================================
+      if (isPosDeviceManagementRequest) {
+        if (auth.branchId) {
+          authenticatedBody.branchId = auth.branchId
+        }
+
+        // مدير الشركة يحتفظ بالفرع المختار من الواجهة.
+      } else if (!isUserManagementRequest) {
         if (auth.branchId) {
           authenticatedBody.branchId = auth.branchId
         } else {
           // المستخدم غير المرتبط بفرع لا يفرض فرعًا
-          // على عمليات البيع والمخزون وباقي Business APIs.
+          // على بقية Business APIs.
           delete authenticatedBody.branchId
         }
       }
@@ -534,6 +557,33 @@ export function requireBusinessPermission(
     }
 
     return requirePermission('purchases.create')(req, res, next)
+  }
+
+  // ======================================================
+  // إدارة أجهزة POS.
+  //
+  // القراءة تحتاج view أو manage.
+  // الإنشاء والحظر وتدوير المفتاح تحتاج manage.
+  // ======================================================
+  if (path === '/api/pos-devices' || path.startsWith('/api/pos-devices/')) {
+    if (isReadRequest) {
+      const auth = getAuthContext(res)
+
+      const canReadPosDevices =
+        auth.roles.includes('admin') ||
+        auth.permissions.includes('pos.devices.view') ||
+        auth.permissions.includes('pos.devices.manage')
+
+      if (!canReadPosDevices) {
+        return res.status(403).json({
+          error: 'Permission required: pos.devices.view or pos.devices.manage',
+        })
+      }
+
+      return next()
+    }
+
+    return requirePermission('pos.devices.manage')(req, res, next)
   }
 
   const rules = [

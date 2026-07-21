@@ -9,6 +9,7 @@ import InventoryPage from './pages/InventoryPage'
 import TransfersPage from './pages/TransfersPage'
 import PurchasesPage from './pages/PurchasesPage'
 import PurchaseOrdersPage from './pages/PurchaseOrdersPage'
+import PosDevicesPage from './pages/PosDevicesPage'
 import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
 // شاشة إدارة مستخدمي الشركة.
@@ -29,6 +30,7 @@ type PageName =
   | 'transfers'
   | 'purchases'
   | 'purchase-orders'
+  | 'pos-devices'
   | 'users'
   | 'roles'
   | 'new-sale'
@@ -128,6 +130,14 @@ const pageDefinitions: Array<{
     permission: 'purchases.view',
 
     anyPermissions: ['purchases.view', 'purchases.create'],
+  },
+  {
+    name: 'pos-devices',
+    label: 'أجهزة نقاط البيع',
+    icon: '▣',
+    permission: 'pos.devices.view',
+
+    anyPermissions: ['pos.devices.view', 'pos.devices.manage'],
   },
   {
     name: 'customers',
@@ -811,6 +821,10 @@ function App() {
 
           {activePage === 'purchase-orders' ? (
             <PurchaseOrdersPage companyId={companyId} branchId={branchId} />
+          ) : null}
+
+          {activePage === 'pos-devices' ? (
+            <PosDevicesPage companyId={companyId} branchId={branchId} />
           ) : null}
 
           {activePage === 'users' ? <UsersPage /> : null}

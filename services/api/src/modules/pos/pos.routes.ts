@@ -3,6 +3,13 @@ import { db } from '../../db/pool'
 
 export const posRouter = Router()
 
+const posUuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function isPosUuid(value: string) {
+  return posUuidPattern.test(value)
+}
+
 // ======================================================
 // GET /api/pos/stock-locations
 //
@@ -141,197 +148,278 @@ posRouter.get('/api/pos/customers', async (req, res, next) => {
 
 // ======================================================
 // GET /api/pos/lookup-item
-// الهدف:
-// الكاشير يكتب barcode أو SKU
-// والـ API يرجع بيانات الصنف الجاهز للبيع
 //
-// مثال:
-// /api/pos/lookup-item?companyId=xxx&stockLocationId=yyy&code=100000000001
+// بحث آمن بالباركود أو SKU.
 //
-// companyId:
-// عشان نجيب بيانات الشركة الحالية فقط
-//
-// stockLocationId:
-// عشان نعرف الكمية المتاحة في صالة البيع أو المخزن
-//
-// code:
-// ممكن يكون barcode أو SKU
+// لا نثق في stockLocationId القادم من المتصفح؛
+// يجب أن يكون تابعًا لنفس الشركة ومسموحًا لفرع المستخدم.
 // ======================================================
 posRouter.get('/api/pos/lookup-item', async (req, res, next) => {
   try {
     const companyId = req.query.companyId
+    const branchId = req.query.branchId
+
     const stockLocationId = req.query.stockLocationId
+
     const code = req.query.code
 
-    // لازم companyId يكون موجود
-    // لأن كل بيانات النظام مربوطة بالشركة
     if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res
-        .status(400)
-        .json({ error: 'companyId query parameter is required' })
+      return res.status(400).json({
+        error: 'companyId query parameter is required',
+      })
     }
 
-    // لازم نعرف هنقرأ المخزون منين
-    // مثال: Main Sales Floor
-    if (typeof stockLocationId !== 'string' || !stockLocationId.trim()) {
-      return res
-        .status(400)
-        .json({ error: 'stockLocationId query parameter is required' })
+    if (
+      typeof stockLocationId !== 'string' ||
+      !isPosUuid(stockLocationId.trim())
+    ) {
+      return res.status(400).json({
+        error: 'stockLocationId is invalid',
+      })
     }
 
-    // code هو اللي الكاشير كتبه أو اتقرأ من الاسكانر
     if (typeof code !== 'string' || !code.trim()) {
-      return res.status(400).json({ error: 'code query parameter is required' })
+      return res.status(400).json({
+        error: 'code query parameter is required',
+      })
     }
 
-    // هنا بنبحث عن الصنف بطريقتين:
-    // 1. primary_barcode الموجود على variant نفسه
-    // 2. barcode الموجود في جدول variant_barcodes
-    // 3. SKU كمان لو المستخدم كتب كود الصنف بدل الباركود
+    const authenticatedBranchId =
+      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+
     const result = await db.query(
       `
-      SELECT
-        pv.id AS variant_id,
-        pv.product_id,
-        p.name AS product_name,
+        SELECT
+          pv.id AS variant_id,
+          pv.product_id,
 
-        pv.sku,
-        pv.style_code,
-        pv.primary_barcode,
+          p.name AS product_name,
 
-        fs.name AS size_name,
-        fs.code AS size_code,
+          pv.sku,
+          pv.style_code,
+          pv.primary_barcode,
 
-        fc.name AS color_name,
-        fc.code AS color_code,
+          fs.name AS size_name,
+          fs.code AS size_code,
 
-        pv.cost_price,
-        pv.selling_price,
+          fc.name AS color_name,
+          fc.code AS color_code,
 
-        COALESCE(sb.quantity, 0) AS available_quantity,
+          pv.cost_price,
+          pv.selling_price,
 
-        sl.id AS stock_location_id,
-        sl.name AS stock_location_name,
-        sl.code AS stock_location_code
-      FROM product_variants pv
-      JOIN products p ON p.id = pv.product_id
+          COALESCE(
+            sb.quantity,
+            0
+          ) AS available_quantity,
 
-      LEFT JOIN fashion_sizes fs ON fs.id = pv.size_id
-      LEFT JOIN fashion_colors fc ON fc.id = pv.color_id
+          sl.id AS stock_location_id,
+          sl.name AS stock_location_name,
+          sl.code AS stock_location_code
 
-      LEFT JOIN variant_barcodes vb
-        ON vb.variant_id = pv.id
-        AND vb.company_id = pv.company_id
+        FROM stock_locations sl
 
-      LEFT JOIN stock_balances sb
-        ON sb.variant_id = pv.id
-        AND sb.company_id = pv.company_id
-        AND sb.stock_location_id = $2
+        JOIN product_variants pv
+          ON pv.company_id = sl.company_id
+          AND pv.status = 'active'
 
-      LEFT JOIN stock_locations sl
-        ON sl.id = $2
+        JOIN products p
+          ON p.id = pv.product_id
+          AND p.company_id = pv.company_id
 
-      WHERE pv.company_id = $1
-        AND pv.status = 'active'
-        AND (
-          pv.primary_barcode = $3
-          OR pv.sku = $3
-          OR vb.barcode = $3
-        )
-      LIMIT 1;
-      `,
-      [companyId, stockLocationId, code.trim()],
+        LEFT JOIN fashion_sizes fs
+          ON fs.id = pv.size_id
+
+        LEFT JOIN fashion_colors fc
+          ON fc.id = pv.color_id
+
+        LEFT JOIN variant_barcodes vb
+          ON vb.variant_id = pv.id
+          AND vb.company_id = pv.company_id
+
+        LEFT JOIN stock_balances sb
+          ON sb.variant_id = pv.id
+          AND sb.company_id = pv.company_id
+          AND sb.stock_location_id = sl.id
+
+        WHERE sl.company_id = $1
+          AND sl.id = $2
+          AND sl.is_active = TRUE
+
+          -- مدير الشركة يرى كل الأماكن المسموحة.
+          -- مستخدم الفرع يرى المركزي أو فرعه فقط.
+          AND (
+            $4::uuid IS NULL
+            OR sl.branch_id IS NULL
+            OR sl.branch_id = $4::uuid
+          )
+
+          AND sl.location_type IN (
+            'sales_floor',
+            'branch_warehouse',
+            'main_warehouse'
+          )
+
+          AND (
+            pv.primary_barcode = $3
+            OR pv.sku = $3
+            OR vb.barcode = $3
+          )
+
+        LIMIT 1;
+        `,
+      [
+        companyId.trim(),
+        stockLocationId.trim(),
+        code.trim(),
+        authenticatedBranchId,
+      ],
     )
 
-    // لو الكود مش موجود، نرجع 404
-    // ده هيساعد شاشة البيع تعرض رسالة: الصنف غير موجود
     if ((result.rowCount ?? 0) === 0) {
-      return res.status(404).json({ error: 'Item was not found' })
+      return res.status(404).json({
+        error: 'الصنف غير موجود أو مكان التخزين غير مسموح.',
+      })
     }
 
-    // رجعنا الصنف الجاهز للبيع
-    // أهم حاجة هنا variant_id لأنه هو اللي بيتباع في sales API
-    res.json({ data: result.rows[0] })
+    return res.json({
+      data: result.rows[0],
+    })
   } catch (error) {
-    next(error)
+    return next(error)
   }
 })
 
 // ======================================================
 // GET /api/pos/search-items
-// الهدف:
-// البحث عن الأصناف بالاسم أو SKU أو الباركود
-// مفيد لو الكاشير مش معاه باركود وعايز يبحث بالاسم
 //
-// مثال:
-// /api/pos/search-items?companyId=xxx&stockLocationId=yyy&q=tshirt
+// بحث آمن بالاسم أو SKU أو الباركود داخل مكان بيع موثوق.
 // ======================================================
 posRouter.get('/api/pos/search-items', async (req, res, next) => {
   try {
     const companyId = req.query.companyId
+    const branchId = req.query.branchId
+
     const stockLocationId = req.query.stockLocationId
-    const q = req.query.q
+
+    const query = req.query.q
 
     if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res
-        .status(400)
-        .json({ error: 'companyId query parameter is required' })
+      return res.status(400).json({
+        error: 'companyId query parameter is required',
+      })
     }
 
-    if (typeof stockLocationId !== 'string' || !stockLocationId.trim()) {
-      return res
-        .status(400)
-        .json({ error: 'stockLocationId query parameter is required' })
+    if (
+      typeof stockLocationId !== 'string' ||
+      !isPosUuid(stockLocationId.trim())
+    ) {
+      return res.status(400).json({
+        error: 'stockLocationId is invalid',
+      })
     }
 
-    if (typeof q !== 'string' || !q.trim()) {
-      return res.status(400).json({ error: 'q query parameter is required' })
+    if (typeof query !== 'string' || !query.trim()) {
+      return res.status(400).json({
+        error: 'q query parameter is required',
+      })
     }
 
-    // هنا بنستخدم ILIKE عشان البحث يكون غير حساس للحروف الكبيرة والصغيرة
-    // يعني tshirt و TSHIRT يطلعوا نفس النتيجة
+    const authenticatedBranchId =
+      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+
+    const searchText = `%${query.trim()}%`
+
     const result = await db.query(
       `
-      SELECT
-        pv.id AS variant_id,
-        pv.product_id,
-        p.name AS product_name,
+        SELECT DISTINCT
+          pv.id AS variant_id,
+          pv.product_id,
 
-        pv.sku,
-        pv.primary_barcode,
+          p.name AS product_name,
 
-        fs.name AS size_name,
-        fc.name AS color_name,
+          pv.sku,
+          pv.primary_barcode,
 
-        pv.selling_price,
+          fs.name AS size_name,
+          fc.name AS color_name,
 
-        COALESCE(sb.quantity, 0) AS available_quantity
-      FROM product_variants pv
-      JOIN products p ON p.id = pv.product_id
+          pv.selling_price,
 
-      LEFT JOIN fashion_sizes fs ON fs.id = pv.size_id
-      LEFT JOIN fashion_colors fc ON fc.id = pv.color_id
+          COALESCE(
+            sb.quantity,
+            0
+          ) AS available_quantity,
 
-      LEFT JOIN stock_balances sb
-        ON sb.variant_id = pv.id
-        AND sb.company_id = pv.company_id
-        AND sb.stock_location_id = $2
+          sl.id AS stock_location_id,
+          sl.name AS stock_location_name
 
-      WHERE pv.company_id = $1
-        AND pv.status = 'active'
-        AND (
-          p.name ILIKE $3
-          OR pv.sku ILIKE $3
-          OR pv.primary_barcode ILIKE $3
-        )
-      ORDER BY p.name ASC, pv.sku ASC
-      LIMIT 20;
-      `,
-      [companyId, stockLocationId, `%${q.trim()}%`],
+        FROM stock_locations sl
+
+        JOIN product_variants pv
+          ON pv.company_id = sl.company_id
+          AND pv.status = 'active'
+
+        JOIN products p
+          ON p.id = pv.product_id
+          AND p.company_id = pv.company_id
+
+        LEFT JOIN fashion_sizes fs
+          ON fs.id = pv.size_id
+
+        LEFT JOIN fashion_colors fc
+          ON fc.id = pv.color_id
+
+        LEFT JOIN variant_barcodes vb
+          ON vb.variant_id = pv.id
+          AND vb.company_id = pv.company_id
+
+        LEFT JOIN stock_balances sb
+          ON sb.variant_id = pv.id
+          AND sb.company_id = pv.company_id
+          AND sb.stock_location_id = sl.id
+
+        WHERE sl.company_id = $1
+          AND sl.id = $2
+          AND sl.is_active = TRUE
+
+          AND (
+            $4::uuid IS NULL
+            OR sl.branch_id IS NULL
+            OR sl.branch_id = $4::uuid
+          )
+
+          AND sl.location_type IN (
+            'sales_floor',
+            'branch_warehouse',
+            'main_warehouse'
+          )
+
+          AND (
+            p.name ILIKE $3
+            OR pv.sku ILIKE $3
+            OR pv.primary_barcode ILIKE $3
+            OR vb.barcode ILIKE $3
+          )
+
+        ORDER BY
+          p.name ASC,
+          pv.sku ASC
+
+        LIMIT 20;
+        `,
+      [
+        companyId.trim(),
+        stockLocationId.trim(),
+        searchText,
+        authenticatedBranchId,
+      ],
     )
 
-    res.json({ data: result.rows })
+    return res.json({
+      data: result.rows,
+    })
   } catch (error) {
-    next(error)
+    return next(error)
   }
 })

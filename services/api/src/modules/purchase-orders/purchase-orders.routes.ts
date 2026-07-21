@@ -201,6 +201,40 @@ async function loadOrderByIdempotency(
 }
 
 // ======================================================
+// معرفة إذن الاستلام المرتبط بمفتاح Idempotency.
+//
+// نستخدمها في الطلب العادي والطلب المتزامن.
+// ======================================================
+async function loadReceiptIdempotencyContext(
+  companyId: string,
+  idempotencyKey: string,
+) {
+  const result = await db.query(
+    `
+    SELECT
+      id,
+      purchase_order_id,
+      receipt_number
+    FROM purchase_receipts
+    WHERE company_id = $1
+      AND idempotency_key = $2
+    LIMIT 1;
+    `,
+    [companyId, idempotencyKey],
+  )
+
+  if ((result.rowCount ?? 0) === 0) {
+    return null
+  }
+
+  return result.rows[0] as {
+    id: string
+    purchase_order_id: string | null
+    receipt_number: string
+  }
+}
+
+// ======================================================
 // GET /api/purchase-orders
 // ======================================================
 purchaseOrdersRouter.get('/api/purchase-orders', async (req, res, next) => {
@@ -744,9 +778,11 @@ purchaseOrdersRouter.post(
   async (req, res, next) => {
     const client = await db.connect()
 
-    try {
-      const purchaseOrderId = String(req.params.purchaseOrderId || '').trim()
+    // يجب تعريفه خارج try لأن catch يحتاج استخدامه
+    // عند معالجة طلبات Idempotency المتزامنة.
+    const purchaseOrderId = String(req.params.purchaseOrderId || '').trim()
 
+    try {
       const {
         companyId,
         branchId,
@@ -800,18 +836,19 @@ purchaseOrdersRouter.post(
       const authenticatedBranchId =
         typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
 
-      const existingReceipt = await db.query(
-        `
-          SELECT id
-          FROM purchase_receipts
-          WHERE company_id = $1
-            AND idempotency_key = $2
-          LIMIT 1;
-          `,
-        [companyId.trim(), idempotencyKey.trim()],
+      const existingReceipt = await loadReceiptIdempotencyContext(
+        companyId.trim(),
+        idempotencyKey.trim(),
       )
 
-      if ((existingReceipt.rowCount ?? 0) > 0) {
+      if (existingReceipt) {
+        // نفس المفتاح لا يجوز استخدامه لأمر شراء مختلف.
+        if (existingReceipt.purchase_order_id !== purchaseOrderId) {
+          return res.status(409).json({
+            error: 'Idempotency key belongs to another purchase order receipt',
+          })
+        }
+
         const details = await loadPurchaseOrderDetails(
           companyId.trim(),
           purchaseOrderId,
@@ -1346,6 +1383,44 @@ purchaseOrdersRouter.post(
       await client.query('ROLLBACK').catch(() => {})
 
       if (isUniqueViolation(error)) {
+        const requestCompanyId =
+          typeof req.body?.companyId === 'string'
+            ? req.body.companyId.trim()
+            : ''
+
+        const requestIdempotencyKey =
+          typeof req.body?.idempotencyKey === 'string'
+            ? req.body.idempotencyKey.trim()
+            : ''
+
+        const requestBranchId =
+          typeof req.body?.branchId === 'string' && req.body.branchId.trim()
+            ? req.body.branchId.trim()
+            : null
+
+        if (requestCompanyId && requestIdempotencyKey) {
+          const existingReceipt = await loadReceiptIdempotencyContext(
+            requestCompanyId,
+            requestIdempotencyKey,
+          )
+
+          if (
+            existingReceipt &&
+            existingReceipt.purchase_order_id === purchaseOrderId
+          ) {
+            const details = await loadPurchaseOrderDetails(
+              requestCompanyId,
+              purchaseOrderId,
+              requestBranchId,
+            )
+
+            return res.status(200).json({
+              duplicated: true,
+              data: details,
+            })
+          }
+        }
+
         return res.status(409).json({
           error: 'رقم إذن الاستلام مستخدم بالفعل.',
         })
