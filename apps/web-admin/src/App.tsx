@@ -10,6 +10,7 @@ import TransfersPage from './pages/TransfersPage'
 import PurchasesPage from './pages/PurchasesPage'
 import PurchaseOrdersPage from './pages/PurchaseOrdersPage'
 import PosDevicesPage from './pages/PosDevicesPage'
+import PosSyncPage from './pages/PosSyncPage'
 import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
 // شاشة إدارة مستخدمي الشركة.
@@ -31,6 +32,7 @@ type PageName =
   | 'purchases'
   | 'purchase-orders'
   | 'pos-devices'
+  | 'pos-sync'
   | 'users'
   | 'roles'
   | 'new-sale'
@@ -138,6 +140,14 @@ const pageDefinitions: Array<{
     permission: 'pos.devices.view',
 
     anyPermissions: ['pos.devices.view', 'pos.devices.manage'],
+  },
+  {
+    name: 'pos-sync',
+    label: 'مزامنة نقاط البيع',
+    icon: '⟳',
+    permission: 'pos.sync.view',
+
+    anyPermissions: ['pos.sync.view', 'pos.sync.manage'],
   },
   {
     name: 'customers',
@@ -310,6 +320,10 @@ function App() {
     string | null
   >(null)
 
+  const [selectedPosSyncSaleId, setSelectedPosSyncSaleId] = useState<
+    string | null
+  >(null)
+
   // بيانات الشركة والفرع لا تُكتب يدويًا بعد الآن.
   // مصدرها Session المستخدم المسجل.
   const { user, logout } = useAuth()
@@ -335,6 +349,11 @@ function App() {
     }
 
     setActivePage(pageName)
+  }
+
+  function openSaleFromPosSync(saleId: string) {
+    setSelectedPosSyncSaleId(saleId)
+    navigateToPage('sales')
   }
 
   const canViewDashboard =
@@ -799,6 +818,8 @@ function App() {
             <SalesPage
               companyId={companyId}
               branchId={branchId}
+              initialSaleId={selectedPosSyncSaleId}
+              onInitialSaleHandled={() => setSelectedPosSyncSaleId(null)}
               onCreateReturn={openNewReturnFromSale}
             />
           ) : null}
@@ -825,6 +846,14 @@ function App() {
 
           {activePage === 'pos-devices' ? (
             <PosDevicesPage companyId={companyId} branchId={branchId} />
+          ) : null}
+
+          {activePage === 'pos-sync' ? (
+            <PosSyncPage
+              companyId={companyId}
+              branchId={branchId}
+              onOpenSale={openSaleFromPosSync}
+            />
           ) : null}
 
           {activePage === 'users' ? <UsersPage /> : null}

@@ -175,12 +175,21 @@ type SalesPageProps = {
   companyId: string
   branchId: string
 
+  initialSaleId: string | null
+  onInitialSaleHandled: () => void
+
   // ترسل رقم الفاتورة إلى App
   // لفتح شاشة المرتجع عليها مباشرة
   onCreateReturn: (saleId: string) => void
 }
 
-function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
+function SalesPage({
+  companyId,
+  branchId,
+  initialSaleId,
+  onInitialSaleHandled,
+  onCreateReturn,
+}: SalesPageProps) {
   const { user } = useAuth()
   const canCreateReturn =
     user?.roles.includes('admin') ||
@@ -223,7 +232,10 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
       const salesResponse = await requestJson<ApiResponse<Sale[]>>(salesUrl)
 
       setSales(salesResponse.data)
-      setSelectedSaleDetails(null)
+
+      if (!initialSaleId) {
+        setSelectedSaleDetails(null)
+      }
     } catch (currentError) {
       setError(
         currentError instanceof Error
@@ -281,6 +293,18 @@ function SalesPage({ companyId, branchId, onCreateReturn }: SalesPageProps) {
       setLoadingDetails(false)
     }
   }
+
+  useEffect(() => {
+    if (!companyId.trim() || !initialSaleId) {
+      return
+    }
+
+    const saleId = initialSaleId
+
+    onInitialSaleHandled()
+
+    void loadSaleDetails(saleId)
+  }, [companyId, initialSaleId])
 
   return (
     <>
