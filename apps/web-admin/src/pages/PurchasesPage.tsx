@@ -91,6 +91,7 @@ type PurchaseReceiptDetails = {
     discount_amount: string
     tax_amount: string
     line_total: string
+    current_average_cost: string
   }>
 }
 
@@ -164,8 +165,15 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
   const hasPermission = (permission: string) =>
     isAdmin || user?.permissions.includes(permission) || false
 
-  const canViewPurchases =
+  const canViewPurchaseReceipts =
     hasPermission('purchases.view') || hasPermission('purchases.create')
+
+  const canViewSuppliers =
+    canViewPurchaseReceipts ||
+    hasPermission('suppliers.view') ||
+    hasPermission('suppliers.manage')
+
+  const canAccessPurchasesPage = canViewPurchaseReceipts || canViewSuppliers
 
   const canCreatePurchase = hasPermission('purchases.create')
 
@@ -182,6 +190,8 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
 
   const [supplierSearch, setSupplierSearch] = useState('')
 
+  const [receiptSearch, setReceiptSearch] = useState('')
+
   const [selectedSupplierId, setSelectedSupplierId] = useState('')
 
   const [stockLocationId, setStockLocationId] = useState('')
@@ -196,7 +206,7 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
 
   const [code, setCode] = useState('')
   const [quantity, setQuantity] = useState(1)
-  const [unitCost, setUnitCost] = useState(0)
+  const [unitCost, setUnitCost] = useState<number | ''>('')
   const [discountAmount, setDiscountAmount] = useState(0)
   const [taxAmount, setTaxAmount] = useState(0)
 
@@ -215,6 +225,9 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
   const [newSupplierTaxNumber, setNewSupplierTaxNumber] = useState('')
 
   const [showSupplierForm, setShowSupplierForm] = useState(false)
+  const [editingSupplierId, setEditingSupplierId] = useState<string | null>(
+    null,
+  )
 
   const [loadingSuppliers, setLoadingSuppliers] = useState(false)
 
@@ -274,6 +287,17 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
     }
   }, [cartItems])
 
+  function startEditingSupplier(supplier: Supplier) {
+    setEditingSupplierId(supplier.id)
+    setNewSupplierName(supplier.name)
+    setNewSupplierCode(supplier.code)
+    setNewSupplierPhone(supplier.phone || '')
+    setNewSupplierEmail(supplier.email || '')
+    setNewSupplierAddress(supplier.address || '')
+    setNewSupplierTaxNumber(supplier.tax_number || '')
+    setShowSupplierForm(true)
+  }
+
   function resetSupplierForm() {
     setNewSupplierName('')
     setNewSupplierCode('')
@@ -281,13 +305,14 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
     setNewSupplierEmail('')
     setNewSupplierAddress('')
     setNewSupplierTaxNumber('')
+    setEditingSupplierId(null)
   }
 
   function resetReceiptDraft(keepSuccess = false) {
     setCartItems([])
     setCode('')
     setQuantity(1)
-    setUnitCost(0)
+    setUnitCost('')
     setDiscountAmount(0)
     setTaxAmount(0)
     setReceiptNote('')
@@ -398,6 +423,9 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
         (branchId.trim()
           ? `&branchId=${encodeURIComponent(branchId.trim())}`
           : '') +
+        (receiptSearch.trim()
+          ? `&q=${encodeURIComponent(receiptSearch.trim())}`
+          : '') +
         '&limit=100'
 
       const response =
@@ -459,26 +487,32 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
         throw new Error('اسم المورد مطلوب.')
       }
 
-      const response = await requestJson<ApiResponse<Supplier>>(
-        '/api/suppliers',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            companyId: companyId.trim(),
-            name: newSupplierName.trim(),
-            code: newSupplierCode.trim() || null,
-            phone: newSupplierPhone.trim() || null,
-            email: newSupplierEmail.trim() || null,
-            address: newSupplierAddress.trim() || null,
-            taxNumber: newSupplierTaxNumber.trim() || null,
-          }),
-        },
-      )
+      const supplierUrl = editingSupplierId
+        ? `/api/suppliers/${encodeURIComponent(editingSupplierId)}`
+        : '/api/suppliers'
 
-      setSuccess(`تم إنشاء المورد ${response.data.name} بنجاح.`)
+      const response = await requestJson<ApiResponse<Supplier>>(supplierUrl, {
+        method: editingSupplierId ? 'PATCH' : 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          companyId: companyId.trim(),
+          name: newSupplierName.trim(),
+          code: newSupplierCode.trim() || null,
+          phone: newSupplierPhone.trim() || null,
+          email: newSupplierEmail.trim() || null,
+          address: newSupplierAddress.trim() || null,
+          taxNumber: newSupplierTaxNumber.trim() || null,
+          isActive: true,
+        }),
+      })
+
+      setSuccess(
+        editingSupplierId
+          ? `تم تحديث المورد ${response.data.name} بنجاح.`
+          : `تم إنشاء المورد ${response.data.name} بنجاح.`,
+      )
 
       resetSupplierForm()
       setShowSupplierForm(false)
@@ -525,9 +559,11 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
 
       const item = response.data
 
+      const typedUnitCost = Number(unitCost)
+
       const selectedUnitCost =
-        Number.isFinite(unitCost) && unitCost >= 0
-          ? unitCost
+        unitCost !== '' && Number.isFinite(typedUnitCost) && typedUnitCost >= 0
+          ? typedUnitCost
           : Number(item.cost_price)
 
       if (!Number.isFinite(selectedUnitCost) || selectedUnitCost < 0) {
@@ -730,13 +766,24 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
   }
 
   useEffect(() => {
-    if (!canViewPurchases || !companyId.trim()) {
+    if (!canAccessPurchasesPage || !companyId.trim()) {
       return
     }
 
-    void loadSuppliers()
-    void loadReceipts()
-  }, [canViewPurchases, companyId, branchId])
+    if (canViewSuppliers) {
+      void loadSuppliers()
+    }
+
+    if (canViewPurchaseReceipts) {
+      void loadReceipts()
+    }
+  }, [
+    canAccessPurchasesPage,
+    canViewSuppliers,
+    canViewPurchaseReceipts,
+    companyId,
+    branchId,
+  ])
 
   useEffect(() => {
     setCartItems([])
@@ -801,7 +848,9 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
         <section className="panel">
           <div className="section-header">
             <div>
-              <h2>إنشاء مورد جديد</h2>
+              <h2>
+                {editingSupplierId ? 'تعديل بيانات المورد' : 'إنشاء مورد جديد'}
+              </h2>
 
               <p className="muted">
                 يمكن استخدام المورد مباشرة في إذن الاستلام بعد الحفظ.
@@ -890,7 +939,11 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
               disabled={savingSupplier || !newSupplierName.trim()}
               onClick={() => void createSupplier()}
             >
-              {savingSupplier ? 'جاري حفظ المورد...' : 'حفظ المورد'}
+              {savingSupplier
+                ? 'جاري الحفظ...'
+                : editingSupplierId
+                  ? 'حفظ التعديلات'
+                  : 'حفظ المورد'}
             </button>
           </div>
         </section>
@@ -944,6 +997,7 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
                   <th>البريد</th>
                   <th>الرقم الضريبي</th>
                   <th>اختيار</th>
+                  <th>تعديل</th>
                 </tr>
               </thead>
 
@@ -971,6 +1025,20 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
                       >
                         {selectedSupplierId === supplier.id ? 'محدد' : 'اختيار'}
                       </button>
+                    </td>
+                    <td>
+                      {canManageSuppliers ? (
+                        <button
+                          type="button"
+                          className="table-button"
+                          disabled={savingSupplier}
+                          onClick={() => startEditingSupplier(supplier)}
+                        >
+                          تعديل
+                        </button>
+                      ) : (
+                        '-'
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1109,7 +1177,11 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
                 step="0.01"
                 value={unitCost}
                 disabled={savingReceipt}
-                onChange={(event) => setUnitCost(Number(event.target.value))}
+                onChange={(event) => {
+                  const nextValue = event.target.value
+
+                  setUnitCost(nextValue === '' ? '' : Number(nextValue))
+                }}
               />
             </label>
 
@@ -1333,81 +1405,109 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
         </section>
       ) : null}
 
-      <section className="panel">
-        <div className="section-header">
-          <div>
-            <h2>سجل أذون الاستلام</h2>
+      <div className="purchase-supplier-search">
+        <input
+          value={receiptSearch}
+          disabled={loadingReceipts}
+          onChange={(event) => setReceiptSearch(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              void loadReceipts()
+            }
+          }}
+          placeholder="رقم الإذن أو المورد أو المخزن"
+        />
 
+        <button
+          type="button"
+          className="table-button"
+          disabled={loadingReceipts}
+          onClick={() => void loadReceipts()}
+        >
+          {loadingReceipts ? 'جاري البحث...' : 'بحث'}
+        </button>
+      </div>
+
+      {canViewPurchaseReceipts ? (
+        <section className="panel">
+          <div className="section-header">
+            <div>
+              <h2>سجل أذون الاستلام</h2>
+
+              <p className="muted">
+                جميع المشتريات المستلمة المرتبطة بالفرع الحالي.
+              </p>
+            </div>
+
+            <span className="record-count-badge">{receipts.length} إذن</span>
+          </div>
+
+          {receipts.length === 0 ? (
             <p className="muted">
-              جميع المشتريات المستلمة المرتبطة بالفرع الحالي.
+              {loadingReceipts
+                ? 'جاري تحميل أذون الاستلام...'
+                : 'لا توجد أذون استلام مسجلة.'}
             </p>
-          </div>
-
-          <span className="record-count-badge">{receipts.length} إذن</span>
-        </div>
-
-        {receipts.length === 0 ? (
-          <p className="muted">
-            {loadingReceipts
-              ? 'جاري تحميل أذون الاستلام...'
-              : 'لا توجد أذون استلام مسجلة.'}
-          </p>
-        ) : (
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>رقم الإذن</th>
-                  <th>المورد</th>
-                  <th>المخزن</th>
-                  <th>الأصناف</th>
-                  <th>الكمية</th>
-                  <th>الإجمالي</th>
-                  <th>التاريخ</th>
-                  <th>عرض</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {receipts.map((receipt) => (
-                  <tr key={receipt.id}>
-                    <td>
-                      <strong>{receipt.receipt_number}</strong>
-                    </td>
-
-                    <td>{receipt.supplier_name}</td>
-
-                    <td>{receipt.stock_location_name}</td>
-
-                    <td>{receipt.items_count}</td>
-
-                    <td>{formatPurchaseQuantity(receipt.received_quantity)}</td>
-
-                    <td>
-                      <strong>{formatPurchaseCurrency(receipt.total)}</strong>
-                    </td>
-
-                    <td>{formatPurchaseDate(receipt.received_at)}</td>
-
-                    <td>
-                      <button
-                        type="button"
-                        className="table-button"
-                        disabled={loadingReceiptDetails}
-                        onClick={() => void loadReceiptDetails(receipt.id)}
-                      >
-                        عرض التفاصيل
-                      </button>
-                    </td>
+          ) : (
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>رقم الإذن</th>
+                    <th>المورد</th>
+                    <th>المخزن</th>
+                    <th>الأصناف</th>
+                    <th>الكمية</th>
+                    <th>الإجمالي</th>
+                    <th>التاريخ</th>
+                    <th>عرض</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+                </thead>
 
-      {selectedReceipt ? (
+                <tbody>
+                  {receipts.map((receipt) => (
+                    <tr key={receipt.id}>
+                      <td>
+                        <strong>{receipt.receipt_number}</strong>
+                      </td>
+
+                      <td>{receipt.supplier_name}</td>
+
+                      <td>{receipt.stock_location_name}</td>
+
+                      <td>{receipt.items_count}</td>
+
+                      <td>
+                        {formatPurchaseQuantity(receipt.received_quantity)}
+                      </td>
+
+                      <td>
+                        <strong>{formatPurchaseCurrency(receipt.total)}</strong>
+                      </td>
+
+                      <td>{formatPurchaseDate(receipt.received_at)}</td>
+
+                      <td>
+                        <button
+                          type="button"
+                          className="table-button"
+                          disabled={loadingReceiptDetails}
+                          onClick={() => void loadReceiptDetails(receipt.id)}
+                        >
+                          عرض التفاصيل
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {canViewPurchaseReceipts && selectedReceipt ? (
         <section className="panel">
           <div className="section-header">
             <div>
@@ -1458,6 +1558,7 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
                   <th>اللون</th>
                   <th>الكمية</th>
                   <th>تكلفة الوحدة</th>
+                  <th>متوسط التكلفة الحالي</th>
                   <th>الخصم</th>
                   <th>الضريبة</th>
                   <th>الإجمالي</th>
@@ -1478,6 +1579,8 @@ function PurchasesPage({ companyId, branchId }: PurchasesPageProps) {
                     <td>{formatPurchaseQuantity(item.quantity)}</td>
 
                     <td>{formatPurchaseCurrency(item.unit_cost)}</td>
+
+                    <td>{formatPurchaseCurrency(item.current_average_cost)}</td>
 
                     <td>{formatPurchaseCurrency(item.discount_amount)}</td>
 

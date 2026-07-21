@@ -102,6 +102,7 @@ async function loadPurchaseReceiptDetails(
       pri.*,
       pv.sku,
       pv.primary_barcode,
+      pv.cost_price AS current_average_cost,
       p.name AS product_name,
       fs.name AS size_name,
       fc.name AS color_name
@@ -301,6 +302,7 @@ purchasesRouter.get('/api/purchases/receipts', async (req, res, next) => {
     const companyId = req.query.companyId
     const branchId = req.query.branchId
     const supplierId = req.query.supplierId
+    const query = req.query.q
 
     if (typeof companyId !== 'string' || !companyId.trim()) {
       return res.status(400).json({
@@ -315,6 +317,9 @@ purchasesRouter.get('/api/purchases/receipts', async (req, res, next) => {
       typeof supplierId === 'string' && supplierId.trim()
         ? supplierId.trim()
         : null
+
+    const searchText =
+      typeof query === 'string' && query.trim() ? `%${query.trim()}%` : null
 
     if (selectedSupplierId && !isPurchaseUuid(selectedSupplierId)) {
       return res.status(400).json({
@@ -386,6 +391,13 @@ purchasesRouter.get('/api/purchases/receipts', async (req, res, next) => {
             $3::uuid IS NULL
             OR pr.supplier_id = $3::uuid
           )
+          AND (
+            $4::text IS NULL
+            OR pr.receipt_number ILIKE $4
+            OR s.name ILIKE $4
+            OR s.code ILIKE $4
+            OR sl.name ILIKE $4
+          )
 
         GROUP BY
           pr.id,
@@ -397,12 +409,13 @@ purchasesRouter.get('/api/purchases/receipts', async (req, res, next) => {
           u.full_name
 
         ORDER BY pr.received_at DESC
-        LIMIT $4;
+        LIMIT $5;
         `,
       [
         companyId.trim(),
         authenticatedBranchId,
         selectedSupplierId,
+        searchText,
         parsePurchaseLimit(req.query.limit),
       ],
     )
@@ -774,6 +787,37 @@ purchasesRouter.post('/api/purchases/receipts', async (req, res, next) => {
     const createdItems: Array<Record<string, unknown>> = []
 
     for (const item of normalizedItems) {
+      // ======================================================
+      // قفل الصنف وتحديث متوسط التكلفة المرجح.
+      //
+      // متوسط التكلفة =
+      // قيمة المخزون السابقة + قيمة المشتريات الجديدة
+      // ÷ إجمالي الكمية بعد الاستلام.
+      // ======================================================
+      const variantCostResult = await client.query(
+        `
+        SELECT
+          id,
+          cost_price
+        FROM product_variants
+        WHERE company_id = $1
+          AND id = $2
+          AND status = 'active'
+        FOR UPDATE;
+        `,
+        [companyId.trim(), item.variantId],
+      )
+
+      if ((variantCostResult.rowCount ?? 0) === 0) {
+        throw new PurchasesApiError(404, 'Purchase variant was not found')
+      }
+
+      const previousCost = Number(variantCostResult.rows[0].cost_price)
+
+      if (!Number.isFinite(previousCost)) {
+        throw new PurchasesApiError(500, 'Previous variant cost is invalid')
+      }
+
       const itemResult = await client.query(
         `
             INSERT INTO purchase_receipt_items (
@@ -856,8 +900,35 @@ purchasesRouter.post('/api/purchases/receipts', async (req, res, next) => {
         throw new PurchasesApiError(500, 'Current stock quantity is invalid')
       }
 
+      const previousInventoryValue = roundPurchaseMoney(
+        quantityBefore * previousCost,
+      )
+
+      const receivedInventoryValue = roundPurchaseMoney(
+        item.quantity * item.unitCost,
+      )
+
       const quantityAfter = roundPurchaseQuantity(
         quantityBefore + item.quantity,
+      )
+
+      const weightedAverageCost =
+        quantityAfter > 0
+          ? roundPurchaseMoney(
+              (previousInventoryValue + receivedInventoryValue) / quantityAfter,
+            )
+          : item.unitCost
+
+      await client.query(
+        `
+        UPDATE product_variants
+        SET
+          cost_price = $1,
+          updated_at = NOW()
+        WHERE company_id = $2
+          AND id = $3;
+        `,
+        [weightedAverageCost, companyId.trim(), item.variantId],
       )
 
       await client.query(

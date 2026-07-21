@@ -150,3 +150,98 @@ suppliersRouter.post('/api/suppliers', async (req, res, next) => {
     return next(error)
   }
 })
+
+// ======================================================
+// PATCH /api/suppliers/:supplierId
+//
+// تعديل بيانات مورد داخل الشركة الموثقة.
+// ======================================================
+suppliersRouter.patch('/api/suppliers/:supplierId', async (req, res, next) => {
+  try {
+    const supplierId = String(req.params.supplierId || '').trim()
+
+    const {
+      companyId,
+      name,
+      code,
+      phone,
+      email,
+      address,
+      taxNumber,
+      isActive,
+    } = req.body
+
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res.status(400).json({
+        error: 'companyId is required',
+      })
+    }
+
+    if (!supplierId) {
+      return res.status(400).json({
+        error: 'supplierId is required',
+      })
+    }
+
+    if (typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({
+        error: 'Supplier name is required',
+      })
+    }
+
+    if (typeof code !== 'string' || !code.trim()) {
+      return res.status(400).json({
+        error: 'Supplier code is required',
+      })
+    }
+
+    const result = await db.query(
+      `
+        UPDATE suppliers
+        SET
+          name = $1,
+          code = $2,
+          phone = $3,
+          email = $4,
+          address = $5,
+          tax_number = $6,
+          is_active = $7,
+          updated_at = NOW()
+        WHERE company_id = $8
+          AND id = $9
+        RETURNING *;
+        `,
+      [
+        name.trim(),
+        code.trim().toUpperCase(),
+        typeof phone === 'string' && phone.trim() ? phone.trim() : null,
+        typeof email === 'string' && email.trim() ? email.trim() : null,
+        typeof address === 'string' && address.trim() ? address.trim() : null,
+        typeof taxNumber === 'string' && taxNumber.trim()
+          ? taxNumber.trim()
+          : null,
+        typeof isActive === 'boolean' ? isActive : true,
+        companyId.trim(),
+        supplierId,
+      ],
+    )
+
+    if ((result.rowCount ?? 0) === 0) {
+      return res.status(404).json({
+        error: 'Supplier was not found',
+      })
+    }
+
+    return res.json({
+      data: result.rows[0],
+    })
+  } catch (error) {
+    if (isPostgresUniqueViolation(error)) {
+      return res.status(409).json({
+        error: 'كود المورد مستخدم بالفعل.',
+      })
+    }
+
+    return next(error)
+  }
+})
