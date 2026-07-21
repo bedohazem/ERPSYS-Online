@@ -7,6 +7,7 @@ import SalesPage from './pages/SalesPage'
 import ReturnsPage from './pages/ReturnsPage'
 import InventoryPage from './pages/InventoryPage'
 import TransfersPage from './pages/TransfersPage'
+import PurchasesPage from './pages/PurchasesPage'
 import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
 // شاشة إدارة مستخدمي الشركة.
@@ -25,6 +26,7 @@ type PageName =
   | 'returns'
   | 'inventory'
   | 'transfers'
+  | 'purchases'
   | 'users'
   | 'roles'
   | 'new-sale'
@@ -102,6 +104,19 @@ const pageDefinitions: Array<{
       'inventory.transfer.create',
       'inventory.transfer.approve',
       'inventory.transfer.receive',
+    ],
+  },
+  {
+    name: 'purchases',
+    label: 'المشتريات والموردون',
+    icon: '↓',
+    permission: 'purchases.view',
+
+    anyPermissions: [
+      'purchases.view',
+      'purchases.create',
+      'suppliers.view',
+      'suppliers.manage',
     ],
   },
   {
@@ -778,6 +793,10 @@ function App() {
 
           {activePage === 'transfers' ? (
             <TransfersPage companyId={companyId} branchId={branchId} />
+          ) : null}
+
+          {activePage === 'purchases' ? (
+            <PurchasesPage companyId={companyId} branchId={branchId} />
           ) : null}
 
           {activePage === 'users' ? <UsersPage /> : null}

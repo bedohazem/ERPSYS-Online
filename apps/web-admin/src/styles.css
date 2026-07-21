@@ -2363,3 +2363,185 @@ body {
     flex-direction: column;
   }
 }
+
+/* ======================================================
+   Purchases and Suppliers
+====================================================== */
+
+.supplier-create-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.supplier-address-field {
+  grid-column: span 3;
+}
+
+.purchase-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.purchase-supplier-search {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.selected-table-button {
+  color: #166534;
+  border-color: #86efac;
+  background: #dcfce7;
+}
+
+.purchase-receipt-header-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.purchase-selected-supplier {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+  padding: 15px;
+  border: 1px solid #bbf7d0;
+  border-radius: 14px;
+  background: #f0fdf4;
+}
+
+.purchase-selected-supplier div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.purchase-selected-supplier span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.purchase-selected-supplier strong {
+  color: #166534;
+  font-weight: 900;
+}
+
+.purchase-item-entry {
+  display: grid;
+  grid-template-columns:
+    minmax(220px, 1.5fr)
+    repeat(4, minmax(110px, 0.65fr))
+    auto;
+  align-items: end;
+  gap: 10px;
+  margin: 20px 0;
+  padding: 16px;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: #f8fbff;
+}
+
+.purchase-item-entry label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.purchase-table-number-input {
+  width: 92px;
+  min-width: 80px;
+  padding: 7px;
+  text-align: center;
+}
+
+.purchase-summary-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin-top: 20px;
+  margin-bottom: 0;
+}
+
+.purchase-total-card {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.purchase-total-card strong {
+  color: #0f3d91;
+}
+
+.purchase-save-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.purchase-details-total {
+  color: #0f3d91;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.purchase-details-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 1250px) {
+  .purchase-item-entry {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .purchase-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1050px) {
+  .supplier-create-grid,
+  .purchase-receipt-header-grid,
+  .purchase-details-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .supplier-address-field {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 760px) {
+  .supplier-create-grid,
+  .purchase-receipt-header-grid,
+  .purchase-item-entry,
+  .purchase-summary-grid,
+  .purchase-details-grid,
+  .purchase-selected-supplier,
+  .purchase-supplier-search {
+    grid-template-columns: 1fr;
+  }
+
+  .supplier-address-field {
+    grid-column: auto;
+  }
+
+  .purchase-form-actions,
+  .purchase-save-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .purchase-form-actions button,
+  .purchase-save-footer button {
+    width: 100%;
+  }
+
+  .purchase-table-number-input {
+    width: 100%;
+  }
+}
