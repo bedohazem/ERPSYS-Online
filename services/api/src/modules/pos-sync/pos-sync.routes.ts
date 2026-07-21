@@ -355,12 +355,124 @@ posDeviceSyncRouter.post('/api/pos-sync/batches', async (req, res, next) => {
       )
 
       if ((syncItemResult.rowCount ?? 0) === 0) {
-        processedItems += 1
+        // المفتاح مستخدم سابقًا؛ لا نعتبره Duplicate آمنًا
+        // قبل التأكد أنه يخص نفس الجهاز ونفس Local Sale.
+        const existingSyncItemResult = await db.query(
+          `
+      SELECT
+        psi.id,
+        psi.local_entity_id,
+        psi.idempotency_key,
+        psi.status,
+        psi.server_entity_id,
+        psi.error_code,
+        psi.error_message,
+        psi.result_payload,
+
+        psb.device_id,
+        psb.batch_key
+
+      FROM pos_offline_sync_items psi
+
+      JOIN pos_offline_sync_batches psb
+        ON psb.id = psi.batch_id
+        AND psb.company_id = psi.company_id
+
+      WHERE psi.company_id = $1
+        AND psi.idempotency_key = $2
+
+      LIMIT 1;
+      `,
+          [device.companyId, idempotencyKey],
+        )
+
+        if ((existingSyncItemResult.rowCount ?? 0) === 0) {
+          failedItems += 1
+
+          results.push({
+            localSaleId: localEntityId,
+            idempotencyKey,
+            status: 'failed',
+            errorCode: 'DUPLICATE_SYNC_ITEM_NOT_FOUND',
+            errorMessage: 'Existing synchronization item could not be loaded',
+          })
+
+          continue
+        }
+
+        const existingSyncItem = existingSyncItemResult.rows[0]
+
+        const sameDevice = existingSyncItem.device_id === device.deviceId
+
+        const sameLocalSale = existingSyncItem.local_entity_id === localEntityId
+
+        if (!sameDevice || !sameLocalSale) {
+          reviewItems += 1
+
+          await createConflict({
+            companyId: device.companyId,
+            branchId: device.branchId,
+            deviceId: device.deviceId,
+
+            // التعارض يرتبط بالسجل الذي يملك المفتاح بالفعل.
+            syncItemId: existingSyncItem.id,
+
+            conflictType: 'duplicate_suspected',
+
+            severity: 'critical',
+
+            details: {
+              idempotencyKey,
+
+              incomingDeviceId: device.deviceId,
+
+              existingDeviceId: existingSyncItem.device_id,
+
+              incomingLocalSaleId: localEntityId,
+
+              existingLocalSaleId: existingSyncItem.local_entity_id,
+
+              existingBatchKey: existingSyncItem.batch_key,
+            },
+          })
+
+          results.push({
+            localSaleId: localEntityId,
+            idempotencyKey,
+            status: 'needs_review',
+            errorCode: 'DUPLICATE_SUSPECTED',
+            errorMessage:
+              'Idempotency key belongs to another device or local sale',
+          })
+
+          continue
+        }
+
+        const existingStatus = String(existingSyncItem.status || 'pending')
+
+        if (existingStatus === 'failed') {
+          failedItems += 1
+        } else if (existingStatus === 'needs_review') {
+          reviewItems += 1
+        } else {
+          processedItems += 1
+        }
 
         results.push({
           localSaleId: localEntityId,
           idempotencyKey,
-          status: 'duplicate',
+
+          status: existingStatus === 'processed' ? 'duplicate' : existingStatus,
+
+          duplicated: true,
+
+          serverSaleId: existingSyncItem.server_entity_id,
+
+          errorCode: existingSyncItem.error_code,
+
+          errorMessage: existingSyncItem.error_message,
+
+          result: existingSyncItem.result_payload,
         })
 
         continue

@@ -565,17 +565,31 @@ export async function processOfflineSale(
             AND id = $2
             AND branch_id = $3
             AND cashier_id = $4
-            AND status = 'open'
+
+            -- قد تتم المزامنة بعد إغلاق الوردية.
+            -- المهم أن البيع حدث أثناء وقت الوردية.
+            AND opened_at <= $5::timestamptz
+            AND (
+              closed_at IS NULL
+              OR closed_at >= $5::timestamptz
+            )
+
           FOR SHARE;
           `,
-        [device.companyId, input.shiftId, device.branchId, input.cashierId],
+        [
+          device.companyId,
+          input.shiftId,
+          device.branchId,
+          input.cashierId,
+          input.occurredAt,
+        ],
       )
 
       if ((shiftResult.rowCount ?? 0) === 0) {
         throw new OfflineSaleProcessingError({
           statusCode: 409,
           code: 'SHIFT_NOT_FOUND',
-          message: 'Cashier shift is closed or invalid',
+          message: 'Cashier shift was not valid at the offline sale time',
           syncStatus: 'needs_review',
           conflictType: 'shift_not_found',
           details: {
