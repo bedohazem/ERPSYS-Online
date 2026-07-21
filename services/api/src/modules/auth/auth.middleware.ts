@@ -380,23 +380,29 @@ export function requireBusinessPermission(
   // ======================================================
   // صلاحيات دورة تحويل المخزون.
   //
-  // العرض، الإنشاء، الشحن والاستلام صلاحيات منفصلة.
+  // إنشاء التحويل يحتاج create.
+  // الشحن يحتاج approve.
+  // الاستلام يحتاج receive.
+  //
+  // أي مستخدم يمتلك واحدة من صلاحيات دورة التحويل
+  // يستطيع قراءة التحويلات المرتبطة بفرعه حتى يتمكن
+  // من تنفيذ وظيفته.
   // ======================================================
   const isTransferSetupRequest =
     path === '/api/transfers/locations' || path === '/api/transfers/lookup-item'
 
+  // أماكن التخزين والبحث عن الأصناف يحتاجهما
+  // مستخدم إنشاء التحويل فقط.
   if (isReadRequest && isTransferSetupRequest) {
     const auth = getAuthContext(res)
 
-    const hasTransferLocationAccess =
+    const canCreateTransfer =
       auth.roles.includes('admin') ||
-      auth.permissions.includes('inventory.transfer.view') ||
       auth.permissions.includes('inventory.transfer.create')
 
-    if (!hasTransferLocationAccess) {
+    if (!canCreateTransfer) {
       return res.status(403).json({
-        error:
-          'Permission required: inventory.transfer.view or inventory.transfer.create',
+        error: 'Permission required: inventory.transfer.create',
       })
     }
 
@@ -404,16 +410,39 @@ export function requireBusinessPermission(
   }
 
   if (path === '/api/transfers' || path.startsWith('/api/transfers/')) {
-    let requiredPermission = 'inventory.transfer.view'
+    // قراءة سجل التحويلات وتفاصيلها متاحة
+    // لأي موظف مشارك في دورة التحويل.
+    if (isReadRequest) {
+      const auth = getAuthContext(res)
 
-    if (!isReadRequest) {
-      if (path.endsWith('/ship')) {
-        requiredPermission = 'inventory.transfer.approve'
-      } else if (path.endsWith('/receive')) {
-        requiredPermission = 'inventory.transfer.receive'
-      } else {
-        requiredPermission = 'inventory.transfer.create'
+      const transferReadPermissions = [
+        'inventory.transfer.view',
+        'inventory.transfer.create',
+        'inventory.transfer.approve',
+        'inventory.transfer.receive',
+      ]
+
+      const canReadTransfers =
+        auth.roles.includes('admin') ||
+        transferReadPermissions.some((permission) =>
+          auth.permissions.includes(permission),
+        )
+
+      if (!canReadTransfers) {
+        return res.status(403).json({
+          error: 'A stock transfer permission is required',
+        })
       }
+
+      return next()
+    }
+
+    let requiredPermission = 'inventory.transfer.create'
+
+    if (path.endsWith('/ship')) {
+      requiredPermission = 'inventory.transfer.approve'
+    } else if (path.endsWith('/receive')) {
+      requiredPermission = 'inventory.transfer.receive'
     }
 
     return requirePermission(requiredPermission)(req, res, next)

@@ -605,12 +605,18 @@ function TransfersPage({ companyId, branchId }: TransfersPageProps) {
   }
 
   useEffect(() => {
-    if (!canAccessTransfers || !companyId.trim()) {
+    // موظف العرض أو الشحن أو الاستلام لا يحتاج
+    // تحميل قائمة إنشاء التحويل.
+    setLocations([])
+    setFromLocationId('')
+    setToLocationId('')
+
+    if (!canCreateTransfer || !companyId.trim()) {
       return
     }
 
     void loadLocations()
-  }, [canAccessTransfers, companyId, branchId])
+  }, [canCreateTransfer, companyId, branchId])
 
   useEffect(() => {
     if (!canAccessTransfers || !companyId.trim()) {
