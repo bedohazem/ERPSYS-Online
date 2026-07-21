@@ -586,6 +586,36 @@ export function requireBusinessPermission(
     return requirePermission('pos.devices.manage')(req, res, next)
   }
 
+  // ======================================================
+  // إدارة ومتابعة Offline POS Sync.
+  //
+  // القراءة تحتاج pos.sync.view أو pos.sync.manage.
+  // تغيير حالة التعارض يحتاج pos.sync.manage.
+  // ======================================================
+  if (
+    path === '/api/pos-sync-admin' ||
+    path.startsWith('/api/pos-sync-admin/')
+  ) {
+    if (isReadRequest) {
+      const auth = getAuthContext(res)
+
+      const canReadPosSync =
+        auth.roles.includes('admin') ||
+        auth.permissions.includes('pos.sync.view') ||
+        auth.permissions.includes('pos.sync.manage')
+
+      if (!canReadPosSync) {
+        return res.status(403).json({
+          error: 'Permission required: pos.sync.view or pos.sync.manage',
+        })
+      }
+
+      return next()
+    }
+
+    return requirePermission('pos.sync.manage')(req, res, next)
+  }
+
   const rules = [
     {
       prefix: '/api/demo',

@@ -23,6 +23,10 @@ import { transfersRouter } from './modules/transfers/transfers.routes'
 import { salesRouter } from './modules/sales/sales.routes'
 import { posRouter } from './modules/pos/pos.routes'
 import { posDevicesRouter } from './modules/pos-devices/pos-devices.routes'
+import {
+  posDeviceSyncRouter,
+  posSyncAdminRouter,
+} from './modules/pos-sync/pos-sync.routes'
 import { customersRouter } from './modules/customers/customers.routes'
 import { returnsRouter } from './modules/returns/returns.routes'
 import { reportsRouter } from './modules/reports/reports.routes'
@@ -49,6 +53,11 @@ app.use(express.json({ limit: '2mb' }))
 
 app.use(healthRouter)
 app.use(authRouter)
+// Device-authenticated POS routes.
+//
+// هذه المسارات لا تستخدم User Bearer Session.
+// كل Route بداخلها يستخدم requirePosDevice.
+app.use(posDeviceSyncRouter)
 
 // ======================================================
 // Protected API Layer
@@ -82,6 +91,7 @@ app.use(transfersRouter)
 app.use(salesRouter)
 app.use(posRouter)
 app.use(posDevicesRouter)
+app.use(posSyncAdminRouter)
 app.use(customersRouter)
 app.use(returnsRouter)
 app.use(reportsRouter)
