@@ -8,6 +8,7 @@ import ReturnsPage from './pages/ReturnsPage'
 import InventoryPage from './pages/InventoryPage'
 import TransfersPage from './pages/TransfersPage'
 import PurchasesPage from './pages/PurchasesPage'
+import PurchaseOrdersPage from './pages/PurchaseOrdersPage'
 import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
 // شاشة إدارة مستخدمي الشركة.
@@ -27,6 +28,7 @@ type PageName =
   | 'inventory'
   | 'transfers'
   | 'purchases'
+  | 'purchase-orders'
   | 'users'
   | 'roles'
   | 'new-sale'
@@ -118,6 +120,14 @@ const pageDefinitions: Array<{
       'suppliers.view',
       'suppliers.manage',
     ],
+  },
+  {
+    name: 'purchase-orders',
+    label: 'أوامر الشراء',
+    icon: '▣',
+    permission: 'purchases.view',
+
+    anyPermissions: ['purchases.view', 'purchases.create'],
   },
   {
     name: 'customers',
@@ -797,6 +807,10 @@ function App() {
 
           {activePage === 'purchases' ? (
             <PurchasesPage companyId={companyId} branchId={branchId} />
+          ) : null}
+
+          {activePage === 'purchase-orders' ? (
+            <PurchaseOrdersPage companyId={companyId} branchId={branchId} />
           ) : null}
 
           {activePage === 'users' ? <UsersPage /> : null}

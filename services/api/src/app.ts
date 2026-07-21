@@ -18,6 +18,7 @@ import { catalogRouter } from './modules/catalog/catalog.routes'
 import { inventoryRouter } from './modules/inventory/inventory.routes'
 import { suppliersRouter } from './modules/suppliers/suppliers.routes'
 import { purchasesRouter } from './modules/purchases/purchases.routes'
+import { purchaseOrdersRouter } from './modules/purchase-orders/purchase-orders.routes'
 import { transfersRouter } from './modules/transfers/transfers.routes'
 import { salesRouter } from './modules/sales/sales.routes'
 import { posRouter } from './modules/pos/pos.routes'
@@ -75,6 +76,7 @@ app.use(catalogRouter)
 app.use(inventoryRouter)
 app.use(suppliersRouter)
 app.use(purchasesRouter)
+app.use(purchaseOrdersRouter)
 app.use(transfersRouter)
 app.use(salesRouter)
 app.use(posRouter)

@@ -504,6 +504,38 @@ export function requireBusinessPermission(
     return requirePermission('purchases.create')(req, res, next)
   }
 
+  // ======================================================
+  // أوامر الشراء.
+  //
+  // القراءة متاحة لمن يملك purchases.view أو
+  // purchases.create.
+  //
+  // الإنشاء والاستلام يحتاجان purchases.create.
+  // ======================================================
+  if (
+    path === '/api/purchase-orders' ||
+    path.startsWith('/api/purchase-orders/')
+  ) {
+    if (isReadRequest) {
+      const auth = getAuthContext(res)
+
+      const canReadPurchaseOrders =
+        auth.roles.includes('admin') ||
+        auth.permissions.includes('purchases.view') ||
+        auth.permissions.includes('purchases.create')
+
+      if (!canReadPurchaseOrders) {
+        return res.status(403).json({
+          error: 'Permission required: purchases.view or purchases.create',
+        })
+      }
+
+      return next()
+    }
+
+    return requirePermission('purchases.create')(req, res, next)
+  }
+
   const rules = [
     {
       prefix: '/api/demo',
