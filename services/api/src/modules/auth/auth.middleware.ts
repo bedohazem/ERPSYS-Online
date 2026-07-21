@@ -377,6 +377,45 @@ export function requireBusinessPermission(
     return next()
   }
 
+  // ======================================================
+  // صلاحيات دورة تحويل المخزون.
+  //
+  // العرض، الإنشاء، الشحن والاستلام صلاحيات منفصلة.
+  // ======================================================
+  if (path === '/api/transfers/locations' && isReadRequest) {
+    const auth = getAuthContext(res)
+
+    const hasTransferLocationAccess =
+      auth.roles.includes('admin') ||
+      auth.permissions.includes('inventory.transfer.view') ||
+      auth.permissions.includes('inventory.transfer.create')
+
+    if (!hasTransferLocationAccess) {
+      return res.status(403).json({
+        error:
+          'Permission required: inventory.transfer.view or inventory.transfer.create',
+      })
+    }
+
+    return next()
+  }
+
+  if (path === '/api/transfers' || path.startsWith('/api/transfers/')) {
+    let requiredPermission = 'inventory.transfer.view'
+
+    if (!isReadRequest) {
+      if (path.endsWith('/ship')) {
+        requiredPermission = 'inventory.transfer.approve'
+      } else if (path.endsWith('/receive')) {
+        requiredPermission = 'inventory.transfer.receive'
+      } else {
+        requiredPermission = 'inventory.transfer.create'
+      }
+    }
+
+    return requirePermission(requiredPermission)(req, res, next)
+  }
+
   const rules = [
     {
       prefix: '/api/demo',
