@@ -257,6 +257,127 @@ transfersRouter.get('/api/transfers/locations', async (req, res, next) => {
 })
 
 // ======================================================
+// GET /api/transfers/lookup-item
+//
+// بحث عن صنف داخل مكان المصدر بالباركود أو SKU.
+// يعيد الرصيد الحالي قبل إضافته إلى التحويل.
+// ======================================================
+transfersRouter.get('/api/transfers/lookup-item', async (req, res, next) => {
+  try {
+    const companyId = req.query.companyId
+    const branchId = req.query.branchId
+    const fromLocationId = req.query.fromLocationId
+    const code = req.query.code
+
+    if (typeof companyId !== 'string' || !companyId.trim()) {
+      return res.status(400).json({
+        error: 'companyId query parameter is required',
+      })
+    }
+
+    if (
+      typeof fromLocationId !== 'string' ||
+      !isTransferUuid(fromLocationId.trim())
+    ) {
+      return res.status(400).json({
+        error: 'fromLocationId is invalid',
+      })
+    }
+
+    if (typeof code !== 'string' || !code.trim()) {
+      return res.status(400).json({
+        error: 'code query parameter is required',
+      })
+    }
+
+    const authenticatedBranchId =
+      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+
+    const result = await db.query(
+      `
+        SELECT
+          pv.id AS variant_id,
+          p.name AS product_name,
+          pv.sku,
+          pv.primary_barcode,
+          fs.name AS size_name,
+          fc.name AS color_name,
+
+          COALESCE(
+            sb.quantity,
+            0
+          ) AS available_quantity,
+
+          sl.id AS from_location_id,
+          sl.name AS from_location_name,
+          sl.code AS from_location_code
+
+        FROM product_variants pv
+
+        JOIN products p
+          ON p.id = pv.product_id
+          AND p.company_id = pv.company_id
+
+        JOIN stock_locations sl
+          ON sl.id = $2
+          AND sl.company_id = pv.company_id
+          AND sl.is_active = TRUE
+
+        LEFT JOIN fashion_sizes fs
+          ON fs.id = pv.size_id
+
+        LEFT JOIN fashion_colors fc
+          ON fc.id = pv.color_id
+
+        LEFT JOIN variant_barcodes vb
+          ON vb.variant_id = pv.id
+          AND vb.company_id = pv.company_id
+
+        LEFT JOIN stock_balances sb
+          ON sb.company_id = pv.company_id
+          AND sb.stock_location_id = sl.id
+          AND sb.variant_id = pv.id
+
+        WHERE pv.company_id = $1
+          AND pv.status = 'active'
+
+          -- مستخدم الفرع لا يرسل من مكان فرع آخر.
+          AND (
+            $4::uuid IS NULL
+            OR sl.branch_id = $4::uuid
+          )
+
+          AND (
+            pv.primary_barcode = $3
+            OR pv.sku = $3
+            OR vb.barcode = $3
+          )
+
+        LIMIT 1;
+        `,
+      [
+        companyId.trim(),
+        fromLocationId.trim(),
+        code.trim(),
+        authenticatedBranchId,
+      ],
+    )
+
+    if ((result.rowCount ?? 0) === 0) {
+      return res.status(404).json({
+        error: 'الصنف غير موجود أو مكان المصدر غير مسموح.',
+      })
+    }
+
+    return res.json({
+      data: result.rows[0],
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// ======================================================
 // GET /api/transfers
 // ======================================================
 transfersRouter.get('/api/transfers', async (req, res, next) => {

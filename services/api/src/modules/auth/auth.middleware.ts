@@ -382,7 +382,10 @@ export function requireBusinessPermission(
   //
   // العرض، الإنشاء، الشحن والاستلام صلاحيات منفصلة.
   // ======================================================
-  if (path === '/api/transfers/locations' && isReadRequest) {
+  const isTransferSetupRequest =
+    path === '/api/transfers/locations' || path === '/api/transfers/lookup-item'
+
+  if (isReadRequest && isTransferSetupRequest) {
     const auth = getAuthContext(res)
 
     const hasTransferLocationAccess =

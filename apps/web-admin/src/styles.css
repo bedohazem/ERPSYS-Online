@@ -2221,3 +2221,145 @@ body {
     width: 100%;
   }
 }
+
+/* ======================================================
+   Inventory Transfers
+====================================================== */
+
+.transfer-header-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.transfer-item-entry {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) 140px auto;
+  align-items: end;
+  gap: 12px;
+  margin: 20px 0;
+  padding: 16px;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: #f8fbff;
+}
+
+.transfer-item-entry label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.transfer-quantity-input {
+  width: 100px;
+  min-width: 80px;
+  text-align: center;
+}
+
+.transfer-create-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 22px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.transfer-create-footer div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.transfer-create-footer span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.transfer-create-footer strong {
+  color: #0f3d91;
+  font-size: 19px;
+  font-weight: 900;
+}
+
+.transfer-status-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transfer-status-filter select {
+  min-width: 170px;
+}
+
+.transfer-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.transfer-status-draft {
+  color: #475569;
+  background: #e2e8f0;
+}
+
+.transfer-status-pending,
+.transfer-status-approved {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.transfer-status-in-transit {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.transfer-status-received {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.transfer-status-cancelled {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.transfer-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 1100px) {
+  .transfer-header-grid,
+  .transfer-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .transfer-header-grid,
+  .transfer-summary-grid,
+  .transfer-item-entry {
+    grid-template-columns: 1fr;
+  }
+
+  .transfer-create-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .transfer-create-footer button {
+    width: 100%;
+  }
+
+  .transfer-status-filter {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

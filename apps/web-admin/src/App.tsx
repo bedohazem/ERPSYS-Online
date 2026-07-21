@@ -6,6 +6,7 @@ import ProductsPage from './pages/ProductsPage'
 import SalesPage from './pages/SalesPage'
 import ReturnsPage from './pages/ReturnsPage'
 import InventoryPage from './pages/InventoryPage'
+import TransfersPage from './pages/TransfersPage'
 import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
 // شاشة إدارة مستخدمي الشركة.
@@ -23,6 +24,7 @@ type PageName =
   | 'sales'
   | 'returns'
   | 'inventory'
+  | 'transfers'
   | 'users'
   | 'roles'
   | 'new-sale'
@@ -45,6 +47,7 @@ const pageDefinitions: Array<{
   label: string
   icon: string
   permission: string
+  anyPermissions?: string[]
 }> = [
   {
     name: 'dashboard',
@@ -87,6 +90,19 @@ const pageDefinitions: Array<{
     label: 'المخزون',
     icon: '▥',
     permission: 'inventory.view',
+  },
+  {
+    name: 'transfers',
+    label: 'تحويلات المخزون',
+    icon: '⇄',
+    permission: 'inventory.transfer.view',
+
+    anyPermissions: [
+      'inventory.transfer.view',
+      'inventory.transfer.create',
+      'inventory.transfer.approve',
+      'inventory.transfer.receive',
+    ],
   },
   {
     name: 'customers',
@@ -296,7 +312,15 @@ function App() {
     const isAdmin = user?.roles.includes('admin') ?? false
 
     return pageDefinitions.filter((page) => {
-      return isAdmin || user?.permissions.includes(page.permission)
+      const hasPrimaryPermission =
+        user?.permissions.includes(page.permission) ?? false
+
+      const hasAnyOptionalPermission =
+        page.anyPermissions?.some((permission) =>
+          user?.permissions.includes(permission),
+        ) ?? false
+
+      return isAdmin || hasPrimaryPermission || hasAnyOptionalPermission
     })
   }, [user])
 
@@ -750,6 +774,10 @@ function App() {
 
           {activePage === 'inventory' ? (
             <InventoryPage companyId={companyId} branchId={branchId} />
+          ) : null}
+
+          {activePage === 'transfers' ? (
+            <TransfersPage companyId={companyId} branchId={branchId} />
           ) : null}
 
           {activePage === 'users' ? <UsersPage /> : null}
