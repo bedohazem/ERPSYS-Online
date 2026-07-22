@@ -369,6 +369,16 @@ function PosDevicesPage({ companyId, branchId }: PosDevicesPageProps) {
     }
   }
 
+  async function copyDeviceId(device: PosDevice) {
+    try {
+      await navigator.clipboard.writeText(device.id)
+
+      setSuccess(`تم نسخ Device ID للجهاز ${device.device_name}.`)
+    } catch {
+      setError('تعذر نسخ Device ID تلقائيًا.')
+    }
+  }
+
   useEffect(() => {
     if (!canViewDevices || !companyId.trim()) {
       return
@@ -569,6 +579,7 @@ function PosDevicesPage({ companyId, branchId }: PosDevicesPageProps) {
                 <tr>
                   <th>الجهاز</th>
                   <th>الكود</th>
+                  <th>Device ID</th>
                   <th>الفرع</th>
                   <th>الحالة</th>
                   <th>آخر اتصال</th>
@@ -586,6 +597,20 @@ function PosDevicesPage({ companyId, branchId }: PosDevicesPageProps) {
                     </td>
 
                     <td>{device.device_code}</td>
+
+                    <td>
+                      <div className="pos-device-id-cell">
+                        <code>{device.id}</code>
+
+                        <button
+                          type="button"
+                          className="table-button"
+                          onClick={() => void copyDeviceId(device)}
+                        >
+                          نسخ ID
+                        </button>
+                      </div>
+                    </td>
 
                     <td>{device.branch_name}</td>
 

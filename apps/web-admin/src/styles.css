@@ -2967,3 +2967,17 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+.pos-device-id-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 330px;
+}
+
+.pos-device-id-cell code {
+  direction: ltr;
+  color: #334155;
+  font-size: 11px;
+  white-space: nowrap;
+}

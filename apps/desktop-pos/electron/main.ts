@@ -63,7 +63,9 @@ function normalizeServerUrl(value: unknown) {
 
 function validateDeviceId(value: unknown) {
   if (typeof value !== 'string' || !deviceIdPattern.test(value.trim())) {
-    throw new Error('Device ID غير صالح.')
+    throw new Error(
+      'Device ID غير صالح. استخدم UUID من عمود Device ID وليس كود الجهاز.',
+    )
   }
 
   return value.trim()
