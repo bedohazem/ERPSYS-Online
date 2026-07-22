@@ -33,5 +33,8 @@ jobs:
       - name: Install Web Admin dependencies
         run: npm ci --prefix apps/web-admin
 
+      - name: Install Desktop POS dependencies
+       run: npm ci --prefix apps/desktop-pos
+
       - name: Run project checks
         run: npm run check

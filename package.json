@@ -9,7 +9,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build:web-admin": "npm --prefix apps/web-admin run build",
-    "check": "npm run typecheck && npm run build:web-admin",
+    "build:desktop-pos": "npm --prefix apps/desktop-pos run build",
+    "desktop-pos:dev": "npm --prefix apps/desktop-pos run dev",
+    "check": "npm run typecheck && npm run build:web-admin && npm run build:desktop-pos",
     "test": "npm run check",
     "db:migrate": "node packages/database/scripts/migrate.js",
     "db:seed": "node packages/database/scripts/seed.js",
