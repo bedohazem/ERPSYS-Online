@@ -26,6 +26,7 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             apps/web-admin/package-lock.json
+            apps/desktop-pos/package-lock.json
 
       - name: Install API dependencies
         run: npm ci
@@ -34,7 +35,7 @@ jobs:
         run: npm ci --prefix apps/web-admin
 
       - name: Install Desktop POS dependencies
-       run: npm ci --prefix apps/desktop-pos
+        run: npm ci --prefix apps/desktop-pos
 
       - name: Run project checks
         run: npm run check
