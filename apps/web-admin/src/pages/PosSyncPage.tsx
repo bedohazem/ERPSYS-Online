@@ -38,6 +38,39 @@ type PosSyncBatch = {
   branch_name: string
 }
 
+type PosSyncItem = {
+  id: string
+  company_id: string
+  batch_id: string
+
+  local_entity_type: 'sale' | 'return' | 'exchange'
+
+  local_entity_id: string
+  idempotency_key: string
+
+  status: 'pending' | 'processed' | 'failed' | 'needs_review' | 'duplicate'
+
+  server_entity_type: 'sale' | 'return' | 'exchange' | null
+
+  server_entity_id: string | null
+
+  error_code: string | null
+  error_message: string | null
+
+  item_payload: Record<string, unknown> | null
+
+  result_payload: Record<string, unknown> | null
+
+  attempt_count: number
+  last_attempt_at: string | null
+  created_at: string
+  processed_at: string | null
+
+  sale_number: string | null
+  sale_status: string | null
+  sale_occurred_at: string | null
+}
+
 type PosSyncConflict = {
   id: string
   company_id: string
@@ -68,6 +101,12 @@ type PosSyncConflict = {
 
   error_code: string | null
   error_message: string | null
+}
+
+type PosSyncBatchDetails = {
+  batch: PosSyncBatch
+  items: PosSyncItem[]
+  conflicts: PosSyncConflict[]
 }
 
 type ConflictActionStatus = 'open' | 'reviewed' | 'ignored'
@@ -102,6 +141,18 @@ function translateBatchStatus(status: string) {
     completed: 'مكتملة',
     completed_with_errors: 'مكتملة بتعارضات',
     failed: 'فشلت',
+  }
+
+  return labels[status] || status
+}
+
+function translateSyncItemStatus(status: string) {
+  const labels: Record<string, string> = {
+    pending: 'بانتظار المعالجة',
+    processed: 'تمت المعالجة',
+    failed: 'فشلت',
+    needs_review: 'تحتاج مراجعة',
+    duplicate: 'مكررة آمنة',
   }
 
   return labels[status] || status
@@ -168,6 +219,11 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
 
   const [selectedConflict, setSelectedConflict] =
     useState<PosSyncConflict | null>(null)
+
+  const [selectedBatchDetails, setSelectedBatchDetails] =
+    useState<PosSyncBatchDetails | null>(null)
+
+  const [loadingBatchId, setLoadingBatchId] = useState<string | null>(null)
 
   const [batchStatusFilter, setBatchStatusFilter] = useState('')
   const [batchSearch, setBatchSearch] = useState('')
@@ -295,6 +351,39 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
       )
     } finally {
       setLoadingBatches(false)
+    }
+  }
+
+  async function loadBatchDetails(batchId: string) {
+    setLoadingBatchId(batchId)
+    setError('')
+
+    try {
+      const searchParams = new URLSearchParams({
+        companyId: companyId.trim(),
+      })
+
+      if (branchId.trim()) {
+        searchParams.set('branchId', branchId.trim())
+      }
+
+      const response = await requestJson<ApiResponse<PosSyncBatchDetails>>(
+        `/api/pos-sync-admin/batches/${encodeURIComponent(
+          batchId,
+        )}?${searchParams.toString()}`,
+      )
+
+      setSelectedBatchDetails(response.data)
+    } catch (currentError) {
+      setSelectedBatchDetails(null)
+
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر تحميل تفاصيل دفعة المزامنة.',
+      )
+    } finally {
+      setLoadingBatchId(null)
     }
   }
 
@@ -576,6 +665,7 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
                     <th>تمت المعالجة</th>
                     <th>تحتاج مراجعة</th>
                     <th>فشلت</th>
+                    <th>التفاصيل</th>
                   </tr>
                 </thead>
 
@@ -617,6 +707,194 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
                       <td>{batch.processed_items}</td>
                       <td>{batch.review_items}</td>
                       <td>{batch.failed_items}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="table-button"
+                          disabled={loadingBatchId === batch.id}
+                          onClick={() => void loadBatchDetails(batch.id)}
+                        >
+                          {loadingBatchId === batch.id
+                            ? 'جاري التحميل...'
+                            : 'عرض المحاولات'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {activeTab === 'batches' && selectedBatchDetails ? (
+        <section className="panel pos-sync-batch-details-panel">
+          <div className="section-header">
+            <div>
+              <h2>تفاصيل دفعة المزامنة</h2>
+
+              <p className="muted">
+                Batch Key:{' '}
+                <strong>{selectedBatchDetails.batch.batch_key}</strong>
+                {' • '}
+                {selectedBatchDetails.batch.device_name}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              className="table-button"
+              onClick={() => setSelectedBatchDetails(null)}
+            >
+              إغلاق التفاصيل
+            </button>
+          </div>
+
+          <section className="mini-cards-grid pos-sync-batch-details-grid">
+            <article className="mini-card">
+              <span>إجمالي المحاولات</span>
+              <strong>{selectedBatchDetails.items.length}</strong>
+            </article>
+
+            <article className="mini-card">
+              <span>تمت المعالجة</span>
+              <strong>{selectedBatchDetails.batch.processed_items}</strong>
+            </article>
+
+            <article className="mini-card">
+              <span>تحتاج مراجعة</span>
+              <strong>{selectedBatchDetails.batch.review_items}</strong>
+            </article>
+
+            <article className="mini-card">
+              <span>فشلت</span>
+              <strong>{selectedBatchDetails.batch.failed_items}</strong>
+            </article>
+          </section>
+
+          <h3>محاولات الرفع</h3>
+
+          {selectedBatchDetails.items.length === 0 ? (
+            <p className="muted">لا توجد محاولات مسجلة داخل هذه الدفعة.</p>
+          ) : (
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Local Sale ID</th>
+                    <th>وقت المحاولة</th>
+                    <th>الحالة</th>
+                    <th>رقم الفاتورة</th>
+                    <th>الخطأ</th>
+                    <th>الفاتورة</th>
+                    <th>Payload</th>
+                    <th>النتيجة</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {selectedBatchDetails.items.map((item) => (
+                    <tr key={item.id}>
+                      <td>
+                        <strong>{item.local_entity_id}</strong>
+
+                        <small className="pos-sync-secondary-text">
+                          {item.idempotency_key}
+                        </small>
+                      </td>
+
+                      <td>{formatSyncDate(item.created_at)}</td>
+
+                      <td>
+                        <span
+                          className={`pos-sync-status pos-sync-item-status-${item.status}`}
+                        >
+                          {translateSyncItemStatus(item.status)}
+                        </span>
+                      </td>
+
+                      <td>{item.sale_number || '-'}</td>
+
+                      <td>
+                        {item.error_code || '-'}
+
+                        <small className="pos-sync-secondary-text">
+                          {item.error_message || ''}
+                        </small>
+                      </td>
+
+                      <td>
+                        {item.server_entity_id && canOpenLinkedSale ? (
+                          <button
+                            type="button"
+                            className="table-button"
+                            onClick={() =>
+                              onOpenSale(item.server_entity_id as string)
+                            }
+                          >
+                            فتح الفاتورة
+                          </button>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+
+                      <td>
+                        <details className="pos-sync-payload-details">
+                          <summary>عرض البيانات</summary>
+
+                          <pre className="pos-sync-json pos-sync-table-json">
+                            {JSON.stringify(item.item_payload ?? {}, null, 2)}
+                          </pre>
+                        </details>
+                      </td>
+
+                      <td>
+                        <details className="pos-sync-payload-details">
+                          <summary>عرض النتيجة</summary>
+
+                          <pre className="pos-sync-json pos-sync-table-json">
+                            {JSON.stringify(item.result_payload ?? {}, null, 2)}
+                          </pre>
+                        </details>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <h3>تعارضات الدفعة ({selectedBatchDetails.conflicts.length})</h3>
+
+          {selectedBatchDetails.conflicts.length === 0 ? (
+            <p className="muted">لا توجد تعارضات مرتبطة بهذه الدفعة.</p>
+          ) : (
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>العملية</th>
+                    <th>النوع</th>
+                    <th>الخطورة</th>
+                    <th>الحالة</th>
+                    <th>التاريخ</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {selectedBatchDetails.conflicts.map((conflict) => (
+                    <tr key={conflict.id}>
+                      <td>{conflict.local_entity_id || '-'}</td>
+
+                      <td>{translateConflictType(conflict.conflict_type)}</td>
+
+                      <td>{translateConflictSeverity(conflict.severity)}</td>
+
+                      <td>{translateConflictStatus(conflict.status)}</td>
+
+                      <td>{formatSyncDate(conflict.created_at)}</td>
                     </tr>
                   ))}
                 </tbody>

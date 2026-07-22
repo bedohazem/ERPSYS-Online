@@ -647,6 +647,144 @@ posSyncAdminRouter.get(
 )
 
 // ======================================================
+// Admin: GET /api/pos-sync-admin/batches/:batchId
+//
+// عرض الدفعة مع كل محاولات الرفع والتعارضات التابعة لها.
+// ======================================================
+posSyncAdminRouter.get(
+  '/api/pos-sync-admin/batches/:batchId',
+  async (req, res, next) => {
+    try {
+      const batchId = String(req.params.batchId || '').trim()
+
+      const companyId = req.query.companyId
+      const branchId = req.query.branchId
+
+      if (!uuidPattern.test(batchId)) {
+        return res.status(400).json({
+          error: 'batchId is invalid',
+        })
+      }
+
+      if (typeof companyId !== 'string' || !companyId.trim()) {
+        return res.status(400).json({
+          error: 'companyId is required',
+        })
+      }
+
+      const selectedBranchId =
+        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+
+      const batchResult = await db.query(
+        `
+        SELECT
+          psb.*,
+
+          pd.device_code,
+          pd.device_name,
+
+          b.code AS branch_code,
+          b.name AS branch_name
+
+        FROM pos_offline_sync_batches psb
+
+        JOIN pos_devices pd
+          ON pd.id = psb.device_id
+          AND pd.company_id = psb.company_id
+
+        JOIN branches b
+          ON b.id = psb.branch_id
+          AND b.company_id = psb.company_id
+
+        WHERE psb.company_id = $1
+          AND psb.id = $2
+
+          AND (
+            $3::uuid IS NULL
+            OR psb.branch_id = $3::uuid
+          )
+
+        LIMIT 1;
+        `,
+        [companyId.trim(), batchId, selectedBranchId],
+      )
+
+      if ((batchResult.rowCount ?? 0) === 0) {
+        return res.status(404).json({
+          error: 'POS synchronization batch was not found',
+        })
+      }
+
+      const itemsResult = await db.query(
+        `
+        SELECT
+          psi.*,
+
+          s.sale_number,
+          s.status AS sale_status,
+          s.occurred_at AS sale_occurred_at
+
+        FROM pos_offline_sync_items psi
+
+        LEFT JOIN sales s
+          ON s.company_id = psi.company_id
+          AND s.id = psi.server_entity_id
+          AND psi.server_entity_type = 'sale'
+
+        WHERE psi.company_id = $1
+          AND psi.batch_id = $2
+
+        ORDER BY
+          psi.created_at ASC,
+          psi.id ASC;
+        `,
+        [companyId.trim(), batchId],
+      )
+
+      const conflictsResult = await db.query(
+        `
+        SELECT
+          pc.*,
+
+          psi.local_entity_id,
+          psi.idempotency_key,
+          psi.server_entity_id,
+
+          reviewer.full_name
+            AS reviewed_by_name
+
+        FROM pos_pending_conflicts pc
+
+        JOIN pos_offline_sync_items psi
+          ON psi.id = pc.sync_item_id
+          AND psi.company_id = pc.company_id
+
+        LEFT JOIN users reviewer
+          ON reviewer.id = pc.reviewed_by
+
+        WHERE pc.company_id = $1
+          AND psi.batch_id = $2
+
+        ORDER BY
+          pc.created_at ASC;
+        `,
+        [companyId.trim(), batchId],
+      )
+
+      return res.json({
+        data: {
+          batch: batchResult.rows[0],
+          items: itemsResult.rows,
+          conflicts: conflictsResult.rows,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
 // Admin: GET /api/pos-sync-admin/conflicts
 // ======================================================
 posSyncAdminRouter.get(

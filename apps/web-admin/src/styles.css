@@ -2901,3 +2901,69 @@ body {
     flex-direction: column;
   }
 }
+
+/* ======================================================
+   POS Sync Batch Attempts
+====================================================== */
+
+.pos-sync-batch-details-panel {
+  margin-top: 18px;
+}
+
+.pos-sync-batch-details-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 18px 0 22px;
+}
+
+.pos-sync-payload-details {
+  min-width: 135px;
+}
+
+.pos-sync-payload-details summary {
+  cursor: pointer;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pos-sync-table-json {
+  width: min(520px, 70vw);
+  max-height: 320px;
+  margin-top: 10px;
+  overflow: auto;
+  direction: ltr;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+.pos-sync-item-status-processed,
+.pos-sync-item-status-duplicate {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.pos-sync-item-status-needs_review,
+.pos-sync-item-status-pending {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #a16207;
+}
+
+.pos-sync-item-status-failed {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+@media (max-width: 900px) {
+  .pos-sync-batch-details-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .pos-sync-batch-details-grid {
+    grid-template-columns: 1fr;
+  }
+}
