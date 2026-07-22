@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { app, BrowserWindow, ipcMain, safeStorage } from 'electron'
 import {
   clearCashierSession,
@@ -11,8 +11,11 @@ import {
   searchPosCatalog,
 } from './cashier-service'
 import {
+  applyPendingSaleSyncResults,
   countPendingSales,
   createPendingSaleRecord,
+  markPendingSalesFailed,
+  takePendingSalesForSync,
   deleteSetting,
   getSetting,
   initializeLocalStore,
@@ -69,6 +72,24 @@ const DEVICE_SERVER_URL_KEY = 'pos.device.server-url'
 const DEVICE_ID_KEY = 'pos.device.id'
 
 const DEVICE_SECRET_KEY = 'pos.device.encrypted-secret'
+
+let syncInProgress = false
+
+let automaticSyncTimer: NodeJS.Timeout | null = null
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {}
+  }
+
+  return value as Record<string, unknown>
+}
+
+function broadcastSyncCompleted(result: Record<string, unknown>) {
+  for (const currentWindow of BrowserWindow.getAllWindows()) {
+    currentWindow.webContents.send('desktop-pos:sync-completed', result)
+  }
+}
 
 function normalizeServerUrl(value: unknown) {
   if (typeof value !== 'string' || !value.trim()) {
@@ -301,7 +322,11 @@ function createLocalPendingSale(input: SavePendingSaleInput) {
   }
 }
 
-async function requestDeviceApi(apiPath: string, method: 'GET' | 'POST') {
+async function requestDeviceApi(
+  apiPath: string,
+  method: 'GET' | 'POST',
+  body?: unknown,
+) {
   const config = getStoredDeviceConfig()
 
   if (!config) {
@@ -325,6 +350,8 @@ async function requestDeviceApi(apiPath: string, method: 'GET' | 'POST') {
 
         'X-POS-Device-Secret': config.deviceSecret,
       },
+
+      body: body === undefined ? undefined : JSON.stringify(body),
 
       signal: controller.signal,
     })
@@ -373,6 +400,191 @@ async function requestDeviceApi(apiPath: string, method: 'GET' | 'POST') {
   } finally {
     clearTimeout(timeout)
   }
+}
+
+async function syncPendingSales(manual: boolean) {
+  if (syncInProgress) {
+    return {
+      inProgress: true,
+      selectedItems: 0,
+      processedItems: 0,
+      reviewItems: 0,
+      failedItems: 0,
+      pendingSalesCount: countPendingSales(),
+      message: 'توجد مزامنة قيد التنفيذ بالفعل.',
+    }
+  }
+
+  const config = getStoredDeviceConfig()
+
+  if (!config) {
+    if (manual) {
+      throw new Error('إعدادات جهاز POS غير مكتملة.')
+    }
+
+    return null
+  }
+
+  syncInProgress = true
+
+  const selectedSales = takePendingSalesForSync(50, manual)
+
+  if (selectedSales.length === 0) {
+    syncInProgress = false
+
+    const emptyResult = {
+      inProgress: false,
+      selectedItems: 0,
+      processedItems: 0,
+      reviewItems: 0,
+      failedItems: 0,
+      pendingSalesCount: countPendingSales(),
+      message: 'لا توجد مبيعات مؤجلة قابلة للمزامنة.',
+    }
+
+    if (manual) {
+      broadcastSyncCompleted(emptyResult)
+    }
+
+    return emptyResult
+  }
+
+  const localSaleIds = selectedSales.map((sale) => sale.localSaleId)
+
+  try {
+    // المفتاح حتمي لنفس مجموعة الفواتير.
+    // لو وصلت الدفعة للسيرفر وفُقد الرد،
+    // المحاولة التالية تحصل على نفس Batch بدل إنشاء دفعة مكررة.
+    const batchIdentity = selectedSales
+      .map((sale) => sale.idempotencyKey)
+      .sort()
+      .join('|')
+
+    const batchHash = createHash('sha256').update(batchIdentity).digest('hex')
+
+    const batchKey = `desktop-${batchHash}`
+
+    const response = await requestDeviceApi('/api/pos-sync/batches', 'POST', {
+      batchKey,
+
+      sales: selectedSales.map((sale) => sale.payload),
+    })
+
+    const responseRecord = asRecord(response)
+
+    const dataRecord = asRecord(responseRecord.data)
+
+    if (!Array.isArray(dataRecord.items)) {
+      throw new Error('استجابة دفعة المزامنة غير مكتملة.')
+    }
+
+    const allowedStatuses = new Set([
+      'processed',
+      'duplicate',
+      'needs_review',
+      'failed',
+    ])
+
+    const results = dataRecord.items
+      .map((rawItem) => {
+        const item = asRecord(rawItem)
+
+        const localSaleId =
+          typeof item.local_entity_id === 'string' ? item.local_entity_id : ''
+
+        const rawStatus =
+          typeof item.status === 'string' ? item.status : 'failed'
+
+        const status = allowedStatuses.has(rawStatus)
+          ? (rawStatus as 'processed' | 'duplicate' | 'needs_review' | 'failed')
+          : 'failed'
+
+        const errorCode =
+          typeof item.error_code === 'string' ? item.error_code : ''
+
+        const errorMessage =
+          typeof item.error_message === 'string' ? item.error_message : ''
+
+        return {
+          localSaleId,
+          status,
+
+          errorMessage:
+            [errorCode, errorMessage].filter(Boolean).join(': ') || null,
+        }
+      })
+      .filter((result) => localSaleIds.includes(result.localSaleId))
+
+    applyPendingSaleSyncResults(localSaleIds, results)
+
+    const processedItems = results.filter(
+      (result) =>
+        result.status === 'processed' || result.status === 'duplicate',
+    ).length
+
+    const reviewItems = results.filter(
+      (result) => result.status === 'needs_review',
+    ).length
+
+    const failedItems = selectedSales.length - processedItems - reviewItems
+
+    const completedResult = {
+      inProgress: false,
+      batchKey,
+      selectedItems: selectedSales.length,
+      processedItems,
+      reviewItems,
+      failedItems,
+
+      pendingSalesCount: countPendingSales(),
+
+      message:
+        `تمت مزامنة ${processedItems}، ` +
+        `${reviewItems} تحتاج مراجعة، ` +
+        `${failedItems} فشلت.`,
+    }
+
+    broadcastSyncCompleted(completedResult)
+
+    return completedResult
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'تعذر مزامنة المبيعات المؤجلة.'
+
+    markPendingSalesFailed(localSaleIds, errorMessage)
+
+    const failedResult = {
+      inProgress: false,
+      selectedItems: selectedSales.length,
+      processedItems: 0,
+      reviewItems: 0,
+      failedItems: selectedSales.length,
+
+      pendingSalesCount: countPendingSales(),
+
+      message: errorMessage,
+    }
+
+    broadcastSyncCompleted(failedResult)
+
+    if (manual) {
+      throw new Error(errorMessage)
+    }
+
+    return failedResult
+  } finally {
+    syncInProgress = false
+  }
+}
+
+function startAutomaticSync() {
+  setTimeout(() => {
+    void syncPendingSales(false)
+  }, 3_000)
+
+  automaticSyncTimer = setInterval(() => {
+    void syncPendingSales(false)
+  }, 30_000)
 }
 
 function registerIpcHandlers() {
@@ -424,6 +636,8 @@ function registerIpcHandlers() {
     'desktop-pos:create-pending-sale',
     (_event, input: SavePendingSaleInput) => createLocalPendingSale(input),
   )
+
+  ipcMain.handle('desktop-pos:sync-pending-sales', () => syncPendingSales(true))
 
   ipcMain.handle('desktop-pos:cashier-session', () => getPublicCashierSession())
 
@@ -478,12 +692,21 @@ void app.whenReady().then(() => {
 
   registerIpcHandlers()
   createMainWindow()
+  startAutomaticSync()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow()
     }
   })
+})
+
+app.on('will-quit', () => {
+  if (automaticSyncTimer) {
+    clearInterval(automaticSyncTimer)
+
+    automaticSyncTimer = null
+  }
 })
 
 app.on('window-all-closed', () => {

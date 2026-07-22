@@ -33,6 +33,20 @@ contextBridge.exposeInMainWorld('desktopPos', {
     paymentReference?: string | null
   }) => ipcRenderer.invoke('desktop-pos:create-pending-sale', input),
 
+  syncPendingSales: () => ipcRenderer.invoke('desktop-pos:sync-pending-sales'),
+
+  onSyncCompleted: (callback: (result: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, result: unknown) => {
+      callback(result)
+    }
+
+    ipcRenderer.on('desktop-pos:sync-completed', listener)
+
+    return () => {
+      ipcRenderer.removeListener('desktop-pos:sync-completed', listener)
+    }
+  },
+
   cashierSession: () => ipcRenderer.invoke('desktop-pos:cashier-session'),
 
   cashierLogin: (input: {

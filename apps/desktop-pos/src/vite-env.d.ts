@@ -101,6 +101,17 @@ type DesktopCreatePendingSaleResult = {
   state: DesktopPosState
 }
 
+type DesktopSyncResult = {
+  inProgress: boolean
+  batchKey?: string
+  selectedItems: number
+  processedItems: number
+  reviewItems: number
+  failedItems: number
+  pendingSalesCount: number
+  message: string
+}
+
 interface Window {
   desktopPos: {
     getState: () => Promise<DesktopPosState>
@@ -133,6 +144,12 @@ interface Window {
       paidAmount: number
       paymentReference?: string | null
     }) => Promise<DesktopCreatePendingSaleResult>
+
+    syncPendingSales: () => Promise<DesktopSyncResult>
+
+    onSyncCompleted: (
+      callback: (result: DesktopSyncResult) => void,
+    ) => () => void
 
     cashierSession: () => Promise<DesktopCashierSession | null>
 

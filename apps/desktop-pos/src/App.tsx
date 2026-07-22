@@ -14,6 +14,21 @@ function formatDate(value: string) {
   }).format(parsedDate)
 }
 
+function translatePendingStatus(status: DesktopPendingSale['status']) {
+  const labels: Record<DesktopPendingSale['status'], string> = {
+    pending: 'في الانتظار',
+    syncing: 'جاري المزامنة',
+    needs_review: 'تحتاج مراجعة',
+    failed: 'فشلت',
+  }
+
+  return labels[status]
+}
+
+function pendingStatusClass(status: DesktopPendingSale['status']) {
+  return 'desktop-sync-status ' + `desktop-sync-status-${status}`
+}
+
 function App() {
   const [appState, setAppState] = useState<DesktopPosState | null>(null)
 
@@ -36,6 +51,11 @@ function App() {
   const [error, setError] = useState('')
 
   const [success, setSuccess] = useState('')
+
+  const [syncing, setSyncing] = useState(false)
+
+  const [lastSyncResult, setLastSyncResult] =
+    useState<DesktopSyncResult | null>(null)
 
   async function loadLocalState() {
     const [state, localPendingSales] = await Promise.all([
@@ -140,6 +160,40 @@ function App() {
     }
   }
 
+  async function syncNow() {
+    if (syncing) {
+      return
+    }
+
+    setSyncing(true)
+    setError('')
+    setSuccess('')
+
+    try {
+      const result = await window.desktopPos.syncPendingSales()
+
+      setLastSyncResult(result)
+
+      setConnectionStatus('online')
+
+      setSuccess(result.message)
+
+      await loadLocalState()
+    } catch (currentError) {
+      setConnectionStatus('offline')
+
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر مزامنة المبيعات المؤجلة.',
+      )
+
+      await loadLocalState()
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   async function loadBootstrap() {
     setLoading(true)
     setError('')
@@ -173,6 +227,21 @@ function App() {
           : 'تعذر فتح قاعدة البيانات المحلية.',
       )
     })
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.desktopPos.onSyncCompleted((result) => {
+      setLastSyncResult(result)
+      setSyncing(false)
+
+      if (result.processedItems > 0 || result.reviewItems > 0) {
+        setConnectionStatus('online')
+      }
+
+      void loadLocalState()
+    })
+
+    return unsubscribe
   }, [])
 
   return (
@@ -330,10 +399,43 @@ function App() {
             <p>لا يتم خصم أي مخزون داخل SQLite.</p>
           </div>
 
-          <span className="desktop-count-badge">
-            {pendingSales.length} عملية
-          </span>
+          <div className="desktop-sync-actions">
+            <button
+              type="button"
+              className="desktop-primary-button"
+              disabled={syncing || !appState?.configured}
+              onClick={() => void syncNow()}
+            >
+              {syncing ? 'جاري المزامنة...' : 'Sync Now'}
+            </button>
+
+            <span className="desktop-count-badge">
+              {pendingSales.length} عملية
+            </span>
+          </div>
         </div>
+
+        {lastSyncResult ? (
+          <div
+            className={
+              lastSyncResult.failedItems > 0
+                ? 'desktop-sync-result desktop-sync-result-warning'
+                : 'desktop-sync-result desktop-sync-result-success'
+            }
+          >
+            <strong>{lastSyncResult.message}</strong>
+
+            <div className="desktop-sync-result-numbers">
+              <span>المحدد: {lastSyncResult.selectedItems}</span>
+
+              <span>تم: {lastSyncResult.processedItems}</span>
+
+              <span>مراجعة: {lastSyncResult.reviewItems}</span>
+
+              <span>فشل: {lastSyncResult.failedItems}</span>
+            </div>
+          </div>
+        ) : null}
 
         {pendingSales.length === 0 ? (
           <p className="desktop-empty-state">لا توجد مبيعات مؤجلة حاليًا.</p>
@@ -353,9 +455,17 @@ function App() {
               <tbody>
                 {pendingSales.map((sale) => (
                   <tr key={sale.id}>
-                    <td>{sale.localSaleId}</td>
+                    <td>
+                      <code className="desktop-local-sale-id">
+                        {sale.localSaleId}
+                      </code>
+                    </td>
 
-                    <td>{sale.status}</td>
+                    <td>
+                      <span className={pendingStatusClass(sale.status)}>
+                        {translatePendingStatus(sale.status)}
+                      </span>
+                    </td>
 
                     <td>{sale.attemptCount}</td>
 
