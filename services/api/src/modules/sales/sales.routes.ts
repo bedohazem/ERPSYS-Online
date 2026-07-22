@@ -137,6 +137,10 @@ salesRouter.get('/api/sales', async (req, res, next) => {
         s.paid_total,
         s.change_total,
         s.status,
+
+        -- وقت حدوث البيع الحقيقي.
+        -- في البيع Offline قد يسبق وقت المزامنة بساعات.
+        s.occurred_at,
         s.created_at,
         s.synced_at,
 
@@ -204,7 +208,9 @@ salesRouter.get('/api/sales', async (req, res, next) => {
         c.name,
         returned_items.returned_quantity
 
-      ORDER BY s.created_at DESC
+      ORDER BY
+        s.occurred_at DESC,
+        s.created_at DESC
       LIMIT $3;
       `,
       [
@@ -275,6 +281,7 @@ salesRouter.get('/api/sales/:saleId', async (req, res, next) => {
         s.paid_total,
         s.change_total,
         s.status,
+        s.occurred_at,
         s.created_at,
         s.synced_at
       FROM sales s

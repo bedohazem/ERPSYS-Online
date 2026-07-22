@@ -159,6 +159,8 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
 
   const canManageSync = hasPermission('pos.sync.manage')
 
+  const canOpenLinkedSale = hasPermission('sales.view')
+
   const [activeTab, setActiveTab] = useState<'batches' | 'conflicts'>('batches')
 
   const [batches, setBatches] = useState<PosSyncBatch[]>([])
@@ -772,7 +774,7 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
                         </td>
 
                         <td>
-                          {conflict.server_entity_id ? (
+                          {conflict.server_entity_id && canOpenLinkedSale ? (
                             <button
                               type="button"
                               className="table-button"
@@ -909,7 +911,7 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
             {JSON.stringify(selectedConflict.details ?? {}, null, 2)}
           </pre>
 
-          {selectedConflict.server_entity_id ? (
+          {selectedConflict.server_entity_id && canOpenLinkedSale ? (
             <button
               type="button"
               className="primary-button"

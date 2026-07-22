@@ -22,7 +22,13 @@ type Sale = {
   paid_total: string
   change_total: string
   status: string
+
+  // وقت البيع الحقيقي من جهاز POS.
+  occurred_at: string
+
+  // وقت إنشاء السجل على PostgreSQL.
   created_at: string
+
   synced_at: string | null
   items_count: number
 
@@ -369,7 +375,7 @@ function SalesPage({
                       </strong>
                     </td>
 
-                    <td>{formatSaleDateTime(sale.created_at)}</td>
+                    <td>{formatSaleDateTime(sale.occurred_at)}</td>
 
                     <td>{sale.customer_name || 'بيع عام'}</td>
                     <td>{sale.branch_name}</td>
@@ -455,7 +461,7 @@ function SalesPage({
                 {' • '}
                 {selectedSaleDetails.sale.customer_name || 'بيع عام'}
                 {' • '}
-                {formatSaleDateTime(selectedSaleDetails.sale.created_at)}
+                {formatSaleDateTime(selectedSaleDetails.sale.occurred_at)}
               </p>
             </div>
           </div>
