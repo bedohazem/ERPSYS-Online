@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { app, BrowserWindow, ipcMain, safeStorage } from 'electron'
 import {
   clearCashierSession,
@@ -11,6 +12,7 @@ import {
 } from './cashier-service'
 import {
   countPendingSales,
+  createPendingSaleRecord,
   deleteSetting,
   getSetting,
   initializeLocalStore,
@@ -24,6 +26,21 @@ type SaveDeviceConfigInput = {
   deviceSecret: string
 }
 
+type SavePendingSaleInput = {
+  stockLocationId: string
+
+  items: Array<{
+    variantId: string
+    quantity: number
+    unitPrice: number
+  }>
+
+  paymentMethod: 'cash' | 'card' | 'wallet' | 'bank_transfer' | 'other'
+
+  paidAmount: number
+  paymentReference?: string | null
+}
+
 type StoredDeviceConfig = {
   serverUrl: string
   deviceId: string
@@ -34,6 +51,18 @@ const deviceIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 const deviceSecretPattern = /^[0-9a-f]{64}$/i
+
+const allowedOfflinePaymentMethods = new Set([
+  'cash',
+  'card',
+  'wallet',
+  'bank_transfer',
+  'other',
+])
+
+function roundMoney(value: number) {
+  return Number(value.toFixed(2))
+}
 
 const DEVICE_SERVER_URL_KEY = 'pos.device.server-url'
 
@@ -133,6 +162,142 @@ function getPublicAppState() {
     pendingSalesCount: countPendingSales(),
 
     cashierSession: getPublicCashierSession(),
+  }
+}
+
+function createLocalPendingSale(input: SavePendingSaleInput) {
+  const cashierSession = getPublicCashierSession()
+
+  if (!cashierSession) {
+    throw new Error('يجب تسجيل دخول الكاشير أولًا.')
+  }
+
+  const stockLocationId =
+    typeof input?.stockLocationId === 'string'
+      ? input.stockLocationId.trim()
+      : ''
+
+  if (!deviceIdPattern.test(stockLocationId)) {
+    throw new Error('مكان البيع غير صالح.')
+  }
+
+  if (
+    !Array.isArray(input.items) ||
+    input.items.length === 0 ||
+    input.items.length > 200
+  ) {
+    throw new Error('يجب أن تحتوي الفاتورة على صنف واحد على الأقل.')
+  }
+
+  const usedVariantIds = new Set<string>()
+
+  const items = input.items.map((rawItem) => {
+    const variantId =
+      typeof rawItem?.variantId === 'string' ? rawItem.variantId.trim() : ''
+
+    const quantity = Number(rawItem?.quantity)
+
+    const unitPrice = roundMoney(Number(rawItem?.unitPrice))
+
+    if (!deviceIdPattern.test(variantId)) {
+      throw new Error('أحد أصناف الفاتورة غير صالح.')
+    }
+
+    if (usedVariantIds.has(variantId)) {
+      throw new Error('لا يمكن تكرار نفس الصنف داخل الفاتورة.')
+    }
+
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 9999) {
+      throw new Error('كمية أحد الأصناف غير صالحة.')
+    }
+
+    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+      throw new Error('سعر أحد الأصناف غير صالح.')
+    }
+
+    usedVariantIds.add(variantId)
+
+    return {
+      variantId,
+      quantity,
+      unitPrice,
+    }
+  })
+
+  const saleTotal = roundMoney(
+    items.reduce((total, item) => total + item.quantity * item.unitPrice, 0),
+  )
+
+  const paymentMethod =
+    typeof input.paymentMethod === 'string' ? input.paymentMethod : ''
+
+  if (!allowedOfflinePaymentMethods.has(paymentMethod)) {
+    throw new Error('طريقة الدفع غير مدعومة.')
+  }
+
+  const paidAmount = roundMoney(Number(input.paidAmount))
+
+  if (!Number.isFinite(paidAmount) || paidAmount < saleTotal) {
+    throw new Error('المبلغ المدفوع أقل من إجمالي الفاتورة.')
+  }
+
+  const now = new Date()
+  const localSaleId = randomUUID()
+  const idempotencyKey = randomUUID()
+
+  const datePart = now.toISOString().slice(0, 10).replaceAll('-', '')
+
+  const saleNumber =
+    `OFF-${datePart}-` +
+    `${Date.now().toString(36).toUpperCase()}-` +
+    randomBytes(2).toString('hex').toUpperCase()
+
+  const payload = {
+    localSaleId,
+    idempotencyKey,
+    saleNumber,
+
+    stockLocationId,
+
+    cashierId: cashierSession.user.id,
+
+    shiftId: null,
+    customerId: null,
+
+    occurredAt: now.toISOString(),
+
+    items,
+
+    payments: [
+      {
+        method: paymentMethod,
+        amount: paidAmount,
+
+        reference:
+          typeof input.paymentReference === 'string' &&
+          input.paymentReference.trim()
+            ? input.paymentReference.trim()
+            : null,
+      },
+    ],
+  }
+
+  const pendingSale = createPendingSaleRecord({
+    id: randomUUID(),
+    localSaleId,
+    idempotencyKey,
+    payload,
+  })
+
+  return {
+    pendingSale,
+    saleNumber,
+    saleTotal,
+    paidAmount,
+
+    changeAmount: roundMoney(paidAmount - saleTotal),
+
+    state: getPublicAppState(),
   }
 }
 
@@ -254,6 +419,11 @@ function registerIpcHandlers() {
   )
 
   ipcMain.handle('desktop-pos:list-pending-sales', () => listPendingSales(100))
+
+  ipcMain.handle(
+    'desktop-pos:create-pending-sale',
+    (_event, input: SavePendingSaleInput) => createLocalPendingSale(input),
+  )
 
   ipcMain.handle('desktop-pos:cashier-session', () => getPublicCashierSession())
 

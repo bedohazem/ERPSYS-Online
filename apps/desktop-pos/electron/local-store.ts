@@ -12,6 +12,13 @@ export type PendingSaleRecord = {
   updatedAt: string
 }
 
+export type CreatePendingSaleRecordInput = {
+  id: string
+  localSaleId: string
+  idempotencyKey: string
+  payload: Record<string, unknown>
+}
+
 let database: DatabaseSync | null = null
 
 function getDatabase() {
@@ -101,6 +108,20 @@ export function initializeLocalStore(databasePath: string) {
       created_at ASC
     );
   `)
+
+  // لو التطبيق اتقفل أثناء المزامنة،
+  // نعيد العملية إلى Pending حتى يمكن المحاولة مرة أخرى.
+  database
+    .prepare(
+      `
+      UPDATE pending_sales
+      SET
+        status = 'pending',
+        updated_at = ?
+      WHERE status = 'syncing';
+      `,
+    )
+    .run(new Date().toISOString())
 }
 
 export function getSetting(key: string) {
@@ -149,6 +170,56 @@ export function deleteSetting(key: string) {
       `,
     )
     .run(key)
+}
+
+export function createPendingSaleRecord(
+  input: CreatePendingSaleRecordInput,
+): PendingSaleRecord {
+  const now = new Date().toISOString()
+
+  getDatabase()
+    .prepare(
+      `
+      INSERT INTO pending_sales (
+        id,
+        local_sale_id,
+        idempotency_key,
+        payload_json,
+        status,
+        attempt_count,
+        last_error,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        ?, ?, ?, ?,
+        'pending',
+        0,
+        NULL,
+        ?, ?
+      );
+      `,
+    )
+    .run(
+      input.id,
+      input.localSaleId,
+      input.idempotencyKey,
+      JSON.stringify(input.payload),
+      now,
+      now,
+    )
+
+  return {
+    id: input.id,
+    localSaleId: input.localSaleId,
+    idempotencyKey: input.idempotencyKey,
+    status: 'pending',
+    payload: input.payload,
+    attemptCount: 0,
+    lastError: null,
+    createdAt: now,
+    updatedAt: now,
+  }
 }
 
 export function countPendingSales() {

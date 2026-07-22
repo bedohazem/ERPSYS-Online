@@ -85,6 +85,22 @@ type DesktopPendingSale = {
   updatedAt: string
 }
 
+type DesktopPaymentMethod =
+  | 'cash'
+  | 'card'
+  | 'wallet'
+  | 'bank_transfer'
+  | 'other'
+
+type DesktopCreatePendingSaleResult = {
+  pendingSale: DesktopPendingSale
+  saleNumber: string
+  saleTotal: number
+  paidAmount: number
+  changeAmount: number
+  state: DesktopPosState
+}
+
 interface Window {
   desktopPos: {
     getState: () => Promise<DesktopPosState>
@@ -102,6 +118,21 @@ interface Window {
     bootstrap: () => Promise<unknown>
 
     listPendingSales: () => Promise<DesktopPendingSale[]>
+
+    createPendingSale: (input: {
+      stockLocationId: string
+
+      items: Array<{
+        variantId: string
+        quantity: number
+        unitPrice: number
+      }>
+
+      paymentMethod: DesktopPaymentMethod
+
+      paidAmount: number
+      paymentReference?: string | null
+    }) => Promise<DesktopCreatePendingSaleResult>
 
     cashierSession: () => Promise<DesktopCashierSession | null>
 

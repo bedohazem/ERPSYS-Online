@@ -488,3 +488,78 @@ select:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* ======================================================
+   Desktop POS Payment
+====================================================== */
+
+.desktop-payment-panel {
+  margin-top: 22px;
+  padding: 20px;
+  border: 1px solid #c7d2fe;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #ffffff, #eef2ff);
+}
+
+.desktop-payment-panel h3 {
+  margin: 0 0 5px;
+  color: #172554;
+}
+
+.desktop-payment-panel p {
+  margin: 0;
+  color: #64748b;
+}
+
+.desktop-payment-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.desktop-payment-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: #334155;
+  font-weight: 800;
+}
+
+.desktop-payment-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.desktop-payment-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.desktop-payment-summary span {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.desktop-payment-summary strong {
+  color: #1d4ed8;
+  font-size: 21px;
+}
+
+.desktop-save-sale-button {
+  min-width: 220px;
+}
+
+@media (max-width: 1000px) {
+  .desktop-payment-grid,
+  .desktop-payment-summary {
+    grid-template-columns: 1fr;
+  }
+}

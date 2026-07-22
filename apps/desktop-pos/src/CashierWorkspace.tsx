@@ -55,6 +55,13 @@ function CashierWorkspace({
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
+  const [paymentMethod, setPaymentMethod] =
+    useState<DesktopPaymentMethod>('cash')
+
+  const [paidAmount, setPaidAmount] = useState('')
+
+  const [paymentReference, setPaymentReference] = useState('')
+
   const selectedLocation =
     workspace?.stockLocations.find(
       (location) => location.id === selectedLocationId,
@@ -70,6 +77,19 @@ function CashierWorkspace({
     () => cart.reduce((total, item) => total + item.quantity, 0),
     [cart],
   )
+
+  const paidAmountNumber = Number(paidAmount)
+
+  const changeAmount = Number.isFinite(paidAmountNumber)
+    ? Math.max(paidAmountNumber - cartTotal, 0)
+    : 0
+
+  const canSavePendingSale =
+    cart.length > 0 &&
+    Boolean(selectedLocationId) &&
+    Number.isFinite(paidAmountNumber) &&
+    paidAmountNumber >= cartTotal &&
+    loadingAction === null
 
   async function openWorkspace() {
     setLoadingAction('workspace')
@@ -320,6 +340,62 @@ function CashierWorkspace({
     )
   }
 
+  async function savePendingSale() {
+    if (!selectedLocationId || cart.length === 0) {
+      return
+    }
+
+    setLoadingAction('save-sale')
+    setError('')
+    setSuccess('')
+
+    try {
+      const result = await window.desktopPos.createPendingSale({
+        stockLocationId: selectedLocationId,
+
+        items: cart.map((line) => ({
+          variantId: line.variantId,
+
+          quantity: line.quantity,
+
+          unitPrice: line.unitPrice,
+        })),
+
+        paymentMethod,
+
+        paidAmount: paidAmountNumber,
+
+        paymentReference: paymentReference.trim() || null,
+      })
+
+      setCart([])
+      setSearchResults([])
+      setSearchQuery('')
+
+      setPaymentMethod('cash')
+      setPaidAmount('')
+      setPaymentReference('')
+
+      setSuccess(
+        `تم حفظ الفاتورة ${result.saleNumber} محليًا. الباقي: ${formatMoney(
+          result.changeAmount,
+        )}`,
+      )
+
+      // يحدث عداد Pending Sales
+      // والقائمة الموجودة في App.
+      onSessionChanged()
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر حفظ الفاتورة محليًا.',
+      )
+    } finally {
+      setLoadingAction(null)
+    }
+  }
+
   function changeStockLocation(nextLocationId: string) {
     if (cart.length > 0 && nextLocationId !== selectedLocationId) {
       const confirmed = window.confirm(
@@ -353,6 +429,28 @@ function CashierWorkspace({
       )
     })
   }, [configured])
+
+  useEffect(() => {
+    if (cart.length === 0) {
+      setPaidAmount('')
+      setPaymentReference('')
+      return
+    }
+
+    setPaidAmount((currentValue) => {
+      const numericValue = Number(currentValue)
+
+      if (
+        !currentValue ||
+        !Number.isFinite(numericValue) ||
+        numericValue < cartTotal
+      ) {
+        return cartTotal.toFixed(2)
+      }
+
+      return currentValue
+    })
+  }, [cart.length, cartTotal])
 
   if (!configured) {
     return (
@@ -690,10 +788,142 @@ function CashierWorkspace({
           )}
 
           {cart.length > 0 ? (
-            <p className="desktop-next-step-note">
-              السلة جاهزة. الخطوة التالية ستضيف بيانات الدفع وحفظ الفاتورة داخل
-              Pending Sales Outbox.
-            </p>
+            <section className="desktop-payment-panel">
+              <div className="desktop-section-header">
+                <div>
+                  <h3>الدفع وحفظ الفاتورة</h3>
+
+                  <p>
+                    الفاتورة تحفظ داخل SQLite كـ Pending Sale، ولا يتم خصم مخزون
+                    محلي.
+                  </p>
+                </div>
+              </div>
+
+              <div className="desktop-payment-grid">
+                <label>
+                  طريقة الدفع
+                  <select
+                    value={paymentMethod}
+                    disabled={loadingAction !== null}
+                    onChange={(event) =>
+                      setPaymentMethod(
+                        event.target.value as DesktopPaymentMethod,
+                      )
+                    }
+                  >
+                    <option value="cash">نقدي</option>
+
+                    <option value="card">بطاقة</option>
+
+                    <option value="wallet">محفظة إلكترونية</option>
+
+                    <option value="bank_transfer">تحويل بنكي</option>
+
+                    <option value="other">أخرى</option>
+                  </select>
+                </label>
+
+                <label>
+                  المبلغ المدفوع
+                  <input
+                    type="number"
+                    min={cartTotal}
+                    step="0.01"
+                    value={paidAmount}
+                    disabled={loadingAction !== null}
+                    onChange={(event) => setPaidAmount(event.target.value)}
+                  />
+                </label>
+
+                <label>
+                  رقم المرجع
+                  <input
+                    value={paymentReference}
+                    disabled={
+                      loadingAction !== null || paymentMethod === 'cash'
+                    }
+                    onChange={(event) =>
+                      setPaymentReference(event.target.value)
+                    }
+                    placeholder={
+                      paymentMethod === 'cash'
+                        ? 'غير مطلوب للدفع النقدي'
+                        : 'رقم العملية أو المرجع'
+                    }
+                    dir="ltr"
+                  />
+                </label>
+              </div>
+
+              <div className="desktop-payment-summary">
+                <div>
+                  <span>إجمالي الفاتورة</span>
+
+                  <strong>{formatMoney(cartTotal)}</strong>
+                </div>
+
+                <div>
+                  <span>المدفوع</span>
+
+                  <strong>
+                    {Number.isFinite(paidAmountNumber)
+                      ? formatMoney(paidAmountNumber)
+                      : formatMoney(0)}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>الباقي</span>
+
+                  <strong>{formatMoney(changeAmount)}</strong>
+                </div>
+              </div>
+
+              {paidAmountNumber < cartTotal ? (
+                <p className="desktop-message desktop-error">
+                  المبلغ المدفوع أقل من إجمالي الفاتورة.
+                </p>
+              ) : null}
+
+              <div className="desktop-actions">
+                <button
+                  type="button"
+                  className="desktop-primary-button desktop-save-sale-button"
+                  disabled={!canSavePendingSale}
+                  onClick={() => void savePendingSale()}
+                >
+                  {loadingAction === 'save-sale'
+                    ? 'جاري حفظ الفاتورة...'
+                    : 'حفظ الفاتورة محليًا'}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={loadingAction !== null}
+                  onClick={() => setPaidAmount(cartTotal.toFixed(2))}
+                >
+                  المدفوع يساوي الإجمالي
+                </button>
+
+                <button
+                  type="button"
+                  className="desktop-danger-button"
+                  disabled={loadingAction !== null}
+                  onClick={() => {
+                    const confirmed = window.confirm('مسح السلة الحالية؟')
+
+                    if (confirmed) {
+                      setCart([])
+                      setSearchResults([])
+                      setSearchQuery('')
+                    }
+                  }}
+                >
+                  مسح السلة
+                </button>
+              </div>
+            </section>
           ) : null}
         </>
       )}

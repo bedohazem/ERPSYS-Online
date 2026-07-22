@@ -18,6 +18,21 @@ contextBridge.exposeInMainWorld('desktopPos', {
 
   listPendingSales: () => ipcRenderer.invoke('desktop-pos:list-pending-sales'),
 
+  createPendingSale: (input: {
+    stockLocationId: string
+
+    items: Array<{
+      variantId: string
+      quantity: number
+      unitPrice: number
+    }>
+
+    paymentMethod: 'cash' | 'card' | 'wallet' | 'bank_transfer' | 'other'
+
+    paidAmount: number
+    paymentReference?: string | null
+  }) => ipcRenderer.invoke('desktop-pos:create-pending-sale', input),
+
   cashierSession: () => ipcRenderer.invoke('desktop-pos:cashier-session'),
 
   cashierLogin: (input: {
