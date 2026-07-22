@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import CashierWorkspace from './CashierWorkspace'
 
 function formatDate(value: string) {
   const parsedDate = new Date(value)
@@ -312,6 +313,14 @@ function App() {
           </button>
         </div>
       </section>
+
+      <CashierWorkspace
+        key={`${appState?.configured ?? false}-${appState?.deviceId ?? ''}`}
+        configured={Boolean(appState?.configured)}
+        onSessionChanged={() => {
+          void loadLocalState()
+        }}
+      />
 
       <section className="desktop-panel">
         <div className="desktop-section-header">

@@ -1,6 +1,15 @@
 import path from 'node:path'
 import { app, BrowserWindow, ipcMain, safeStorage } from 'electron'
 import {
+  clearCashierSession,
+  getPublicCashierSession,
+  loadPosWorkspace,
+  loginCashier,
+  logoutCashier,
+  lookupPosCatalogItem,
+  searchPosCatalog,
+} from './cashier-service'
+import {
   countPendingSales,
   deleteSetting,
   getSetting,
@@ -120,6 +129,8 @@ function getPublicAppState() {
     hasDeviceSecret: Boolean(encryptedSecret),
 
     pendingSalesCount: countPendingSales(),
+
+    cashierSession: getPublicCashierSession(),
   }
 }
 
@@ -222,6 +233,7 @@ function registerIpcHandlers() {
   )
 
   ipcMain.handle('desktop-pos:clear-device-config', () => {
+    clearCashierSession()
     deleteSetting(DEVICE_SERVER_URL_KEY)
 
     deleteSetting(DEVICE_ID_KEY)
@@ -240,6 +252,24 @@ function registerIpcHandlers() {
   )
 
   ipcMain.handle('desktop-pos:list-pending-sales', () => listPendingSales(100))
+
+  ipcMain.handle('desktop-pos:cashier-session', () => getPublicCashierSession())
+
+  ipcMain.handle('desktop-pos:cashier-login', (_event, input) =>
+    loginCashier(input),
+  )
+
+  ipcMain.handle('desktop-pos:cashier-logout', () => logoutCashier())
+
+  ipcMain.handle('desktop-pos:load-workspace', () => loadPosWorkspace())
+
+  ipcMain.handle('desktop-pos:search-catalog', (_event, input) =>
+    searchPosCatalog(input),
+  )
+
+  ipcMain.handle('desktop-pos:lookup-catalog-item', (_event, input) =>
+    lookupPosCatalogItem(input),
+  )
 }
 
 function createMainWindow() {
