@@ -153,6 +153,12 @@ async function requestJson(url: string, options: RequestInit) {
       throw new Error('انتهت مهلة الاتصال بالسيرفر.')
     }
 
+    if (error instanceof TypeError && error.message === 'fetch failed') {
+      throw new Error(
+        'تعذر الاتصال بالسيرفر. تأكد أن API يعمل وأن عنوان السيرفر صحيح.',
+      )
+    }
+
     throw error
   } finally {
     clearTimeout(timeout)
