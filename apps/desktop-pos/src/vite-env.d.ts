@@ -44,6 +44,10 @@ type DesktopPosWorkspace = {
   stockLocations: DesktopStockLocation[]
 
   cashier: DesktopCashierSession
+  catalogCache: {
+    itemCount: number
+    refreshedAt: string | null
+  }
 }
 
 type DesktopCatalogItem = {
@@ -55,9 +59,10 @@ type DesktopCatalogItem = {
   size_name: string | null
   color_name: string | null
   selling_price: string
-  available_quantity: string
+  available_quantity: string | null
   stock_location_id: string
   stock_location_name: string
+  catalog_source: 'server' | 'cache'
 }
 
 type DesktopPosState = {

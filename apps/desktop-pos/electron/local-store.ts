@@ -27,6 +27,36 @@ export type PendingSaleSyncResult = {
   errorMessage: string | null
 }
 
+export type CatalogCacheItemInput = {
+  variantId: string
+  productId: string
+  productName: string
+  sku: string
+  primaryBarcode: string | null
+  sizeName: string | null
+  colorName: string | null
+  sellingPrice: string
+  barcodes: string[]
+}
+
+export type CatalogCacheItemRecord = {
+  variantId: string
+  productId: string
+  productName: string
+  sku: string
+  primaryBarcode: string | null
+  sizeName: string | null
+  colorName: string | null
+  sellingPrice: string
+}
+
+export type CatalogCacheInfo = {
+  itemCount: number
+  refreshedAt: string | null
+}
+
+const CATALOG_REFRESHED_AT_KEY = 'pos.catalog.refreshed-at'
+
 let database: DatabaseSync | null = null
 
 function getDatabase() {
@@ -115,6 +145,60 @@ export function initializeLocalStore(databasePath: string) {
       status,
       created_at ASC
     );
+    -- =====================================================
+    -- كتالوج أصناف محلي للبحث Offline.
+    --
+    -- لا يحتوي على:
+    -- stock quantity
+    -- stock balance
+    -- stock movement
+    -- =====================================================
+    CREATE TABLE IF NOT EXISTS catalog_items (
+      variant_id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL,
+
+      product_name TEXT NOT NULL,
+      sku TEXT NOT NULL UNIQUE,
+
+      primary_barcode TEXT,
+
+      size_name TEXT,
+      color_name TEXT,
+
+      selling_price TEXT NOT NULL,
+
+      refreshed_at TEXT NOT NULL
+    ) STRICT;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS
+    idx_catalog_items_primary_barcode
+    ON catalog_items (
+      primary_barcode
+    )
+    WHERE primary_barcode IS NOT NULL;
+
+    CREATE INDEX IF NOT EXISTS
+    idx_catalog_items_product_name
+    ON catalog_items (
+      product_name
+    );
+
+    CREATE TABLE IF NOT EXISTS catalog_barcodes (
+      barcode TEXT PRIMARY KEY,
+
+      variant_id TEXT NOT NULL
+        REFERENCES catalog_items (
+          variant_id
+        )
+        ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS
+    idx_catalog_barcodes_variant
+    ON catalog_barcodes (
+      variant_id
+    );
+
   `)
 
   // لو التطبيق اتقفل أثناء المزامنة،
@@ -178,6 +262,281 @@ export function deleteSetting(key: string) {
       `,
     )
     .run(key)
+}
+
+export function getCatalogCacheInfo(): CatalogCacheInfo {
+  const countRow = getDatabase()
+    .prepare(
+      `
+      SELECT COUNT(*) AS total
+      FROM catalog_items;
+      `,
+    )
+    .get() as
+    | {
+        total: number
+      }
+    | undefined
+
+  return {
+    itemCount: Number(countRow?.total ?? 0),
+
+    refreshedAt: getSetting(CATALOG_REFRESHED_AT_KEY),
+  }
+}
+
+export function replaceCatalogCache(
+  items: CatalogCacheItemInput[],
+  refreshedAt: string,
+): CatalogCacheInfo {
+  const currentDatabase = getDatabase()
+
+  const now = new Date().toISOString()
+
+  currentDatabase.exec('BEGIN IMMEDIATE;')
+
+  try {
+    currentDatabase.exec(`
+      DELETE FROM catalog_barcodes;
+      DELETE FROM catalog_items;
+    `)
+
+    const insertItem = currentDatabase.prepare(
+      `
+        INSERT INTO catalog_items (
+          variant_id,
+          product_id,
+          product_name,
+          sku,
+          primary_barcode,
+          size_name,
+          color_name,
+          selling_price,
+          refreshed_at
+        )
+        VALUES (
+          ?, ?, ?, ?, ?,
+          ?, ?, ?, ?
+        );
+        `,
+    )
+
+    const insertBarcode = currentDatabase.prepare(
+      `
+        INSERT INTO catalog_barcodes (
+          barcode,
+          variant_id
+        )
+        VALUES (?, ?);
+        `,
+    )
+
+    for (const item of items) {
+      insertItem.run(
+        item.variantId,
+        item.productId,
+        item.productName,
+        item.sku,
+        item.primaryBarcode,
+        item.sizeName,
+        item.colorName,
+        item.sellingPrice,
+        refreshedAt,
+      )
+
+      const uniqueBarcodes = new Set(
+        item.barcodes
+          .map((barcode) => barcode.trim())
+          .filter((barcode) => barcode && barcode !== item.primaryBarcode),
+      )
+
+      for (const barcode of uniqueBarcodes) {
+        insertBarcode.run(barcode, item.variantId)
+      }
+    }
+
+    currentDatabase
+      .prepare(
+        `
+        INSERT INTO app_settings (
+          key,
+          value,
+          updated_at
+        )
+        VALUES (?, ?, ?)
+
+        ON CONFLICT (key)
+        DO UPDATE SET
+          value = excluded.value,
+          updated_at =
+            excluded.updated_at;
+        `,
+      )
+      .run(CATALOG_REFRESHED_AT_KEY, refreshedAt, now)
+
+    currentDatabase.exec('COMMIT;')
+  } catch (error) {
+    currentDatabase.exec('ROLLBACK;')
+    throw error
+  }
+
+  return getCatalogCacheInfo()
+}
+
+function mapCatalogCacheRow(row: {
+  variant_id: string
+  product_id: string
+  product_name: string
+  sku: string
+  primary_barcode: string | null
+  size_name: string | null
+  color_name: string | null
+  selling_price: string
+}): CatalogCacheItemRecord {
+  return {
+    variantId: row.variant_id,
+    productId: row.product_id,
+    productName: row.product_name,
+    sku: row.sku,
+
+    primaryBarcode: row.primary_barcode,
+
+    sizeName: row.size_name,
+    colorName: row.color_name,
+
+    sellingPrice: row.selling_price,
+  }
+}
+
+export function searchCatalogCache(
+  query: string,
+  limit = 20,
+): CatalogCacheItemRecord[] {
+  const normalizedQuery = query.trim()
+
+  if (!normalizedQuery) {
+    return []
+  }
+
+  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 100)
+
+  const searchText = `%${normalizedQuery}%`
+
+  const rows = getDatabase()
+    .prepare(
+      `
+      SELECT DISTINCT
+        ci.variant_id,
+        ci.product_id,
+        ci.product_name,
+        ci.sku,
+        ci.primary_barcode,
+        ci.size_name,
+        ci.color_name,
+        ci.selling_price
+
+      FROM catalog_items ci
+
+      LEFT JOIN catalog_barcodes cb
+        ON cb.variant_id =
+            ci.variant_id
+
+      WHERE
+        ci.product_name
+          LIKE ? COLLATE NOCASE
+
+        OR ci.sku
+          LIKE ? COLLATE NOCASE
+
+        OR ci.primary_barcode
+          LIKE ? COLLATE NOCASE
+
+        OR cb.barcode
+          LIKE ? COLLATE NOCASE
+
+      ORDER BY
+        ci.product_name
+          COLLATE NOCASE ASC,
+
+        ci.sku
+          COLLATE NOCASE ASC
+
+      LIMIT ?;
+      `,
+    )
+    .all(searchText, searchText, searchText, searchText, safeLimit) as Array<{
+    variant_id: string
+    product_id: string
+    product_name: string
+    sku: string
+    primary_barcode: string | null
+    size_name: string | null
+    color_name: string | null
+    selling_price: string
+  }>
+
+  return rows.map(mapCatalogCacheRow)
+}
+
+export function lookupCatalogCacheItem(
+  code: string,
+): CatalogCacheItemRecord | null {
+  const normalizedCode = code.trim()
+
+  if (!normalizedCode) {
+    return null
+  }
+
+  const row = getDatabase()
+    .prepare(
+      `
+      SELECT
+        ci.variant_id,
+        ci.product_id,
+        ci.product_name,
+        ci.sku,
+        ci.primary_barcode,
+        ci.size_name,
+        ci.color_name,
+        ci.selling_price
+
+      FROM catalog_items ci
+
+      WHERE
+        ci.sku = ?
+          COLLATE NOCASE
+
+        OR ci.primary_barcode = ?
+          COLLATE NOCASE
+
+        OR EXISTS (
+          SELECT 1
+          FROM catalog_barcodes cb
+
+          WHERE cb.variant_id =
+                ci.variant_id
+
+            AND cb.barcode = ?
+                COLLATE NOCASE
+        )
+
+      LIMIT 1;
+      `,
+    )
+    .get(normalizedCode, normalizedCode, normalizedCode) as
+    | {
+        variant_id: string
+        product_id: string
+        product_name: string
+        sku: string
+        primary_barcode: string | null
+        size_name: string | null
+        color_name: string | null
+        selling_price: string
+      }
+    | undefined
+
+  return row ? mapCatalogCacheRow(row) : null
 }
 
 export function createPendingSaleRecord(

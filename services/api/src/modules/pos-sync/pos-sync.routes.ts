@@ -211,6 +211,98 @@ posDeviceSyncRouter.get('/api/pos-sync/bootstrap', async (_req, res, next) => {
 })
 
 // ======================================================
+// GET /api/pos-sync/catalog
+//
+// Snapshot كامل للأصناف والأسعار والباركود.
+//
+// لا يعيد هذا المسار أي كميات مخزون.
+// الكميات تظل داخل PostgreSQL فقط.
+// ======================================================
+posDeviceSyncRouter.get('/api/pos-sync/catalog', async (_req, res, next) => {
+  try {
+    const device = getPosDeviceContext(res)
+
+    const result = await db.query(
+      `
+        SELECT
+          pv.id AS variant_id,
+          pv.product_id,
+
+          p.name AS product_name,
+
+          pv.sku,
+          pv.primary_barcode,
+
+          fs.name AS size_name,
+          fc.name AS color_name,
+
+          pv.selling_price,
+
+          COALESCE(
+            ARRAY_AGG(
+              DISTINCT vb.barcode
+            ) FILTER (
+              WHERE vb.barcode IS NOT NULL
+            ),
+            ARRAY[]::text[]
+          ) AS barcodes
+
+        FROM product_variants pv
+
+        JOIN products p
+          ON p.id = pv.product_id
+          AND p.company_id =
+              pv.company_id
+          AND p.status = 'active'
+
+        LEFT JOIN fashion_sizes fs
+          ON fs.id = pv.size_id
+          AND fs.company_id =
+              pv.company_id
+
+        LEFT JOIN fashion_colors fc
+          ON fc.id = pv.color_id
+          AND fc.company_id =
+              pv.company_id
+
+        LEFT JOIN variant_barcodes vb
+          ON vb.variant_id = pv.id
+          AND vb.company_id =
+              pv.company_id
+
+        WHERE pv.company_id = $1
+          AND pv.status = 'active'
+
+        GROUP BY
+          pv.id,
+          pv.product_id,
+          p.name,
+          pv.sku,
+          pv.primary_barcode,
+          fs.name,
+          fc.name,
+          pv.selling_price
+
+        ORDER BY
+          p.name ASC,
+          pv.sku ASC;
+        `,
+      [device.companyId],
+    )
+
+    return res.json({
+      data: {
+        serverTime: new Date().toISOString(),
+
+        items: result.rows,
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// ======================================================
 // POST /api/pos-sync/batches
 //
 // رفع حتى 100 فاتورة مؤجلة في دفعة واحدة.

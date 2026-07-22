@@ -456,13 +456,19 @@ select:focus {
 }
 
 .desktop-stock-warning,
-.desktop-stock-ok {
+.desktop-stock-ok,
+.desktop-stock-unknown {
   display: inline-flex;
   padding: 5px 9px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 900;
   white-space: nowrap;
+}
+
+.desktop-stock-unknown {
+  background: #e0e7ff;
+  color: #3730a3;
 }
 
 .desktop-stock-warning {

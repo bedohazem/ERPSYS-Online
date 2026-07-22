@@ -1,5 +1,16 @@
 import { safeStorage } from 'electron'
-import { deleteSetting, getSetting, setSetting } from './local-store'
+import {
+  deleteSetting,
+  getCatalogCacheInfo,
+  getSetting,
+  lookupCatalogCacheItem,
+  replaceCatalogCache,
+  searchCatalogCache,
+  setSetting,
+  type CatalogCacheInfo,
+  type CatalogCacheItemInput,
+  type CatalogCacheItemRecord,
+} from './local-store'
 
 export type CashierSessionUser = {
   id: string
@@ -45,6 +56,7 @@ export type PosWorkspaceBootstrap = {
   stockLocations: PosStockLocation[]
 
   cashier: PublicCashierSession
+  catalogCache: CatalogCacheInfo
 }
 
 export type PosCatalogItem = {
@@ -56,9 +68,10 @@ export type PosCatalogItem = {
   size_name: string | null
   color_name: string | null
   selling_price: string
-  available_quantity: string
+  available_quantity: string | null
   stock_location_id: string
   stock_location_name: string
+  catalog_source: 'server' | 'cache'
 }
 
 type StoredDeviceConfig = {
@@ -84,6 +97,20 @@ type CatalogSearchInput = {
   stockLocationId: string
   query: string
 }
+
+type CatalogSnapshotItem = {
+  variant_id: string
+  product_id: string
+  product_name: string
+  sku: string
+  primary_barcode: string | null
+  size_name: string | null
+  color_name: string | null
+  selling_price: string
+  barcodes: string[]
+}
+
+class PosConnectionError extends Error {}
 
 const DEVICE_SERVER_URL_KEY = 'pos.device.server-url'
 
@@ -150,11 +177,11 @@ async function requestJson(url: string, options: RequestInit) {
     return responseBody
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error('انتهت مهلة الاتصال بالسيرفر.')
+      throw new PosConnectionError('انتهت مهلة الاتصال بالسيرفر.')
     }
 
     if (error instanceof TypeError && error.message === 'fetch failed') {
-      throw new Error(
+      throw new PosConnectionError(
         'تعذر الاتصال بالسيرفر. تأكد أن API يعمل وأن عنوان السيرفر صحيح.',
       )
     }
@@ -297,6 +324,93 @@ async function requestDeviceBootstrap() {
   }) as Promise<{
     data: Omit<PosWorkspaceBootstrap, 'cashier'>
   }>
+}
+
+async function refreshCatalogCache() {
+  const config = getDeviceConfig()
+
+  if (!config) {
+    throw new Error('إعدادات جهاز POS غير مكتملة.')
+  }
+
+  const response = (await requestJson(
+    `${config.serverUrl}/api/pos-sync/catalog`,
+    {
+      method: 'GET',
+
+      headers: {
+        Accept: 'application/json',
+
+        'X-POS-Device-Id': config.deviceId,
+
+        'X-POS-Device-Secret': config.deviceSecret,
+      },
+    },
+  )) as {
+    data?: {
+      serverTime?: string
+      items?: CatalogSnapshotItem[]
+    }
+  }
+
+  if (
+    typeof response.data?.serverTime !== 'string' ||
+    !Array.isArray(response.data.items)
+  ) {
+    throw new Error('استجابة كتالوج POS غير مكتملة.')
+  }
+
+  const items: CatalogCacheItemInput[] = response.data.items.map((item) => ({
+    variantId: item.variant_id,
+
+    productId: item.product_id,
+
+    productName: item.product_name,
+
+    sku: item.sku,
+
+    primaryBarcode: item.primary_barcode,
+
+    sizeName: item.size_name,
+
+    colorName: item.color_name,
+
+    sellingPrice: String(item.selling_price),
+
+    barcodes: Array.isArray(item.barcodes) ? item.barcodes : [],
+  }))
+
+  return replaceCatalogCache(items, response.data.serverTime)
+}
+
+function mapCachedCatalogItem(
+  item: CatalogCacheItemRecord,
+  stockLocationId: string,
+): PosCatalogItem {
+  return {
+    variant_id: item.variantId,
+    product_id: item.productId,
+
+    product_name: item.productName,
+
+    sku: item.sku,
+
+    primary_barcode: item.primaryBarcode,
+
+    size_name: item.sizeName,
+    color_name: item.colorName,
+
+    selling_price: item.sellingPrice,
+
+    // الكميات لا تحفظ محليًا.
+    available_quantity: null,
+
+    stock_location_id: stockLocationId,
+
+    stock_location_name: '',
+
+    catalog_source: 'cache',
+  }
 }
 
 async function requestCashierApi(apiPath: string) {
@@ -480,9 +594,25 @@ export async function loadPosWorkspace(): Promise<PosWorkspaceBootstrap> {
     throw new Error('جلسة الكاشير لا تطابق جهاز POS.')
   }
 
+  let catalogCache = getCatalogCacheInfo()
+
+  try {
+    catalogCache = await refreshCatalogCache()
+  } catch (error) {
+    // فشل تحديث الكتالوج لا يمنع
+    // استخدام النسخة المحلية السابقة.
+    if (
+      !(error instanceof PosConnectionError) &&
+      catalogCache.itemCount === 0
+    ) {
+      throw error
+    }
+  }
+
   return {
     ...bootstrap.data,
     cashier,
+    catalogCache,
   }
 }
 
@@ -517,13 +647,29 @@ export async function searchPosCatalog(input: CatalogSearchInput) {
     q: query,
   })
 
-  const response = (await requestCashierApi(
-    `/api/pos/search-items?${searchParams.toString()}`,
-  )) as {
-    data?: PosCatalogItem[]
-  }
+  try {
+    const response = (await requestCashierApi(
+      `/api/pos/search-items?${searchParams.toString()}`,
+    )) as {
+      data?: Array<Omit<PosCatalogItem, 'catalog_source'>>
+    }
 
-  return Array.isArray(response.data) ? response.data : []
+    return Array.isArray(response.data)
+      ? response.data.map((item) => ({
+          ...item,
+
+          catalog_source: 'server' as const,
+        }))
+      : []
+  } catch (error) {
+    if (!(error instanceof PosConnectionError)) {
+      throw error
+    }
+
+    return searchCatalogCache(query, 20).map((item) =>
+      mapCachedCatalogItem(item, stockLocationId),
+    )
+  }
 }
 
 export async function lookupPosCatalogItem(input: CatalogSearchInput) {
@@ -557,15 +703,33 @@ export async function lookupPosCatalogItem(input: CatalogSearchInput) {
     code: query,
   })
 
-  const response = (await requestCashierApi(
-    `/api/pos/lookup-item?${searchParams.toString()}`,
-  )) as {
-    data?: PosCatalogItem
-  }
+  try {
+    const response = (await requestCashierApi(
+      `/api/pos/lookup-item?${searchParams.toString()}`,
+    )) as {
+      data?: Omit<PosCatalogItem, 'catalog_source'>
+    }
 
-  if (!response.data) {
-    throw new Error('لم يتم العثور على الصنف.')
-  }
+    if (!response.data) {
+      throw new Error('لم يتم العثور على الصنف.')
+    }
 
-  return response.data
+    return {
+      ...response.data,
+
+      catalog_source: 'server' as const,
+    }
+  } catch (error) {
+    if (!(error instanceof PosConnectionError)) {
+      throw error
+    }
+
+    const cachedItem = lookupCatalogCacheItem(query)
+
+    if (!cachedItem) {
+      throw new Error('الصنف غير موجود في آخر كتالوج محلي محفوظ.')
+    }
+
+    return mapCachedCatalogItem(cachedItem, stockLocationId)
+  }
 }

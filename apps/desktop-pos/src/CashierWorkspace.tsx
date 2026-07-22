@@ -8,7 +8,9 @@ type CartLine = {
   sizeName: string | null
   colorName: string | null
   unitPrice: number
-  availableQuantity: number
+  availableQuantity: number | null
+
+  catalogSource: 'server' | 'cache'
   quantity: number
 }
 
@@ -266,7 +268,8 @@ function CashierWorkspace({
   function addToCart(item: DesktopCatalogItem) {
     const unitPrice = Number(item.selling_price)
 
-    const availableQuantity = Number(item.available_quantity)
+    const availableQuantity =
+      item.available_quantity === null ? null : Number(item.available_quantity)
 
     if (!Number.isFinite(unitPrice) || unitPrice < 0) {
       setError('سعر الصنف غير صالح.')
@@ -307,9 +310,12 @@ function CashierWorkspace({
 
           unitPrice,
 
-          availableQuantity: Number.isFinite(availableQuantity)
-            ? availableQuantity
-            : 0,
+          availableQuantity:
+            availableQuantity !== null && Number.isFinite(availableQuantity)
+              ? availableQuantity
+              : null,
+
+          catalogSource: item.catalog_source,
 
           quantity: 1,
         },
@@ -644,8 +650,10 @@ function CashierWorkspace({
           </div>
 
           <p className="desktop-trusted-note">
-            الأسعار والكميات المعروضة قادمة من PostgreSQL. لا يتم حفظ أو خصم
-            مخزون داخل SQLite.
+            الكتالوج المحلي يحتوي على{' '}
+            <strong>{workspace.catalogCache.itemCount}</strong> صنف. يتم حفظ
+            الاسم والباركود والسعر فقط، ولا يتم حفظ أو خصم أي كمية مخزون داخل
+            SQLite.
           </p>
 
           {searchResults.length > 0 ? (
@@ -668,7 +676,9 @@ function CashierWorkspace({
                     <strong>{formatMoney(Number(item.selling_price))}</strong>
 
                     <small>
-                      المتاح حسب آخر اتصال: {item.available_quantity}
+                      {item.catalog_source === 'cache'
+                        ? 'كتالوج محلي — المخزون سيُراجع عند المزامنة'
+                        : `المتاح حاليًا: ${item.available_quantity ?? '-'}`}
                     </small>
                   </div>
 
@@ -720,7 +730,13 @@ function CashierWorkspace({
 
                 <tbody>
                   {cart.map((line) => {
-                    const exceedsStock = line.quantity > line.availableQuantity
+                    const availableQuantity = line.availableQuantity
+
+                    const stockIsUnknown = availableQuantity === null
+
+                    const exceedsStock =
+                      availableQuantity !== null &&
+                      line.quantity > availableQuantity
 
                     return (
                       <tr key={line.variantId}>
@@ -761,7 +777,11 @@ function CashierWorkspace({
                         </td>
 
                         <td>
-                          {exceedsStock ? (
+                          {stockIsUnknown ? (
+                            <span className="desktop-stock-unknown">
+                              Offline — يُراجع عند المزامنة
+                            </span>
+                          ) : exceedsStock ? (
                             <span className="desktop-stock-warning">
                               ستحتاج مراجعة عند المزامنة
                             </span>
