@@ -17,4 +17,22 @@ contextBridge.exposeInMainWorld('desktopPos', {
   bootstrap: () => ipcRenderer.invoke('desktop-pos:bootstrap'),
 
   listPendingSales: () => ipcRenderer.invoke('desktop-pos:list-pending-sales'),
+
+  cashierSession: () => ipcRenderer.invoke('desktop-pos:cashier-session'),
+
+  cashierLogin: (input: {
+    companyCode: string
+    username: string
+    password: string
+  }) => ipcRenderer.invoke('desktop-pos:cashier-login', input),
+
+  cashierLogout: () => ipcRenderer.invoke('desktop-pos:cashier-logout'),
+
+  loadWorkspace: () => ipcRenderer.invoke('desktop-pos:load-workspace'),
+
+  searchCatalog: (input: { stockLocationId: string; query: string }) =>
+    ipcRenderer.invoke('desktop-pos:search-catalog', input),
+
+  lookupCatalogItem: (input: { stockLocationId: string; query: string }) =>
+    ipcRenderer.invoke('desktop-pos:lookup-catalog-item', input),
 })
