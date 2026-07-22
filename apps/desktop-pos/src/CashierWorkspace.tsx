@@ -29,6 +29,19 @@ function formatMoney(value: number) {
   return moneyFormatter.format(value)
 }
 
+function formatWorkspaceDate(value: string) {
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return '-'
+  }
+
+  return new Intl.DateTimeFormat('ar-EG', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date)
+}
+
 function CashierWorkspace({
   configured,
   onSessionChanged,
@@ -101,6 +114,12 @@ function CashierWorkspace({
       const nextWorkspace = await window.desktopPos.loadWorkspace()
 
       setWorkspace(nextWorkspace)
+
+      setSuccess(
+        nextWorkspace.workspaceSource === 'cache'
+          ? 'تم فتح مساحة العمل من النسخة المحلية لأن السيرفر غير متاح.'
+          : 'تم تحديث مساحة العمل والكتالوج من السيرفر.',
+      )
 
       setSelectedLocationId((currentLocationId) => {
         const currentExists = nextWorkspace.stockLocations.some(
@@ -650,10 +669,19 @@ function CashierWorkspace({
           </div>
 
           <p className="desktop-trusted-note">
-            الكتالوج المحلي يحتوي على{' '}
-            <strong>{workspace.catalogCache.itemCount}</strong> صنف. يتم حفظ
-            الاسم والباركود والسعر فقط، ولا يتم حفظ أو خصم أي كمية مخزون داخل
-            SQLite.
+            {workspace.workspaceSource === 'cache'
+              ? 'وضع Offline — بيانات الفرع وأماكن البيع والكتالوج من آخر نسخة محلية محفوظة.'
+              : 'وضع Online — بيانات الفرع والكتالوج محدثة من PostgreSQL.'}
+
+            {' آخر تحديث: '}
+
+            <strong>{formatWorkspaceDate(workspace.workspaceCachedAt)}</strong>
+
+            {' — الكتالوج: '}
+
+            <strong>{workspace.catalogCache.itemCount}</strong>
+
+            {' صنف. لا يتم حفظ أو خصم أي كمية مخزون داخل SQLite.'}
           </p>
 
           {searchResults.length > 0 ? (

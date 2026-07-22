@@ -48,6 +48,8 @@ type DesktopPosWorkspace = {
     itemCount: number
     refreshedAt: string | null
   }
+  workspaceSource: 'server' | 'cache'
+  workspaceCachedAt: string
 }
 
 type DesktopCatalogItem = {

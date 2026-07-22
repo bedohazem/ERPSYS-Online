@@ -21,6 +21,8 @@ import {
   initializeLocalStore,
   listPendingSales,
   setSetting,
+  clearCatalogCache,
+  clearWorkspaceCache,
 } from './local-store'
 
 type SaveDeviceConfigInput = {
@@ -593,6 +595,9 @@ function registerIpcHandlers() {
   ipcMain.handle(
     'desktop-pos:save-device-config',
     (_event, input: SaveDeviceConfigInput) => {
+      const previousServerUrl = getSetting(DEVICE_SERVER_URL_KEY)
+
+      const previousDeviceId = getSetting(DEVICE_ID_KEY)
       const serverUrl = normalizeServerUrl(input?.serverUrl)
 
       const deviceId = validateDeviceId(input?.deviceId)
@@ -600,6 +605,15 @@ function registerIpcHandlers() {
       const deviceSecret = validateDeviceSecret(input?.deviceSecret)
 
       const encryptedSecret = encryptDeviceSecret(deviceSecret)
+
+      const deviceIdentityChanged =
+        previousServerUrl !== serverUrl || previousDeviceId !== deviceId
+
+      if (deviceIdentityChanged) {
+        clearCashierSession()
+        clearWorkspaceCache()
+        clearCatalogCache()
+      }
 
       setSetting(DEVICE_SERVER_URL_KEY, serverUrl)
 
@@ -613,6 +627,8 @@ function registerIpcHandlers() {
 
   ipcMain.handle('desktop-pos:clear-device-config', () => {
     clearCashierSession()
+    clearWorkspaceCache()
+    clearCatalogCache()
     deleteSetting(DEVICE_SERVER_URL_KEY)
 
     deleteSetting(DEVICE_ID_KEY)

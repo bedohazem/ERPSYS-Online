@@ -55,7 +55,34 @@ export type CatalogCacheInfo = {
   refreshedAt: string | null
 }
 
+export type WorkspaceCacheInput = {
+  serverTime: string
+
+  device: {
+    deviceId: string
+    companyId: string
+    branchId: string
+    deviceCode: string
+    deviceName: string
+    branchCode: string
+    branchName: string
+  }
+
+  stockLocations: Array<{
+    id: string
+    code: string
+    name: string
+    location_type: string
+  }>
+}
+
+export type WorkspaceCacheRecord = WorkspaceCacheInput & {
+  cachedAt: string
+}
+
 const CATALOG_REFRESHED_AT_KEY = 'pos.catalog.refreshed-at'
+
+const WORKSPACE_CACHE_KEY = 'pos.workspace.cache'
 
 let database: DatabaseSync | null = null
 
@@ -262,6 +289,108 @@ export function deleteSetting(key: string) {
       `,
     )
     .run(key)
+}
+
+function parseWorkspaceCache(value: string): WorkspaceCacheRecord | null {
+  try {
+    const parsed = JSON.parse(value) as Partial<WorkspaceCacheRecord>
+
+    const device = parsed.device
+
+    if (
+      typeof parsed.serverTime !== 'string' ||
+      typeof parsed.cachedAt !== 'string' ||
+      !device ||
+      typeof device.deviceId !== 'string' ||
+      typeof device.companyId !== 'string' ||
+      typeof device.branchId !== 'string' ||
+      typeof device.deviceCode !== 'string' ||
+      typeof device.deviceName !== 'string' ||
+      typeof device.branchCode !== 'string' ||
+      typeof device.branchName !== 'string' ||
+      !Array.isArray(parsed.stockLocations)
+    ) {
+      return null
+    }
+
+    const locationsAreValid = parsed.stockLocations.every(
+      (location) =>
+        typeof location?.id === 'string' &&
+        typeof location?.code === 'string' &&
+        typeof location?.name === 'string' &&
+        typeof location?.location_type === 'string',
+    )
+
+    if (!locationsAreValid) {
+      return null
+    }
+
+    return parsed as WorkspaceCacheRecord
+  } catch {
+    return null
+  }
+}
+
+export function getWorkspaceCache(): WorkspaceCacheRecord | null {
+  const storedValue = getSetting(WORKSPACE_CACHE_KEY)
+
+  if (!storedValue) {
+    return null
+  }
+
+  const workspace = parseWorkspaceCache(storedValue)
+
+  if (!workspace) {
+    deleteSetting(WORKSPACE_CACHE_KEY)
+
+    return null
+  }
+
+  return workspace
+}
+
+export function saveWorkspaceCache(
+  input: WorkspaceCacheInput,
+): WorkspaceCacheRecord {
+  const workspace: WorkspaceCacheRecord = {
+    ...input,
+    cachedAt: new Date().toISOString(),
+  }
+
+  setSetting(WORKSPACE_CACHE_KEY, JSON.stringify(workspace))
+
+  return workspace
+}
+
+export function clearWorkspaceCache() {
+  deleteSetting(WORKSPACE_CACHE_KEY)
+}
+
+export function clearCatalogCache() {
+  const currentDatabase = getDatabase()
+
+  currentDatabase.exec('BEGIN IMMEDIATE;')
+
+  try {
+    currentDatabase.exec(`
+      DELETE FROM catalog_barcodes;
+      DELETE FROM catalog_items;
+    `)
+
+    currentDatabase
+      .prepare(
+        `
+        DELETE FROM app_settings
+        WHERE key = ?;
+        `,
+      )
+      .run(CATALOG_REFRESHED_AT_KEY)
+
+    currentDatabase.exec('COMMIT;')
+  } catch (error) {
+    currentDatabase.exec('ROLLBACK;')
+    throw error
+  }
 }
 
 export function getCatalogCacheInfo(): CatalogCacheInfo {

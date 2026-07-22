@@ -10,6 +10,8 @@ import {
   type CatalogCacheInfo,
   type CatalogCacheItemInput,
   type CatalogCacheItemRecord,
+  getWorkspaceCache,
+  saveWorkspaceCache,
 } from './local-store'
 
 export type CashierSessionUser = {
@@ -54,9 +56,10 @@ export type PosWorkspaceBootstrap = {
   }
 
   stockLocations: PosStockLocation[]
-
   cashier: PublicCashierSession
   catalogCache: CatalogCacheInfo
+  workspaceSource: 'server' | 'cache'
+  workspaceCachedAt: string
 }
 
 export type PosCatalogItem = {
@@ -322,7 +325,10 @@ async function requestDeviceBootstrap() {
       'X-POS-Device-Secret': config.deviceSecret,
     },
   }) as Promise<{
-    data: Omit<PosWorkspaceBootstrap, 'cashier'>
+    data: Pick<
+      PosWorkspaceBootstrap,
+      'serverTime' | 'device' | 'stockLocations'
+    >
   }>
 }
 
@@ -583,7 +589,55 @@ export async function loadPosWorkspace(): Promise<PosWorkspaceBootstrap> {
     throw new Error('يجب تسجيل دخول الكاشير أولًا.')
   }
 
-  const bootstrap = await requestDeviceBootstrap()
+  const cachedWorkspace = getWorkspaceCache()
+
+  let bootstrap: Awaited<ReturnType<typeof requestDeviceBootstrap>>
+
+  try {
+    bootstrap = await requestDeviceBootstrap()
+  } catch (error) {
+    if (!(error instanceof PosConnectionError)) {
+      throw error
+    }
+
+    if (!cachedWorkspace) {
+      throw new Error(
+        'تعذر الاتصال بالسيرفر ولا توجد مساحة عمل محلية محفوظة. شغّل السيرفر واضغط تحديث البيانات مرة واحدة.',
+      )
+    }
+
+    if (
+      cachedWorkspace.device.companyId !== cashier.user.companyId ||
+      cachedWorkspace.device.branchId !== cashier.user.branchId
+    ) {
+      clearCashierSession()
+
+      throw new Error('جلسة الكاشير لا تطابق مساحة العمل المحلية المحفوظة.')
+    }
+
+    const catalogCache = getCatalogCacheInfo()
+
+    if (catalogCache.itemCount === 0) {
+      throw new Error(
+        'لا يوجد كتالوج محلي محفوظ. اتصل بالسيرفر واضغط تحديث البيانات أولًا.',
+      )
+    }
+
+    return {
+      serverTime: cachedWorkspace.serverTime,
+
+      device: cachedWorkspace.device,
+
+      stockLocations: cachedWorkspace.stockLocations,
+
+      cashier,
+      catalogCache,
+
+      workspaceSource: 'cache',
+
+      workspaceCachedAt: cachedWorkspace.cachedAt,
+    }
+  }
 
   if (
     bootstrap.data.device.companyId !== cashier.user.companyId ||
@@ -594,13 +648,21 @@ export async function loadPosWorkspace(): Promise<PosWorkspaceBootstrap> {
     throw new Error('جلسة الكاشير لا تطابق جهاز POS.')
   }
 
+  const savedWorkspace = saveWorkspaceCache({
+    serverTime: bootstrap.data.serverTime,
+
+    device: bootstrap.data.device,
+
+    stockLocations: bootstrap.data.stockLocations,
+  })
+
   let catalogCache = getCatalogCacheInfo()
 
   try {
     catalogCache = await refreshCatalogCache()
   } catch (error) {
-    // فشل تحديث الكتالوج لا يمنع
-    // استخدام النسخة المحلية السابقة.
+    // نسخة الكتالوج السابقة تظل قابلة
+    // للاستخدام عند انقطاع الاتصال.
     if (
       !(error instanceof PosConnectionError) &&
       catalogCache.itemCount === 0
@@ -611,8 +673,13 @@ export async function loadPosWorkspace(): Promise<PosWorkspaceBootstrap> {
 
   return {
     ...bootstrap.data,
+
     cashier,
     catalogCache,
+
+    workspaceSource: 'server',
+
+    workspaceCachedAt: savedWorkspace.cachedAt,
   }
 }
 
