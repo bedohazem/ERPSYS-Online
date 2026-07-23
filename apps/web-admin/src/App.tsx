@@ -290,6 +290,7 @@ function translateStockMovement(movementType: string) {
   const movementLabels: Record<string, string> = {
     sale: 'بيع',
     return: 'مرتجع',
+    exchange: 'استبدال',
     purchase: 'شراء',
     adjustment: 'تسوية',
     opening_balance: 'رصيد افتتاحي',
@@ -758,7 +759,7 @@ function App() {
                     <h2>آخر حركات المخزون</h2>
 
                     <p className="muted">
-                      أحدث عمليات البيع والمرتجعات والتسويات.
+                      أحدث عمليات البيع والمرتجعات والاستبدالات والتسويات.
                     </p>
                   </div>
 

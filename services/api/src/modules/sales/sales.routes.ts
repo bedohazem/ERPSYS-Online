@@ -180,23 +180,83 @@ salesRouter.get('/api/sales', async (req, res, next) => {
       LEFT JOIN sale_items si
         ON si.sale_id = s.id
 
-      -- نجمع المرتجعات السابقة لكل فاتورة
+      -- نجمع كل الكميات التي خرجت من قابلية
+      -- الإرجاع، سواء عن طريق مرتجع أو استبدال.
+      --
+      -- العمليات الملغاة لا تؤثر على الكمية.
       LEFT JOIN (
         SELECT
-          original_sale_items.sale_id,
-          SUM(ri.quantity) AS returned_quantity
-        FROM return_items ri
+          consumed_items.sale_id,
 
-        JOIN sale_items original_sale_items
-          ON original_sale_items.id = ri.original_sale_item_id
-          AND original_sale_items.company_id = ri.company_id
+          SUM(
+            consumed_items.quantity
+          ) AS returned_quantity
 
-        WHERE ri.company_id = $1
-          AND ri.original_sale_item_id IS NOT NULL
+        FROM (
+          SELECT
+            original_sale_items.sale_id,
+            ri.quantity
 
-        GROUP BY original_sale_items.sale_id
+          FROM return_items ri
+
+          JOIN returns r
+            ON r.id = ri.return_id
+            AND r.company_id =
+                ri.company_id
+
+          JOIN sale_items
+            original_sale_items
+            ON original_sale_items.id =
+              ri.original_sale_item_id
+            AND original_sale_items.company_id =
+                ri.company_id
+
+          WHERE ri.company_id = $1
+
+            AND ri.original_sale_item_id
+                IS NOT NULL
+
+            AND r.status IN (
+              'completed',
+              'pending_review'
+            )
+
+          UNION ALL
+
+          SELECT
+            original_sale_items.sale_id,
+            eri.quantity
+
+          FROM exchange_return_items eri
+
+          JOIN exchanges e
+            ON e.id = eri.exchange_id
+            AND e.company_id =
+                eri.company_id
+
+          JOIN sale_items
+            original_sale_items
+            ON original_sale_items.id =
+              eri.original_sale_item_id
+            AND original_sale_items.company_id =
+                eri.company_id
+
+          WHERE eri.company_id = $1
+
+            AND eri.original_sale_item_id
+                IS NOT NULL
+
+            AND e.status IN (
+              'completed',
+              'pending_review'
+            )
+        ) consumed_items
+
+        GROUP BY
+          consumed_items.sale_id
       ) returned_items
-        ON returned_items.sale_id = s.id
+        ON returned_items.sale_id =
+          s.id
 
       WHERE s.company_id = $1
         AND ($2::uuid IS NULL OR s.branch_id = $2::uuid)
@@ -349,17 +409,70 @@ salesRouter.get('/api/sales/:saleId', async (req, res, next) => {
         si.created_at
       FROM sale_items si
 
-      -- نجمع كل المرتجعات السابقة الخاصة بكل sale item
+      -- نجمع المرتجعات والاستبدالات السابقة
+      -- لنفس سطر الفاتورة.
       LEFT JOIN (
         SELECT
-          original_sale_item_id,
-          SUM(quantity) AS returned_quantity
-        FROM return_items
-        WHERE company_id = $1
-          AND original_sale_item_id IS NOT NULL
-        GROUP BY original_sale_item_id
+          consumed_items
+            .original_sale_item_id,
+
+          SUM(
+            consumed_items.quantity
+          ) AS returned_quantity
+
+        FROM (
+          SELECT
+            ri.original_sale_item_id,
+            ri.quantity
+
+          FROM return_items ri
+
+          JOIN returns r
+            ON r.id = ri.return_id
+            AND r.company_id =
+                ri.company_id
+
+          WHERE ri.company_id = $1
+
+            AND ri.original_sale_item_id
+                IS NOT NULL
+
+            AND r.status IN (
+              'completed',
+              'pending_review'
+            )
+
+          UNION ALL
+
+          SELECT
+            eri.original_sale_item_id,
+            eri.quantity
+
+          FROM exchange_return_items eri
+
+          JOIN exchanges e
+            ON e.id = eri.exchange_id
+            AND e.company_id =
+                eri.company_id
+
+          WHERE eri.company_id = $1
+
+            AND eri.original_sale_item_id
+                IS NOT NULL
+
+            AND e.status IN (
+              'completed',
+              'pending_review'
+            )
+        ) consumed_items
+
+        GROUP BY
+          consumed_items
+            .original_sale_item_id
       ) returned_items
-        ON returned_items.original_sale_item_id = si.id
+        ON returned_items
+            .original_sale_item_id =
+          si.id
 
       WHERE si.company_id = $1
         AND si.sale_id = $2

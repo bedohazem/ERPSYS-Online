@@ -356,7 +356,13 @@ function NewExchangePage({
 
       const response = await requestJson<ApiResponse<SaleSummary[]>>(requestUrl)
 
-      setSales(response.data.filter((sale) => sale.status === 'completed'))
+      setSales(
+        response.data.filter(
+          (sale) =>
+            sale.status === 'completed' &&
+            Number(sale.remaining_returnable_quantity) > 0,
+        ),
+      )
     } catch (currentError) {
       setError(
         currentError instanceof Error
