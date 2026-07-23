@@ -36,6 +36,35 @@ type Variant = {
   collection_name: string | null
 }
 
+type VariantPriceHistory = {
+  id: string
+
+  old_selling_price: string
+  new_selling_price: string
+
+  changed_by: string | null
+  changed_by_name: string | null
+
+  change_note: string | null
+
+  change_type: 'manual' | 'restore'
+
+  source_history_id: string | null
+
+  changed_at: string
+}
+
+type VariantPriceHistoryDetails = {
+  variant: {
+    id: string
+    product_name: string
+    sku: string
+    selling_price: string
+  }
+
+  history: VariantPriceHistory[]
+}
+
 type ProductsPageProps = {
   companyId: string
 }
@@ -60,6 +89,19 @@ function formatCatalogCurrency(value: number | string) {
   return Number.isFinite(numericValue)
     ? catalogCurrencyFormatter.format(numericValue)
     : '-'
+}
+
+const catalogDateFormatter = new Intl.DateTimeFormat('ar-EG', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+})
+
+function formatCatalogDate(value: string) {
+  const parsedDate = new Date(value)
+
+  return Number.isNaN(parsedDate.getTime())
+    ? '-'
+    : catalogDateFormatter.format(parsedDate)
 }
 
 // ======================================================
@@ -122,6 +164,17 @@ function ProductsPage({ companyId }: ProductsPageProps) {
   const [editingSellingPrice, setEditingSellingPrice] = useState('')
 
   const [savingVariantId, setSavingVariantId] = useState<string | null>(null)
+
+  const [selectedHistoryVariant, setSelectedHistoryVariant] =
+    useState<Variant | null>(null)
+
+  const [priceHistory, setPriceHistory] = useState<VariantPriceHistory[]>([])
+
+  const [loadingPriceHistory, setLoadingPriceHistory] = useState(false)
+
+  const [restoringHistoryId, setRestoringHistoryId] = useState<string | null>(
+    null,
+  )
 
   // ======================================================
   // مؤشرات مختصرة محسوبة من المنتجات والأصناف المحملة.
@@ -278,6 +331,22 @@ function ProductsPage({ companyId }: ProductsPageProps) {
         ),
       )
 
+      if (selectedHistoryVariant?.id === variant.id) {
+        setSelectedHistoryVariant({
+          ...selectedHistoryVariant,
+
+          selling_price: response.data.selling_price,
+        })
+
+        try {
+          const details = await fetchVariantPriceHistory(variant.id)
+
+          setPriceHistory(details.history)
+        } catch {
+          // تعديل السعر نجح بالفعل.
+        }
+      }
+
       setEditingVariantId(null)
       setEditingSellingPrice('')
 
@@ -294,6 +363,158 @@ function ProductsPage({ companyId }: ProductsPageProps) {
       )
     } finally {
       setSavingVariantId(null)
+    }
+  }
+
+  async function fetchVariantPriceHistory(variantId: string) {
+    const response = await requestJson<ApiResponse<VariantPriceHistoryDetails>>(
+      `/api/catalog/variants/${encodeURIComponent(variantId)}/price-history`,
+    )
+
+    return response.data
+  }
+
+  async function openPriceHistory(variant: Variant) {
+    setSelectedHistoryVariant(variant)
+
+    setPriceHistory([])
+    setLoadingPriceHistory(true)
+
+    setError('')
+    setSuccess('')
+
+    try {
+      const details = await fetchVariantPriceHistory(variant.id)
+
+      setSelectedHistoryVariant({
+        ...variant,
+
+        selling_price: details.variant.selling_price,
+      })
+
+      setPriceHistory(details.history)
+    } catch (currentError) {
+      setSelectedHistoryVariant(null)
+
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر تحميل سجل السعر.',
+      )
+    } finally {
+      setLoadingPriceHistory(false)
+    }
+  }
+
+  function closePriceHistory() {
+    setSelectedHistoryVariant(null)
+    setPriceHistory([])
+  }
+
+  async function restorePreviousPrice(history: VariantPriceHistory) {
+    if (!selectedHistoryVariant || !canManageProducts || restoringHistoryId) {
+      return
+    }
+
+    const note = window.prompt('سبب استرجاع السعر — اختياري:', '')
+
+    if (note === null) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      `استرجاع سعر ${selectedHistoryVariant.product_name} — ${selectedHistoryVariant.sku} من ${formatCatalogCurrency(
+        selectedHistoryVariant.selling_price,
+      )} إلى ${formatCatalogCurrency(history.old_selling_price)}؟`,
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setRestoringHistoryId(history.id)
+
+    setError('')
+    setSuccess('')
+
+    try {
+      const response = await requestJson<
+        ApiResponse<{
+          variant_id: string
+          selling_price: string
+
+          restored_from_history_id: string
+
+          history: VariantPriceHistory | null
+        }> & {
+          changed: boolean
+        }
+      >(
+        `/api/catalog/variants/${encodeURIComponent(
+          selectedHistoryVariant.id,
+        )}/price-history/${encodeURIComponent(history.id)}/restore`,
+
+        {
+          method: 'POST',
+
+          headers: {
+            'Content-Type': 'application/json',
+          },
+
+          body: JSON.stringify({
+            note: note.trim() || null,
+          }),
+        },
+      )
+
+      const updatedPrice = response.data.selling_price
+
+      setVariants((currentVariants) =>
+        currentVariants.map((variant) =>
+          variant.id === selectedHistoryVariant.id
+            ? {
+                ...variant,
+
+                selling_price: updatedPrice,
+              }
+            : variant,
+        ),
+      )
+
+      setSelectedHistoryVariant((currentVariant) =>
+        currentVariant
+          ? {
+              ...currentVariant,
+
+              selling_price: updatedPrice,
+            }
+          : null,
+      )
+
+      try {
+        const details = await fetchVariantPriceHistory(
+          selectedHistoryVariant.id,
+        )
+
+        setPriceHistory(details.history)
+      } catch {
+        // السعر تم استرجاعه بالفعل.
+        // فشل تحديث الجدول لا يلغي العملية.
+      }
+
+      setSuccess(
+        response.changed
+          ? 'تم استرجاع السعر السابق وتسجيل العملية.'
+          : 'السعر المختار هو السعر الحالي بالفعل.',
+      )
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر استرجاع السعر السابق.',
+      )
+    } finally {
+      setRestoringHistoryId(null)
     }
   }
 
@@ -588,45 +809,58 @@ function ProductsPage({ companyId }: ProductsPageProps) {
                       </span>
                     </td>
                     <td>
-                      {canManageProducts ? (
-                        editingVariantId === variant.id ? (
-                          <div className="section-actions">
-                            <button
-                              type="button"
-                              className="table-button primary-button"
-                              disabled={savingVariantId === variant.id}
-                              onClick={() => void saveVariantPrice(variant)}
-                            >
-                              {savingVariantId === variant.id
-                                ? 'جاري الحفظ...'
-                                : 'حفظ'}
-                            </button>
+                      <div className="section-actions">
+                        <button
+                          type="button"
+                          className="table-button"
+                          disabled={
+                            savingVariantId === variant.id ||
+                            restoringHistoryId !== null
+                          }
+                          onClick={() => void openPriceHistory(variant)}
+                        >
+                          سجل السعر
+                        </button>
 
+                        {canManageProducts ? (
+                          editingVariantId === variant.id ? (
+                            <>
+                              <button
+                                type="button"
+                                className="table-button primary-button"
+                                disabled={savingVariantId === variant.id}
+                                onClick={() => void saveVariantPrice(variant)}
+                              >
+                                {savingVariantId === variant.id
+                                  ? 'جاري الحفظ...'
+                                  : 'حفظ'}
+                              </button>
+
+                              <button
+                                type="button"
+                                className="table-button"
+                                disabled={savingVariantId === variant.id}
+                                onClick={cancelEditingPrice}
+                              >
+                                إلغاء
+                              </button>
+                            </>
+                          ) : (
                             <button
                               type="button"
                               className="table-button"
-                              disabled={savingVariantId === variant.id}
-                              onClick={cancelEditingPrice}
+                              disabled={
+                                savingVariantId !== null ||
+                                editingVariantId !== null ||
+                                restoringHistoryId !== null
+                              }
+                              onClick={() => startEditingPrice(variant)}
                             >
-                              إلغاء
+                              تعديل السعر
                             </button>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            className="table-button"
-                            disabled={
-                              savingVariantId !== null ||
-                              editingVariantId !== null
-                            }
-                            onClick={() => startEditingPrice(variant)}
-                          >
-                            تعديل السعر
-                          </button>
-                        )
-                      ) : (
-                        <span className="muted">عرض فقط</span>
-                      )}
+                          )
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -635,6 +869,116 @@ function ProductsPage({ companyId }: ProductsPageProps) {
           </div>
         )}
       </section>
+
+      {selectedHistoryVariant ? (
+        <section className="panel">
+          <div className="section-header">
+            <div>
+              <h2>سجل تغييرات السعر</h2>
+
+              <p className="muted">
+                {selectedHistoryVariant.product_name}
+
+                {' — '}
+
+                {selectedHistoryVariant.sku}
+
+                {' • السعر الحالي: '}
+
+                <strong>
+                  {formatCatalogCurrency(selectedHistoryVariant.selling_price)}
+                </strong>
+              </p>
+            </div>
+
+            <button
+              type="button"
+              className="table-button"
+              disabled={restoringHistoryId !== null}
+              onClick={closePriceHistory}
+            >
+              إغلاق السجل
+            </button>
+          </div>
+
+          {loadingPriceHistory ? (
+            <p className="muted">جاري تحميل سجل السعر...</p>
+          ) : priceHistory.length === 0 ? (
+            <p className="muted">لم يتم تغيير سعر هذا الصنف حتى الآن.</p>
+          ) : (
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>التاريخ</th>
+                    <th>السعر القديم</th>
+                    <th>السعر الجديد</th>
+                    <th>نوع العملية</th>
+                    <th>المستخدم</th>
+                    <th>الملاحظة</th>
+                    <th>الاسترجاع</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {priceHistory.map((history) => {
+                    const isCurrentPrice =
+                      Number(history.old_selling_price) ===
+                      Number(selectedHistoryVariant.selling_price)
+
+                    return (
+                      <tr key={history.id}>
+                        <td>{formatCatalogDate(history.changed_at)}</td>
+
+                        <td className="money-cell">
+                          {formatCatalogCurrency(history.old_selling_price)}
+                        </td>
+
+                        <td className="money-cell">
+                          {formatCatalogCurrency(history.new_selling_price)}
+                        </td>
+
+                        <td>
+                          {history.change_type === 'restore'
+                            ? 'استرجاع سعر'
+                            : 'تعديل يدوي'}
+                        </td>
+
+                        <td>{history.changed_by_name || '-'}</td>
+
+                        <td>{history.change_note || '-'}</td>
+
+                        <td>
+                          {canManageProducts ? (
+                            isCurrentPrice ? (
+                              <span className="muted">السعر الحالي</span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="table-button"
+                                disabled={restoringHistoryId !== null}
+                                onClick={() =>
+                                  void restorePreviousPrice(history)
+                                }
+                              >
+                                {restoringHistoryId === history.id
+                                  ? 'جاري الاسترجاع...'
+                                  : 'استرجاع السعر القديم'}
+                              </button>
+                            )
+                          ) : (
+                            <span className="muted">عرض فقط</span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
     </>
   )
 }

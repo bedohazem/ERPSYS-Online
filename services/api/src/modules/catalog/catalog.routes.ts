@@ -463,13 +463,15 @@ catalogRouter.patch(
             old_selling_price,
             new_selling_price,
 
-            changed_by,
-            change_note
-          )
+        changed_by,
+        change_note,
+        change_type
+        )
         VALUES (
           $1, $2,
           $3, $4,
-          $5, $6
+          $5, $6,
+          'manual'
         );
         `,
         [
@@ -495,6 +497,326 @@ catalogRouter.patch(
           product_name: variant.product_name,
 
           old_selling_price: oldSellingPrice.toFixed(2),
+        },
+      })
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+
+      return next(error)
+    } finally {
+      client.release()
+    }
+  },
+)
+
+// ======================================================
+// GET /api/catalog/variants/:variantId/price-history
+// ======================================================
+catalogRouter.get(
+  '/api/catalog/variants/:variantId/price-history',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const rawVariantId = req.params.variantId
+
+      const variantId = Array.isArray(rawVariantId)
+        ? rawVariantId[0]
+        : rawVariantId
+
+      if (typeof variantId !== 'string' || !uuidPattern.test(variantId)) {
+        return res.status(400).json({
+          error: 'variantId is invalid',
+        })
+      }
+
+      const variantResult = await db.query(
+        `
+          SELECT
+            pv.id,
+            pv.sku,
+            pv.selling_price,
+
+            p.name
+              AS product_name
+
+          FROM product_variants pv
+
+          JOIN products p
+            ON p.id =
+               pv.product_id
+            AND p.company_id =
+                pv.company_id
+
+          WHERE pv.company_id = $1
+            AND pv.id = $2
+
+          LIMIT 1;
+          `,
+        [auth.companyId, variantId],
+      )
+
+      if ((variantResult.rowCount ?? 0) === 0) {
+        return res.status(404).json({
+          error: 'Product variant was not found',
+        })
+      }
+
+      const historyResult = await db.query(
+        `
+          SELECT
+            history.id,
+
+            history.old_selling_price,
+            history.new_selling_price,
+
+            history.changed_by,
+            changer.full_name
+              AS changed_by_name,
+
+            history.change_note,
+            history.change_type,
+            history.source_history_id,
+            history.changed_at
+
+          FROM product_variant_price_history
+               history
+
+          LEFT JOIN users changer
+            ON changer.id =
+               history.changed_by
+            AND changer.company_id =
+                history.company_id
+
+          WHERE history.company_id = $1
+            AND history.variant_id = $2
+
+          ORDER BY
+            history.changed_at DESC,
+            history.id DESC
+
+          LIMIT 100;
+          `,
+        [auth.companyId, variantId],
+      )
+
+      return res.json({
+        data: {
+          variant: variantResult.rows[0],
+
+          history: historyResult.rows,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
+// POST /api/catalog/variants/:variantId/
+//      price-history/:historyId/restore
+//
+// يعيد old_selling_price الخاص بالسجل المختار.
+// ======================================================
+catalogRouter.post(
+  '/api/catalog/variants/:variantId/price-history/:historyId/restore',
+
+  async (req, res, next) => {
+    const client = await db.connect()
+
+    try {
+      const auth = getAuthContext(res)
+
+      const rawVariantId = req.params.variantId
+
+      const rawHistoryId = req.params.historyId
+
+      const variantId = Array.isArray(rawVariantId)
+        ? rawVariantId[0]
+        : rawVariantId
+
+      const historyId = Array.isArray(rawHistoryId)
+        ? rawHistoryId[0]
+        : rawHistoryId
+
+      if (
+        typeof variantId !== 'string' ||
+        !uuidPattern.test(variantId) ||
+        typeof historyId !== 'string' ||
+        !uuidPattern.test(historyId)
+      ) {
+        return res.status(400).json({
+          error: 'variantId or historyId is invalid',
+        })
+      }
+
+      const note =
+        typeof req.body?.note === 'string' && req.body.note.trim()
+          ? req.body.note.trim().slice(0, 500)
+          : null
+
+      await client.query('BEGIN')
+
+      const variantResult = await client.query(
+        `
+          SELECT
+            pv.id,
+            pv.sku,
+            pv.selling_price,
+
+            p.name
+              AS product_name
+
+          FROM product_variants pv
+
+          JOIN products p
+            ON p.id =
+               pv.product_id
+            AND p.company_id =
+                pv.company_id
+
+          WHERE pv.company_id = $1
+            AND pv.id = $2
+
+          FOR UPDATE OF pv;
+          `,
+        [auth.companyId, variantId],
+      )
+
+      if ((variantResult.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK')
+
+        return res.status(404).json({
+          error: 'Product variant was not found',
+        })
+      }
+
+      const historyResult = await client.query(
+        `
+          SELECT
+            id,
+            old_selling_price,
+            new_selling_price,
+            changed_at
+
+          FROM product_variant_price_history
+
+          WHERE company_id = $1
+            AND variant_id = $2
+            AND id = $3
+
+          LIMIT 1;
+          `,
+        [auth.companyId, variantId, historyId],
+      )
+
+      if ((historyResult.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK')
+
+        return res.status(404).json({
+          error: 'Price history record was not found',
+        })
+      }
+
+      const variant = variantResult.rows[0]
+
+      const sourceHistory = historyResult.rows[0]
+
+      const currentSellingPrice = roundMoney(Number(variant.selling_price))
+
+      const restoredSellingPrice = roundMoney(
+        Number(sourceHistory.old_selling_price),
+      )
+
+      if (currentSellingPrice === restoredSellingPrice) {
+        await client.query('COMMIT')
+
+        return res.json({
+          changed: false,
+
+          data: {
+            variant_id: variantId,
+
+            selling_price: restoredSellingPrice.toFixed(2),
+
+            restored_from_history_id: historyId,
+
+            history: null,
+          },
+        })
+      }
+
+      await client.query(
+        `
+        UPDATE product_variants
+
+        SET
+          selling_price = $1,
+          updated_at = NOW()
+
+        WHERE company_id = $2
+          AND id = $3;
+        `,
+        [restoredSellingPrice, auth.companyId, variantId],
+      )
+
+      const insertedHistoryResult = await client.query(
+        `
+          INSERT INTO
+            product_variant_price_history (
+              company_id,
+              variant_id,
+
+              old_selling_price,
+              new_selling_price,
+
+              changed_by,
+              change_note,
+              change_type,
+              source_history_id
+            )
+          VALUES (
+            $1, $2,
+            $3, $4,
+            $5, $6,
+            'restore',
+            $7
+          )
+
+          RETURNING *;
+          `,
+        [
+          auth.companyId,
+          variantId,
+
+          currentSellingPrice,
+          restoredSellingPrice,
+
+          auth.userId,
+          note,
+          historyId,
+        ],
+      )
+
+      await client.query('COMMIT')
+
+      return res.json({
+        changed: true,
+
+        data: {
+          variant_id: variantId,
+
+          product_name: variant.product_name,
+
+          sku: variant.sku,
+
+          selling_price: restoredSellingPrice.toFixed(2),
+
+          restored_from_history_id: historyId,
+
+          history: insertedHistoryResult.rows[0],
         },
       })
     } catch (error) {
