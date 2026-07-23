@@ -737,6 +737,43 @@ export function countPendingSales() {
   return Number(row?.total ?? 0)
 }
 
+export function countBlockingPendingSalesForShift(shiftId: string) {
+  const normalizedShiftId = shiftId.trim()
+
+  if (!normalizedShiftId) {
+    return 0
+  }
+
+  const row = getDatabase()
+    .prepare(
+      `
+      SELECT COUNT(*) AS total
+
+      FROM pending_sales
+
+      WHERE json_extract(
+        payload_json,
+        '$.shiftId'
+      ) = ?
+
+      -- needs_review تعني أن الفاتورة
+      -- وصلت إلى السيرفر بالفعل.
+      AND status IN (
+        'pending',
+        'syncing',
+        'failed'
+      );
+      `,
+    )
+    .get(normalizedShiftId) as
+    | {
+        total: number
+      }
+    | undefined
+
+  return Number(row?.total ?? 0)
+}
+
 export function listPendingSales(limit = 100): PendingSaleRecord[] {
   const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 500)
 

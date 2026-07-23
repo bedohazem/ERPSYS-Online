@@ -27,6 +27,7 @@ import {
   setSetting,
   clearCatalogCache,
   clearWorkspaceCache,
+  countBlockingPendingSalesForShift,
 } from './local-store'
 
 type SaveDeviceConfigInput = {
@@ -457,7 +458,14 @@ async function syncPendingSales(manual: boolean) {
 
   syncInProgress = true
 
-  const selectedSales = takePendingSalesForSync(50, manual)
+  let selectedSales: ReturnType<typeof takePendingSalesForSync>
+
+  try {
+    selectedSales = takePendingSalesForSync(50, manual)
+  } catch (error) {
+    syncInProgress = false
+    throw error
+  }
 
   if (selectedSales.length === 0) {
     syncInProgress = false
@@ -485,7 +493,7 @@ async function syncPendingSales(manual: boolean) {
 
   const missingGrantResults: Array<{
     localSaleId: string
-    status: 'needs_review'
+    status: 'failed'
     errorMessage: string
   }> = []
 
@@ -503,7 +511,7 @@ async function syncPendingSales(manual: boolean) {
       missingGrantResults.push({
         localSaleId: sale.localSaleId,
 
-        status: 'needs_review',
+        status: 'failed',
 
         errorMessage:
           'الفاتورة لا تحتوي على تصريح كاشير Offline صالح. قد تكون فاتورة قديمة قبل تفعيل Cashier Grants.',
@@ -540,13 +548,13 @@ async function syncPendingSales(manual: boolean) {
 
       processedItems: 0,
 
-      reviewItems: missingGrantResults.length,
+      reviewItems: 0,
 
-      failedItems: 0,
+      failedItems: missingGrantResults.length,
 
       pendingSalesCount: countPendingSales(),
 
-      message: `${missingGrantResults.length} فاتورة تحتاج مراجعة لأنها لا تملك تصريح كاشير صالح.`,
+      message: `فشلت ${missingGrantResults.length} فاتورة محليًا لأنها لا تملك تصريح كاشير صالح ولم يتم إرسالها للسيرفر.`,
     }
 
     broadcastSyncCompleted(reviewOnlyResult)
@@ -631,10 +639,13 @@ async function syncPendingSales(manual: boolean) {
       (result) => result.status === 'needs_review',
     ).length
 
-    const reviewItems = missingGrantResults.length + serverReviewItems
+    const reviewItems = serverReviewItems
 
     const failedItems =
-      syncableSales.length - processedItems - serverReviewItems
+      missingGrantResults.length +
+      syncableSales.length -
+      processedItems -
+      serverReviewItems
 
     const completedResult = {
       inProgress: false,
@@ -665,9 +676,9 @@ async function syncPendingSales(manual: boolean) {
       inProgress: false,
       selectedItems: selectedSales.length,
       processedItems: 0,
-      reviewItems: missingGrantResults.length,
+      reviewItems: 0,
 
-      failedItems: syncableSales.length,
+      failedItems: missingGrantResults.length + syncableSales.length,
 
       pendingSalesCount: countPendingSales(),
 
@@ -789,15 +800,11 @@ function registerIpcHandlers() {
 
       // يجب رفع كل فواتير الوردية
       // قبل حساب النقدية وإغلاقها.
-      const unsyncedSales = listPendingSales(500).filter((sale) => {
-        const payload = asRecord(sale.payload)
+      const unsyncedSalesCount = countBlockingPendingSalesForShift(shiftId)
 
-        return payload.shiftId === shiftId && sale.status !== 'needs_review'
-      })
-
-      if (unsyncedSales.length > 0) {
+      if (unsyncedSalesCount > 0) {
         throw new Error(
-          `لا يمكن إغلاق الوردية قبل مزامنة ${unsyncedSales.length} فاتورة مؤجلة.`,
+          `لا يمكن إغلاق الوردية قبل مزامنة ${unsyncedSalesCount} فاتورة مؤجلة.`,
         )
       }
 
