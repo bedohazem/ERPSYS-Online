@@ -30,11 +30,32 @@ export type CashierSessionUser = {
   permissions: string[]
 }
 
+export type CashierShift = {
+  id: string
+  shiftNumber: string
+
+  openingCash: string
+  closingCash: string | null
+  expectedCash: string | null
+  difference: string | null
+
+  openedAt: string
+  closedAt: string | null
+
+  status: 'open' | 'closed'
+
+  cashierId: string
+  deviceId: string | null
+  cashierGrantId: string | null
+}
+
 export type PublicCashierSession = {
   expiresAt: string
 
   cashierGrantId: string
   cashierGrantExpiresAt: string
+
+  currentShift: CashierShift | null
 
   user: CashierSessionUser
 }
@@ -94,6 +115,7 @@ type StoredCashierSession = {
 
   cashierGrantId: string
   cashierGrantExpiresAt: string
+  currentShift: CashierShift | null
 
   user: CashierSessionUser
 }
@@ -253,9 +275,71 @@ function getDeviceConfig(): StoredDeviceConfig | null {
   }
 }
 
+function parseCashierShift(value: unknown): CashierShift | null {
+  if (value === null) {
+    return null
+  }
+
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null
+  }
+
+  const shift = value as Partial<CashierShift>
+
+  if (
+    typeof shift.id !== 'string' ||
+    !uuidPattern.test(shift.id) ||
+    typeof shift.shiftNumber !== 'string' ||
+    typeof shift.openingCash !== 'string' ||
+    typeof shift.openedAt !== 'string' ||
+    !['open', 'closed'].includes(shift.status || '') ||
+    typeof shift.cashierId !== 'string'
+  ) {
+    return null
+  }
+
+  return {
+    id: shift.id,
+    shiftNumber: shift.shiftNumber,
+
+    openingCash: shift.openingCash,
+
+    closingCash:
+      typeof shift.closingCash === 'string' ? shift.closingCash : null,
+
+    expectedCash:
+      typeof shift.expectedCash === 'string' ? shift.expectedCash : null,
+
+    difference: typeof shift.difference === 'string' ? shift.difference : null,
+
+    openedAt: shift.openedAt,
+
+    closedAt: typeof shift.closedAt === 'string' ? shift.closedAt : null,
+
+    status: shift.status as 'open' | 'closed',
+
+    cashierId: shift.cashierId,
+
+    deviceId: typeof shift.deviceId === 'string' ? shift.deviceId : null,
+
+    cashierGrantId:
+      typeof shift.cashierGrantId === 'string' ? shift.cashierGrantId : null,
+  }
+}
+
 function parseCashierSession(value: string): StoredCashierSession | null {
   try {
     const parsed = JSON.parse(value) as Partial<StoredCashierSession>
+
+    const currentShift = parseCashierShift(parsed.currentShift ?? null)
+
+    if (
+      parsed.currentShift !== undefined &&
+      parsed.currentShift !== null &&
+      !currentShift
+    ) {
+      return null
+    }
 
     if (
       typeof parsed.token !== 'string' ||
@@ -273,7 +357,13 @@ function parseCashierSession(value: string): StoredCashierSession | null {
       return null
     }
 
-    return parsed as StoredCashierSession
+    return {
+      ...(parsed as StoredCashierSession),
+
+      // الجلسات القديمة قبل إضافة
+      // الورديات تبدأ بدون وردية.
+      currentShift,
+    }
   } catch {
     return null
   }
@@ -317,6 +407,29 @@ function saveCashierSession(session: StoredCashierSession) {
   const encryptedSession = encryptStoredValue(JSON.stringify(session))
 
   setSetting(CASHIER_SESSION_KEY, encryptedSession)
+}
+
+function updateStoredCashierShift(
+  currentShift: CashierShift | null,
+): PublicCashierSession {
+  const session = getStoredCashierSession()
+
+  if (!session) {
+    throw new Error('يجب تسجيل دخول الكاشير أولًا.')
+  }
+
+  saveCashierSession({
+    ...session,
+    currentShift,
+  })
+
+  const publicSession = getPublicCashierSession()
+
+  if (!publicSession) {
+    throw new Error('تعذر تحديث جلسة الكاشير المحلية.')
+  }
+
+  return publicSession
 }
 
 function parseCashierGrants(value: string): StoredCashierGrant[] {
@@ -429,6 +542,8 @@ export function getPublicCashierSession(): PublicCashierSession | null {
     cashierGrantId: session.cashierGrantId,
 
     cashierGrantExpiresAt: session.cashierGrantExpiresAt,
+
+    currentShift: session.currentShift,
 
     user: session.user,
   }
@@ -604,7 +719,37 @@ function mapCachedCatalogItem(
   }
 }
 
-async function requestCashierApi(apiPath: string) {
+async function requestAuthenticatedPosApi(
+  config: StoredDeviceConfig,
+  bearerToken: string,
+  apiPath: string,
+  method: 'GET' | 'POST' = 'GET',
+  body?: unknown,
+) {
+  return requestJson(`${config.serverUrl}${apiPath}`, {
+    method,
+
+    headers: {
+      Accept: 'application/json',
+
+      'Content-Type': 'application/json',
+
+      Authorization: `Bearer ${bearerToken}`,
+
+      'X-POS-Device-Id': config.deviceId,
+
+      'X-POS-Device-Secret': config.deviceSecret,
+    },
+
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+}
+
+async function requestCashierApi(
+  apiPath: string,
+  method: 'GET' | 'POST' = 'GET',
+  body?: unknown,
+) {
   const config = getDeviceConfig()
 
   const session = getStoredCashierSession()
@@ -618,15 +763,13 @@ async function requestCashierApi(apiPath: string) {
   }
 
   try {
-    return await requestJson(`${config.serverUrl}${apiPath}`, {
-      method: 'GET',
-
-      headers: {
-        Accept: 'application/json',
-
-        Authorization: `Bearer ${session.token}`,
-      },
-    })
+    return await requestAuthenticatedPosApi(
+      config,
+      session.token,
+      apiPath,
+      method,
+      body,
+    )
   } catch (error) {
     if (
       error instanceof Error &&
@@ -637,12 +780,59 @@ async function requestCashierApi(apiPath: string) {
       ].includes(error.message)
     ) {
       throw new PosSessionExpiredError(
-        'انتهت جلسة السيرفر، وسيتم استخدام الكتالوج المحلي حتى تسجيل الدخول مرة أخرى.',
+        'انتهت جلسة السيرفر. سجل الدخول مرة أخرى لإدارة الوردية.',
       )
     }
 
     throw error
   }
+}
+
+function parseCurrentShiftResponse(response: unknown): CashierShift | null {
+  if (
+    typeof response !== 'object' ||
+    response === null ||
+    !('data' in response)
+  ) {
+    throw new Error('استجابة الوردية الحالية غير مكتملة.')
+  }
+
+  const data = (
+    response as {
+      data?: unknown
+    }
+  ).data
+
+  if (data === null) {
+    return null
+  }
+
+  const shift = parseCashierShift(data)
+
+  if (!shift) {
+    throw new Error('بيانات الوردية الحالية غير صالحة.')
+  }
+
+  return shift
+}
+
+async function requestCurrentShiftWithToken(
+  config: StoredDeviceConfig,
+  bearerToken: string,
+) {
+  const response = await requestAuthenticatedPosApi(
+    config,
+    bearerToken,
+    '/api/pos-sync/shifts/current',
+  )
+
+  return parseCurrentShiftResponse(response)
+}
+
+async function requestCurrentShift() {
+  const response = await requestCashierApi('/api/pos-sync/shifts/current')
+
+  return parseCurrentShiftResponse(response)
 }
 
 export async function loginCashier(input: CashierLoginInput) {
@@ -746,6 +936,11 @@ export async function loginCashier(input: CashierLoginInput) {
     branchId: user.branchId,
   })
 
+  const currentShift = await requestCurrentShiftWithToken(
+    config,
+    loginData.token,
+  )
+
   const storedSession: StoredCashierSession = {
     token: loginData.token,
 
@@ -757,6 +952,8 @@ export async function loginCashier(input: CashierLoginInput) {
     cashierGrantId: cashierGrant.grantId,
 
     cashierGrantExpiresAt: cashierGrant.expiresAt,
+
+    currentShift,
 
     user: {
       id: user.id,
@@ -791,8 +988,11 @@ export async function logoutCashier() {
 
   const session = getStoredCashierSession()
 
-  clearCashierSession()
+  if (session?.currentShift?.status === 'open') {
+    throw new Error('يجب إغلاق وردية الكاشير قبل تسجيل الخروج.')
+  }
 
+  clearCashierSession()
   if (!config || !session) {
     return null
   }
@@ -811,6 +1011,123 @@ export async function logoutCashier() {
   }
 
   return null
+}
+
+export async function openCashierShift(input: { openingCash: number }) {
+  const openingCash = Number(input?.openingCash)
+
+  if (!Number.isFinite(openingCash) || openingCash < 0) {
+    throw new Error('رصيد افتتاح الوردية غير صالح.')
+  }
+
+  const response = await requestCashierApi(
+    '/api/pos-sync/shifts/open',
+    'POST',
+    {
+      openingCash,
+    },
+  )
+
+  const shift = parseCurrentShiftResponse(response)
+
+  if (!shift || shift.status !== 'open') {
+    throw new Error('لم يتم فتح الوردية بصورة صحيحة.')
+  }
+
+  return updateStoredCashierShift(shift)
+}
+
+export async function closeCashierShift(input: {
+  shiftId: string
+  closingCash: number
+}) {
+  const shiftId = typeof input?.shiftId === 'string' ? input.shiftId.trim() : ''
+
+  const closingCash = Number(input?.closingCash)
+
+  if (!uuidPattern.test(shiftId)) {
+    throw new Error('معرف الوردية غير صالح.')
+  }
+
+  if (!Number.isFinite(closingCash) || closingCash < 0) {
+    throw new Error('الرصيد الفعلي عند الإغلاق غير صالح.')
+  }
+
+  const session = getStoredCashierSession()
+
+  if (!session?.currentShift || session.currentShift.id !== shiftId) {
+    throw new Error('هذه ليست الوردية المفتوحة للكاشير الحالي.')
+  }
+
+  const response = await requestCashierApi(
+    `/api/pos-sync/shifts/${encodeURIComponent(shiftId)}/close`,
+
+    'POST',
+
+    {
+      closingCash,
+    },
+  )
+
+  if (
+    typeof response !== 'object' ||
+    response === null ||
+    !('data' in response)
+  ) {
+    throw new Error('استجابة إغلاق الوردية غير مكتملة.')
+  }
+
+  const data = (
+    response as {
+      data?: {
+        shift?: unknown
+
+        cashSummary?: {
+          openingCash?: unknown
+          salesCash?: unknown
+          returnsCash?: unknown
+          exchangeCashNet?: unknown
+          expectedCash?: unknown
+          closingCash?: unknown
+          difference?: unknown
+        }
+      }
+    }
+  ).data
+
+  const closedShift = parseCashierShift(data?.shift)
+
+  if (!closedShift || closedShift.status !== 'closed') {
+    throw new Error('بيانات الوردية المغلقة غير صالحة.')
+  }
+
+  const cashSummary = {
+    openingCash: Number(data?.cashSummary?.openingCash),
+
+    salesCash: Number(data?.cashSummary?.salesCash),
+
+    returnsCash: Number(data?.cashSummary?.returnsCash),
+
+    exchangeCashNet: Number(data?.cashSummary?.exchangeCashNet),
+
+    expectedCash: Number(data?.cashSummary?.expectedCash),
+
+    closingCash: Number(data?.cashSummary?.closingCash),
+
+    difference: Number(data?.cashSummary?.difference),
+  }
+
+  if (Object.values(cashSummary).some((value) => !Number.isFinite(value))) {
+    throw new Error('ملخص نقدية الوردية غير صالح.')
+  }
+
+  return {
+    session: updateStoredCashierShift(null),
+
+    shift: closedShift,
+
+    cashSummary,
+  }
 }
 
 export async function loadPosWorkspace(): Promise<PosWorkspaceBootstrap> {
@@ -879,6 +1196,23 @@ export async function loadPosWorkspace(): Promise<PosWorkspaceBootstrap> {
     throw new Error('جلسة الكاشير لا تطابق جهاز POS.')
   }
 
+  let activeCashier = cashier
+
+  try {
+    const currentShift = await requestCurrentShift()
+
+    activeCashier = updateStoredCashierShift(currentShift)
+  } catch (error) {
+    // عند انقطاع الاتصال أو انتهاء
+    // Bearer نستخدم الوردية المحلية.
+    if (
+      !(error instanceof PosConnectionError) &&
+      !(error instanceof PosSessionExpiredError)
+    ) {
+      throw error
+    }
+  }
+
   const savedWorkspace = saveWorkspaceCache({
     serverTime: bootstrap.data.serverTime,
 
@@ -905,7 +1239,7 @@ export async function loadPosWorkspace(): Promise<PosWorkspaceBootstrap> {
   return {
     ...bootstrap.data,
 
-    cashier,
+    cashier: activeCashier,
     catalogCache,
 
     workspaceSource: 'server',

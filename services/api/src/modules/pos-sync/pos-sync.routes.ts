@@ -58,6 +58,73 @@ function parseLimit(value: unknown, fallback = 50) {
   return Math.min(Math.max(Math.trunc(numericValue), 1), 100)
 }
 
+function roundMoney(value: number) {
+  return Number(value.toFixed(2))
+}
+
+function parseNonNegativeMoney(value: unknown, fieldName: string) {
+  const amount = roundMoney(Number(value))
+
+  if (!Number.isFinite(amount) || amount < 0 || amount > 999_999_999_999) {
+    throw new Error(`${fieldName} must be a valid non-negative amount`)
+  }
+
+  return amount
+}
+
+function createShiftNumber() {
+  const now = new Date()
+
+  const datePart = now.toISOString().slice(0, 10).replaceAll('-', '')
+
+  return (
+    `POS-${datePart}-` +
+    `${Date.now().toString(36).toUpperCase()}-` +
+    randomBytes(2).toString('hex').toUpperCase()
+  )
+}
+
+function mapCashierShift(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+
+    shiftNumber: row.shift_number,
+
+    openingCash: String(row.opening_cash),
+
+    closingCash: row.closing_cash === null ? null : String(row.closing_cash),
+
+    expectedCash: row.expected_cash === null ? null : String(row.expected_cash),
+
+    difference: row.difference === null ? null : String(row.difference),
+
+    openedAt: row.opened_at,
+    closedAt: row.closed_at,
+
+    status: row.status,
+
+    cashierId: row.cashier_id,
+
+    deviceId: row.pos_device_id,
+
+    cashierGrantId: row.pos_cashier_grant_id,
+  }
+}
+
+function cashierMatchesDevice(res: Parameters<typeof getAuthContext>[0]) {
+  const device = getPosDeviceContext(res)
+
+  const auth = getAuthContext(res)
+
+  return {
+    device,
+    auth,
+
+    matches:
+      auth.companyId === device.companyId && auth.branchId === device.branchId,
+  }
+}
+
 async function loadDeviceBatch(
   companyId: string,
   deviceId: string,
@@ -254,6 +321,471 @@ posDeviceSyncRouter.post(
       })
     } catch (error) {
       return next(error)
+    }
+  },
+)
+
+// ======================================================
+// GET /api/pos-sync/shifts/current
+// ======================================================
+posDeviceSyncRouter.get(
+  '/api/pos-sync/shifts/current',
+
+  requireAuth,
+
+  requirePermission('sales.create'),
+
+  async (_req, res, next) => {
+    try {
+      const { device, auth, matches } = cashierMatchesDevice(res)
+
+      if (!matches) {
+        return res.status(403).json({
+          error: 'Cashier session does not match POS device branch',
+        })
+      }
+
+      const result = await db.query(
+        `
+          SELECT *
+          FROM cashier_shifts
+
+          WHERE company_id = $1
+            AND branch_id = $2
+            AND cashier_id = $3
+            AND pos_device_id = $4
+            AND status = 'open'
+
+          ORDER BY opened_at DESC
+          LIMIT 1;
+          `,
+        [device.companyId, device.branchId, auth.userId, device.deviceId],
+      )
+
+      const shift = result.rows[0]
+
+      return res.json({
+        data: shift ? mapCashierShift(shift) : null,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
+// POST /api/pos-sync/shifts/open
+//
+// Body:
+// {
+//   openingCash
+// }
+// ======================================================
+posDeviceSyncRouter.post(
+  '/api/pos-sync/shifts/open',
+
+  requireAuth,
+
+  requirePermission('sales.create'),
+
+  async (req, res, next) => {
+    const client = await db.connect()
+
+    try {
+      const { device, auth, matches } = cashierMatchesDevice(res)
+
+      if (!matches) {
+        return res.status(403).json({
+          error: 'Cashier session does not match POS device branch',
+        })
+      }
+
+      const body = asRecord(req.body)
+
+      const openingCash = parseNonNegativeMoney(
+        body.openingCash ?? 0,
+        'openingCash',
+      )
+
+      await client.query('BEGIN')
+
+      const grantResult = await client.query(
+        `
+          SELECT id
+          FROM pos_cashier_grants
+
+          WHERE company_id = $1
+            AND branch_id = $2
+            AND device_id = $3
+            AND cashier_id = $4
+            AND auth_session_id = $5
+
+            AND revoked_at IS NULL
+            AND expires_at > NOW()
+
+          ORDER BY issued_at DESC
+          LIMIT 1
+
+          FOR SHARE;
+          `,
+        [
+          device.companyId,
+          device.branchId,
+          device.deviceId,
+          auth.userId,
+          auth.sessionId,
+        ],
+      )
+
+      if ((grantResult.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK')
+
+        return res.status(409).json({
+          error: 'No active cashier offline grant exists for this session',
+        })
+      }
+
+      const cashierGrantId = grantResult.rows[0].id
+
+      const existingResult = await client.query(
+        `
+          SELECT *
+          FROM cashier_shifts
+
+          WHERE company_id = $1
+            AND status = 'open'
+
+            AND (
+              cashier_id = $2
+              OR pos_device_id = $3
+            )
+
+          FOR UPDATE;
+          `,
+        [device.companyId, auth.userId, device.deviceId],
+      )
+
+      const existingShift = existingResult.rows[0]
+
+      if (existingShift) {
+        const sameShift =
+          existingShift.cashier_id === auth.userId &&
+          existingShift.pos_device_id === device.deviceId
+
+        if (!sameShift) {
+          await client.query('ROLLBACK')
+
+          return res.status(409).json({
+            error: 'Cashier or POS device already has another open shift',
+          })
+        }
+
+        await client.query('COMMIT')
+
+        return res.status(200).json({
+          reused: true,
+
+          data: mapCashierShift(existingShift),
+        })
+      }
+
+      const shiftResult = await client.query(
+        `
+          INSERT INTO cashier_shifts (
+            company_id,
+            branch_id,
+            cashier_id,
+
+            pos_device_id,
+            pos_cashier_grant_id,
+
+            shift_number,
+            opening_cash,
+            status,
+            opened_at
+          )
+          VALUES (
+            $1, $2, $3,
+            $4, $5,
+            $6, $7,
+            'open',
+            NOW()
+          )
+          RETURNING *;
+          `,
+        [
+          device.companyId,
+          device.branchId,
+          auth.userId,
+
+          device.deviceId,
+          cashierGrantId,
+
+          createShiftNumber(),
+          openingCash,
+        ],
+      )
+
+      await client.query('COMMIT')
+
+      return res.status(201).json({
+        reused: false,
+
+        data: mapCashierShift(shiftResult.rows[0]),
+      })
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+
+      if (isUniqueViolation(error)) {
+        return res.status(409).json({
+          error: 'Cashier or POS device already has an open shift',
+        })
+      }
+
+      return next(error)
+    } finally {
+      client.release()
+    }
+  },
+)
+
+// ======================================================
+// POST /api/pos-sync/shifts/:shiftId/close
+//
+// Body:
+// {
+//   closingCash
+// }
+// ======================================================
+posDeviceSyncRouter.post(
+  '/api/pos-sync/shifts/:shiftId/close',
+
+  requireAuth,
+
+  requirePermission('sales.create'),
+
+  async (req, res, next) => {
+    const client = await db.connect()
+
+    try {
+      const { device, auth, matches } = cashierMatchesDevice(res)
+
+      if (!matches) {
+        return res.status(403).json({
+          error: 'Cashier session does not match POS device branch',
+        })
+      }
+
+      const rawShiftId = req.params.shiftId
+
+      const shiftId = Array.isArray(rawShiftId) ? rawShiftId[0] : rawShiftId
+
+      if (typeof shiftId !== 'string' || !uuidPattern.test(shiftId)) {
+        return res.status(400).json({
+          error: 'shiftId is invalid',
+        })
+      }
+
+      const body = asRecord(req.body)
+
+      const closingCash = parseNonNegativeMoney(body.closingCash, 'closingCash')
+
+      await client.query('BEGIN')
+
+      const shiftResult = await client.query(
+        `
+          SELECT *
+          FROM cashier_shifts
+
+          WHERE company_id = $1
+            AND id = $2
+            AND branch_id = $3
+            AND cashier_id = $4
+            AND pos_device_id = $5
+            AND status = 'open'
+
+          FOR UPDATE;
+          `,
+        [
+          device.companyId,
+          shiftId,
+          device.branchId,
+          auth.userId,
+          device.deviceId,
+        ],
+      )
+
+      if ((shiftResult.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK')
+
+        return res.status(404).json({
+          error: 'Open cashier shift was not found',
+        })
+      }
+
+      const shift = shiftResult.rows[0]
+
+      const cashResult = await client.query(
+        `
+          SELECT
+            COALESCE(
+              (
+                SELECT SUM(p.amount)
+
+                FROM payments p
+
+                JOIN sales s
+                  ON s.id = p.sale_id
+                  AND s.company_id =
+                      p.company_id
+
+                WHERE s.company_id = $1
+                  AND s.shift_id = $2
+                  AND p.method = 'cash'
+
+                  AND s.status IN (
+                    'completed',
+                    'pending_review',
+                    'refunded'
+                  )
+              ),
+              0
+            ) AS sales_cash,
+
+            COALESCE(
+              (
+                SELECT SUM(rr.amount)
+
+                FROM return_refunds rr
+
+                JOIN returns r
+                  ON r.id =
+                     rr.return_id
+                  AND r.company_id =
+                      rr.company_id
+
+                WHERE r.company_id = $1
+                  AND r.branch_id = $3
+                  AND r.created_by = $4
+                  AND r.created_at >=
+                      $5::timestamptz
+                  AND r.created_at <= NOW()
+                  AND rr.method = 'cash'
+
+                  AND r.status IN (
+                    'completed',
+                    'pending_review'
+                  )
+              ),
+              0
+            ) AS returns_cash,
+
+            COALESCE(
+              (
+                SELECT SUM(
+                  CASE
+                    WHEN ep.payment_direction =
+                         'paid_by_customer'
+                    THEN ep.amount
+                    ELSE -ep.amount
+                  END
+                )
+
+                FROM exchange_payments ep
+
+                JOIN exchanges e
+                  ON e.id =
+                     ep.exchange_id
+                  AND e.company_id =
+                      ep.company_id
+
+                WHERE e.company_id = $1
+                  AND e.branch_id = $3
+                  AND e.created_by = $4
+                  AND e.created_at >=
+                      $5::timestamptz
+                  AND e.created_at <= NOW()
+                  AND ep.method = 'cash'
+
+                  AND e.status IN (
+                    'completed',
+                    'pending_review'
+                  )
+              ),
+              0
+            ) AS exchange_cash_net;
+          `,
+        [
+          device.companyId,
+          shiftId,
+          device.branchId,
+          auth.userId,
+          shift.opened_at,
+        ],
+      )
+
+      const cash = cashResult.rows[0]
+
+      const openingCash = Number(shift.opening_cash)
+
+      const salesCash = Number(cash.sales_cash)
+
+      const returnsCash = Number(cash.returns_cash)
+
+      const exchangeCashNet = Number(cash.exchange_cash_net)
+
+      const expectedCash = roundMoney(
+        openingCash + salesCash - returnsCash + exchangeCashNet,
+      )
+
+      const difference = roundMoney(closingCash - expectedCash)
+
+      const closedResult = await client.query(
+        `
+          UPDATE cashier_shifts
+
+          SET
+            closing_cash = $1,
+            expected_cash = $2,
+            difference = $3,
+            closed_at = NOW(),
+            status = 'closed'
+
+          WHERE company_id = $4
+            AND id = $5
+
+          RETURNING *;
+          `,
+        [closingCash, expectedCash, difference, device.companyId, shiftId],
+      )
+
+      await client.query('COMMIT')
+
+      return res.json({
+        data: {
+          shift: mapCashierShift(closedResult.rows[0]),
+
+          cashSummary: {
+            openingCash: roundMoney(openingCash),
+
+            salesCash: roundMoney(salesCash),
+
+            returnsCash: roundMoney(returnsCash),
+
+            exchangeCashNet: roundMoney(exchangeCashNet),
+
+            expectedCash,
+            closingCash,
+            difference,
+          },
+        },
+      })
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+
+      return next(error)
+    } finally {
+      client.release()
     }
   },
 )

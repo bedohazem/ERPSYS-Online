@@ -667,13 +667,12 @@ export async function processOfflineSale(
             AND id = $2
             AND branch_id = $3
             AND cashier_id = $4
+            AND pos_device_id = $5
 
-            -- قد تتم المزامنة بعد إغلاق الوردية.
-            -- المهم أن البيع حدث أثناء وقت الوردية.
-            AND opened_at <= $5::timestamptz
+            AND opened_at <= $6::timestamptz
             AND (
               closed_at IS NULL
-              OR closed_at >= $5::timestamptz
+              OR closed_at >= $6::timestamptz
             )
 
           FOR SHARE;
@@ -683,6 +682,7 @@ export async function processOfflineSale(
           input.shiftId,
           device.branchId,
           input.cashierId,
+          device.deviceId,
           input.occurredAt,
         ],
       )

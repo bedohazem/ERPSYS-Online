@@ -16,11 +16,31 @@ type DesktopCashierUser = {
   permissions: string[]
 }
 
+type DesktopCashierShift = {
+  id: string
+  shiftNumber: string
+
+  openingCash: string
+  closingCash: string | null
+  expectedCash: string | null
+  difference: string | null
+
+  openedAt: string
+  closedAt: string | null
+
+  status: 'open' | 'closed'
+
+  cashierId: string
+  deviceId: string | null
+  cashierGrantId: string | null
+}
+
 type DesktopCashierSession = {
   expiresAt: string
 
   cashierGrantId: string
   cashierGrantExpiresAt: string
+  currentShift: DesktopCashierShift | null
 
   user: DesktopCashierUser
 }
@@ -171,6 +191,29 @@ interface Window {
     }) => Promise<DesktopCashierSession>
 
     cashierLogout: () => Promise<null>
+
+    openCashierShift: (input: {
+      openingCash: number
+    }) => Promise<DesktopCashierSession>
+
+    closeCashierShift: (input: {
+      shiftId: string
+      closingCash: number
+    }) => Promise<{
+      session: DesktopCashierSession
+
+      shift: DesktopCashierShift
+
+      cashSummary: {
+        openingCash: number
+        salesCash: number
+        returnsCash: number
+        exchangeCashNet: number
+        expectedCash: number
+        closingCash: number
+        difference: number
+      }
+    }>
 
     loadWorkspace: () => Promise<DesktopPosWorkspace>
 

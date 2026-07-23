@@ -11,6 +11,8 @@ import {
   searchPosCatalog,
   clearCashierGrants,
   getCashierGrantToken,
+  openCashierShift,
+  closeCashierShift,
 } from './cashier-service'
 import {
   applyPendingSaleSyncResults,
@@ -201,6 +203,22 @@ function createLocalPendingSale(input: SavePendingSaleInput) {
     throw new Error('تصريح الكاشير Offline غير صالح. سجل الدخول مرة أخرى.')
   }
 
+  const currentShift = cashierSession.currentShift
+
+  if (
+    !currentShift ||
+    currentShift.status !== 'open' ||
+    !deviceIdPattern.test(currentShift.id)
+  ) {
+    throw new Error('يجب فتح وردية الكاشير قبل إنشاء الفاتورة.')
+  }
+
+  const deviceConfig = getStoredDeviceConfig()
+
+  if (!deviceConfig || currentShift.deviceId !== deviceConfig.deviceId) {
+    throw new Error('الوردية المفتوحة لا تخص جهاز POS الحالي.')
+  }
+
   const stockLocationId =
     typeof input?.stockLocationId === 'string'
       ? input.stockLocationId.trim()
@@ -294,7 +312,7 @@ function createLocalPendingSale(input: SavePendingSaleInput) {
     // المفتاح الخام لا يدخل SQLite.
     cashierGrantId: cashierSession.cashierGrantId,
 
-    shiftId: null,
+    shiftId: currentShift.id,
     customerId: null,
 
     occurredAt: now.toISOString(),
@@ -755,6 +773,37 @@ function registerIpcHandlers() {
   )
 
   ipcMain.handle('desktop-pos:cashier-logout', () => logoutCashier())
+
+  ipcMain.handle(
+    'desktop-pos:open-cashier-shift',
+
+    (_event, input) => openCashierShift(input),
+  )
+
+  ipcMain.handle(
+    'desktop-pos:close-cashier-shift',
+
+    (_event, input) => {
+      const shiftId =
+        typeof input?.shiftId === 'string' ? input.shiftId.trim() : ''
+
+      // يجب رفع كل فواتير الوردية
+      // قبل حساب النقدية وإغلاقها.
+      const unsyncedSales = listPendingSales(500).filter((sale) => {
+        const payload = asRecord(sale.payload)
+
+        return payload.shiftId === shiftId && sale.status !== 'needs_review'
+      })
+
+      if (unsyncedSales.length > 0) {
+        throw new Error(
+          `لا يمكن إغلاق الوردية قبل مزامنة ${unsyncedSales.length} فاتورة مؤجلة.`,
+        )
+      }
+
+      return closeCashierShift(input)
+    },
+  )
 
   ipcMain.handle('desktop-pos:load-workspace', () => loadPosWorkspace())
 

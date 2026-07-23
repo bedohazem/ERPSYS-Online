@@ -57,6 +57,12 @@ contextBridge.exposeInMainWorld('desktopPos', {
 
   cashierLogout: () => ipcRenderer.invoke('desktop-pos:cashier-logout'),
 
+  openCashierShift: (input: { openingCash: number }) =>
+    ipcRenderer.invoke('desktop-pos:open-cashier-shift', input),
+
+  closeCashierShift: (input: { shiftId: string; closingCash: number }) =>
+    ipcRenderer.invoke('desktop-pos:close-cashier-shift', input),
+
   loadWorkspace: () => ipcRenderer.invoke('desktop-pos:load-workspace'),
 
   searchCatalog: (input: { stockLocationId: string; query: string }) =>

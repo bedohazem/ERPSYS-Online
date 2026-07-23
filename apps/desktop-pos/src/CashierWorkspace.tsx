@@ -77,10 +77,16 @@ function CashierWorkspace({
 
   const [paymentReference, setPaymentReference] = useState('')
 
+  const [openingCash, setOpeningCash] = useState('0')
+
+  const [closingCash, setClosingCash] = useState('')
+
   const selectedLocation =
     workspace?.stockLocations.find(
       (location) => location.id === selectedLocationId,
     ) ?? null
+
+  const currentShift = cashierSession?.currentShift ?? null
 
   const cartTotal = useMemo(
     () =>
@@ -100,6 +106,7 @@ function CashierWorkspace({
     : 0
 
   const canSavePendingSale =
+    Boolean(currentShift) &&
     cart.length > 0 &&
     Boolean(selectedLocationId) &&
     Number.isFinite(paidAmountNumber) &&
@@ -114,6 +121,7 @@ function CashierWorkspace({
       const nextWorkspace = await window.desktopPos.loadWorkspace()
 
       setWorkspace(nextWorkspace)
+      setCashierSession(nextWorkspace.cashier)
 
       setSuccess(
         nextWorkspace.workspaceSource === 'cache'
@@ -214,6 +222,117 @@ function CashierWorkspace({
         currentError instanceof Error
           ? currentError.message
           : 'تعذر تسجيل خروج الكاشير.',
+      )
+    } finally {
+      setLoadingAction(null)
+    }
+  }
+
+  async function openShift() {
+    const openingCashNumber = Number(openingCash)
+
+    if (!Number.isFinite(openingCashNumber) || openingCashNumber < 0) {
+      setError('رصيد افتتاح الوردية غير صالح.')
+
+      return
+    }
+
+    setLoadingAction('open-shift')
+    setError('')
+    setSuccess('')
+
+    try {
+      const session = await window.desktopPos.openCashierShift({
+        openingCash: openingCashNumber,
+      })
+
+      setCashierSession(session)
+
+      setWorkspace((currentWorkspace) =>
+        currentWorkspace
+          ? {
+              ...currentWorkspace,
+              cashier: session,
+            }
+          : currentWorkspace,
+      )
+
+      setClosingCash('')
+
+      setSuccess(`تم فتح الوردية ${session.currentShift?.shiftNumber || ''}.`)
+
+      onSessionChanged()
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر فتح الوردية.',
+      )
+    } finally {
+      setLoadingAction(null)
+    }
+  }
+
+  async function closeShift() {
+    if (!currentShift) {
+      return
+    }
+
+    const closingCashNumber = Number(closingCash)
+
+    if (!Number.isFinite(closingCashNumber) || closingCashNumber < 0) {
+      setError('الرصيد الفعلي عند الإغلاق غير صالح.')
+
+      return
+    }
+
+    const confirmed = window.confirm(
+      `إغلاق الوردية ${currentShift.shiftNumber}؟`,
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setLoadingAction('close-shift')
+    setError('')
+    setSuccess('')
+
+    try {
+      const result = await window.desktopPos.closeCashierShift({
+        shiftId: currentShift.id,
+
+        closingCash: closingCashNumber,
+      })
+
+      setCashierSession(result.session)
+
+      setWorkspace((currentWorkspace) =>
+        currentWorkspace
+          ? {
+              ...currentWorkspace,
+              cashier: result.session,
+            }
+          : currentWorkspace,
+      )
+
+      setOpeningCash('0')
+      setClosingCash('')
+      setCart([])
+      setSearchResults([])
+
+      setSuccess(
+        `تم إغلاق الوردية. المتوقع: ${formatMoney(
+          result.cashSummary.expectedCash,
+        )} — الفرق: ${formatMoney(result.cashSummary.difference)}`,
+      )
+
+      onSessionChanged()
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر إغلاق الوردية.',
       )
     } finally {
       setLoadingAction(null)
@@ -366,7 +485,7 @@ function CashierWorkspace({
   }
 
   async function savePendingSale() {
-    if (!selectedLocationId || cart.length === 0) {
+    if (!currentShift || !selectedLocationId || cart.length === 0) {
       return
     }
 
@@ -612,6 +731,106 @@ function CashierWorkspace({
         </p>
       ) : (
         <>
+          <section className="desktop-payment-panel">
+            <div className="desktop-section-header">
+              <div>
+                <h3>وردية الكاشير</h3>
+
+                {currentShift ? (
+                  <p>
+                    الوردية: <strong>{currentShift.shiftNumber}</strong>
+                    {' • افتتحت: '}
+                    {formatWorkspaceDate(currentShift.openedAt)}
+                    {' • رصيد البداية: '}
+                    <strong>
+                      {formatMoney(Number(currentShift.openingCash))}
+                    </strong>
+                  </p>
+                ) : (
+                  <p>
+                    لا توجد وردية مفتوحة. لا يمكن حفظ فاتورة قبل فتح الوردية.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {currentShift ? (
+              <div className="desktop-payment-grid">
+                <label>
+                  الرصيد الفعلي عند الإغلاق
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={closingCash}
+                    disabled={
+                      loadingAction !== null ||
+                      workspace.workspaceSource === 'cache'
+                    }
+                    onChange={(event) => setClosingCash(event.target.value)}
+                  />
+                </label>
+
+                <div className="desktop-actions">
+                  <button
+                    type="button"
+                    className="desktop-danger-button"
+                    disabled={
+                      loadingAction !== null ||
+                      workspace.workspaceSource === 'cache' ||
+                      !closingCash
+                    }
+                    onClick={() => void closeShift()}
+                  >
+                    {loadingAction === 'close-shift'
+                      ? 'جاري إغلاق الوردية...'
+                      : 'إغلاق الوردية'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="desktop-payment-grid">
+                <label>
+                  رصيد افتتاح الوردية
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={openingCash}
+                    disabled={
+                      loadingAction !== null ||
+                      workspace.workspaceSource === 'cache'
+                    }
+                    onChange={(event) => setOpeningCash(event.target.value)}
+                  />
+                </label>
+
+                <div className="desktop-actions">
+                  <button
+                    type="button"
+                    className="desktop-primary-button"
+                    disabled={
+                      loadingAction !== null ||
+                      workspace.workspaceSource === 'cache'
+                    }
+                    onClick={() => void openShift()}
+                  >
+                    {loadingAction === 'open-shift'
+                      ? 'جاري فتح الوردية...'
+                      : 'فتح الوردية'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {workspace.workspaceSource === 'cache' ? (
+              <p className="desktop-trusted-note">
+                فتح وإغلاق الوردية يحتاج اتصالًا بالسيرفر. البيع يستمر Offline
+                إذا كانت وردية مفتوحة ومحفوظة مسبقًا.
+              </p>
+            ) : null}
+          </section>
+
           <div className="desktop-pos-toolbar">
             <label>
               مكان البيع
