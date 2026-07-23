@@ -115,6 +115,14 @@ function ProductsPage({ companyId }: ProductsPageProps) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const [success, setSuccess] = useState('')
+
+  const [editingVariantId, setEditingVariantId] = useState<string | null>(null)
+
+  const [editingSellingPrice, setEditingSellingPrice] = useState('')
+
+  const [savingVariantId, setSavingVariantId] = useState<string | null>(null)
+
   // ======================================================
   // مؤشرات مختصرة محسوبة من المنتجات والأصناف المحملة.
   // ======================================================
@@ -136,6 +144,7 @@ function ProductsPage({ companyId }: ProductsPageProps) {
   const { user } = useAuth()
 
   const canViewProducts = hasPermission(user, 'products.view')
+  const canManageProducts = hasPermission(user, 'products.manage')
 
   // ======================================================
   // loadProductsData
@@ -180,6 +189,111 @@ function ProductsPage({ companyId }: ProductsPageProps) {
       )
     } finally {
       setLoading(false)
+    }
+  }
+
+  function startEditingPrice(variant: Variant) {
+    setEditingVariantId(variant.id)
+
+    setEditingSellingPrice(Number(variant.selling_price).toFixed(2))
+
+    setError('')
+    setSuccess('')
+  }
+
+  function cancelEditingPrice() {
+    setEditingVariantId(null)
+    setEditingSellingPrice('')
+  }
+
+  async function saveVariantPrice(variant: Variant) {
+    if (savingVariantId || !canManageProducts) {
+      return
+    }
+
+    const sellingPrice = Number(editingSellingPrice)
+
+    if (!Number.isFinite(sellingPrice) || sellingPrice < 0) {
+      setError('سعر البيع غير صالح.')
+
+      return
+    }
+
+    const note = window.prompt('سبب تغيير السعر — اختياري:', '')
+
+    if (note === null) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      `تغيير سعر ${variant.product_name} — ${variant.sku} من ${formatCatalogCurrency(
+        variant.selling_price,
+      )} إلى ${formatCatalogCurrency(sellingPrice)}؟`,
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setSavingVariantId(variant.id)
+
+    setError('')
+    setSuccess('')
+
+    try {
+      const response = await requestJson<
+        ApiResponse<{
+          id: string
+          selling_price: string
+        }> & {
+          changed: boolean
+        }
+      >(
+        `/api/catalog/variants/${encodeURIComponent(variant.id)}/price`,
+
+        {
+          method: 'PATCH',
+
+          headers: {
+            'Content-Type': 'application/json',
+          },
+
+          body: JSON.stringify({
+            sellingPrice,
+
+            note: note.trim() || null,
+          }),
+        },
+      )
+
+      setVariants((currentVariants) =>
+        currentVariants.map((currentVariant) =>
+          currentVariant.id === variant.id
+            ? {
+                ...currentVariant,
+
+                selling_price: response.data.selling_price,
+              }
+            : currentVariant,
+        ),
+      )
+
+      setEditingVariantId(null)
+      setEditingSellingPrice('')
+
+      setSuccess(
+        response.changed
+          ? `تم تحديث سعر ${variant.product_name} بنجاح.`
+          : 'السعر الجديد مطابق للسعر الحالي.',
+      )
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر تعديل سعر الصنف.',
+      )
+    } finally {
+      setSavingVariantId(null)
     }
   }
 
@@ -228,6 +342,7 @@ function ProductsPage({ companyId }: ProductsPageProps) {
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
+        {success ? <p className="success-message">{success}</p> : null}
       </section>
 
       {/* ==================================================
@@ -295,6 +410,7 @@ function ProductsPage({ companyId }: ProductsPageProps) {
                   <th>التكلفة</th>
                   <th>عدد الأصناف</th>
                   <th>الحالة</th>
+                  <th>الإجراء</th>
                 </tr>
               </thead>
 
@@ -440,13 +556,77 @@ function ProductsPage({ companyId }: ProductsPageProps) {
                     </td>
 
                     <td className="money-cell">
-                      {formatCatalogCurrency(variant.cost_price)}
+                      {editingVariantId === variant.id ? (
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={editingSellingPrice}
+                          disabled={savingVariantId === variant.id}
+                          onChange={(event) =>
+                            setEditingSellingPrice(event.target.value)
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              void saveVariantPrice(variant)
+                            }
+
+                            if (event.key === 'Escape') {
+                              cancelEditingPrice()
+                            }
+                          }}
+                          autoFocus
+                        />
+                      ) : (
+                        formatCatalogCurrency(variant.selling_price)
+                      )}
                     </td>
 
                     <td>
                       <span className={getCatalogStatusClass(variant.status)}>
                         {translateCatalogStatus(variant.status)}
                       </span>
+                    </td>
+                    <td>
+                      {canManageProducts ? (
+                        editingVariantId === variant.id ? (
+                          <div className="section-actions">
+                            <button
+                              type="button"
+                              className="table-button primary-button"
+                              disabled={savingVariantId === variant.id}
+                              onClick={() => void saveVariantPrice(variant)}
+                            >
+                              {savingVariantId === variant.id
+                                ? 'جاري الحفظ...'
+                                : 'حفظ'}
+                            </button>
+
+                            <button
+                              type="button"
+                              className="table-button"
+                              disabled={savingVariantId === variant.id}
+                              onClick={cancelEditingPrice}
+                            >
+                              إلغاء
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="table-button"
+                            disabled={
+                              savingVariantId !== null ||
+                              editingVariantId !== null
+                            }
+                            onClick={() => startEditingPrice(variant)}
+                          >
+                            تعديل السعر
+                          </button>
+                        )
+                      ) : (
+                        <span className="muted">عرض فقط</span>
+                      )}
                     </td>
                   </tr>
                 ))}
