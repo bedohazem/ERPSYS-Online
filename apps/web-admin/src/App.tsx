@@ -13,6 +13,7 @@ import PosDevicesPage from './pages/PosDevicesPage'
 import PosSyncPage from './pages/PosSyncPage'
 import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
+import NewExchangePage from './pages/NewExchangePage'
 // شاشة إدارة مستخدمي الشركة.
 import UsersPage from './pages/UsersPage'
 // شاشة عرض الأدوار والصلاحيات.
@@ -37,6 +38,7 @@ type PageName =
   | 'roles'
   | 'new-sale'
   | 'new-return'
+  | 'new-exchange'
 
 // ======================================================
 // صفحات لوحة الإدارة.
@@ -80,6 +82,12 @@ const pageDefinitions: Array<{
     label: 'مرتجع جديد',
     icon: '↩',
     permission: 'returns.create',
+  },
+  {
+    name: 'new-exchange',
+    label: 'استبدال جديد',
+    icon: '⇄',
+    permission: 'exchanges.create',
   },
   {
     name: 'returns',
@@ -320,6 +328,10 @@ function App() {
     string | null
   >(null)
 
+  const [selectedExchangeSaleId, setSelectedExchangeSaleId] = useState<
+    string | null
+  >(null)
+
   const [selectedPosSyncSaleId, setSelectedPosSyncSaleId] = useState<
     string | null
   >(null)
@@ -528,6 +540,12 @@ function App() {
     navigateToPage('new-return')
   }
 
+  function openNewExchangeFromSale(saleId: string) {
+    setSelectedExchangeSaleId(saleId)
+
+    navigateToPage('new-exchange')
+  }
+
   return (
     <main className="app-shell" dir="rtl">
       {/* ==================================================
@@ -561,6 +579,10 @@ function App() {
               onClick={() => {
                 if (page.name === 'new-return') {
                   setSelectedReturnSaleId(null)
+                }
+
+                if (page.name === 'new-exchange') {
+                  setSelectedExchangeSaleId(null)
                 }
 
                 navigateToPage(page.name)
@@ -821,6 +843,7 @@ function App() {
               initialSaleId={selectedPosSyncSaleId}
               onInitialSaleHandled={() => setSelectedPosSyncSaleId(null)}
               onCreateReturn={openNewReturnFromSale}
+              onCreateExchange={openNewExchangeFromSale}
             />
           ) : null}
 
@@ -870,6 +893,15 @@ function App() {
               branchId={branchId}
               initialSaleId={selectedReturnSaleId}
               onInitialSaleHandled={() => setSelectedReturnSaleId(null)}
+            />
+          ) : null}
+
+          {activePage === 'new-exchange' ? (
+            <NewExchangePage
+              companyId={companyId}
+              branchId={branchId}
+              initialSaleId={selectedExchangeSaleId}
+              onInitialSaleHandled={() => setSelectedExchangeSaleId(null)}
             />
           ) : null}
         </div>

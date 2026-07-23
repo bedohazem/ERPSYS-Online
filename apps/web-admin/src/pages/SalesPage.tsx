@@ -187,6 +187,7 @@ type SalesPageProps = {
   // ترسل رقم الفاتورة إلى App
   // لفتح شاشة المرتجع عليها مباشرة
   onCreateReturn: (saleId: string) => void
+  onCreateExchange: (saleId: string) => void
 }
 
 function SalesPage({
@@ -195,11 +196,17 @@ function SalesPage({
   initialSaleId,
   onInitialSaleHandled,
   onCreateReturn,
+  onCreateExchange,
 }: SalesPageProps) {
   const { user } = useAuth()
   const canCreateReturn =
     user?.roles.includes('admin') ||
     user?.permissions.includes('returns.create') ||
+    false
+
+  const canCreateExchange =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('exchanges.create') ||
     false
 
   const [sales, setSales] = useState<Sale[]>([])
@@ -364,6 +371,7 @@ function SalesPage({
                   <th>الحالة</th>
                   <th>التفاصيل</th>
                   <th>مرتجع</th>
+                  <th>استبدال</th>
                 </tr>
               </thead>
               <tbody>
@@ -440,6 +448,23 @@ function SalesPage({
                           {Number(sale.remaining_returnable_quantity) <= 0
                             ? 'مرتجع بالكامل'
                             : 'إنشاء مرتجع'}
+                        </button>
+                      ) : null}
+                    </td>
+                    <td>
+                      {canCreateExchange ? (
+                        <button
+                          type="button"
+                          className="table-button"
+                          disabled={
+                            sale.status !== 'completed' ||
+                            Number(sale.remaining_returnable_quantity) <= 0
+                          }
+                          onClick={() => onCreateExchange(sale.id)}
+                        >
+                          {Number(sale.remaining_returnable_quantity) <= 0
+                            ? 'غير متاح'
+                            : 'إنشاء استبدال'}
                         </button>
                       ) : null}
                     </td>

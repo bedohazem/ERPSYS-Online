@@ -389,11 +389,13 @@ export function requireBusinessPermission(
     const hasSalesReadAccess =
       auth.roles.includes('admin') ||
       auth.permissions.includes('sales.view') ||
-      auth.permissions.includes('returns.create')
+      auth.permissions.includes('returns.create') ||
+      auth.permissions.includes('exchanges.create')
 
     if (!hasSalesReadAccess) {
       return res.status(403).json({
-        error: 'Permission required: sales.view or returns.create',
+        error:
+          'Permission required: sales.view, returns.create or exchanges.create',
       })
     }
 
