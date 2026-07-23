@@ -410,7 +410,6 @@ function ProductsPage({ companyId }: ProductsPageProps) {
                   <th>التكلفة</th>
                   <th>عدد الأصناف</th>
                   <th>الحالة</th>
-                  <th>الإجراء</th>
                 </tr>
               </thead>
 
@@ -502,6 +501,7 @@ function ProductsPage({ companyId }: ProductsPageProps) {
                   <th>سعر البيع</th>
                   <th>التكلفة</th>
                   <th>الحالة</th>
+                  <th>الإجراء</th>
                 </tr>
               </thead>
 
@@ -552,10 +552,6 @@ function ProductsPage({ companyId }: ProductsPageProps) {
                     </td>
 
                     <td className="money-cell">
-                      {formatCatalogCurrency(variant.selling_price)}
-                    </td>
-
-                    <td className="money-cell">
                       {editingVariantId === variant.id ? (
                         <input
                           type="number"
@@ -580,6 +576,10 @@ function ProductsPage({ companyId }: ProductsPageProps) {
                       ) : (
                         formatCatalogCurrency(variant.selling_price)
                       )}
+                    </td>
+
+                    <td className="money-cell">
+                      {formatCatalogCurrency(variant.cost_price)}
                     </td>
 
                     <td>
