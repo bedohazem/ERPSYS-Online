@@ -18,6 +18,10 @@ type DesktopCashierUser = {
 
 type DesktopCashierSession = {
   expiresAt: string
+
+  cashierGrantId: string
+  cashierGrantExpiresAt: string
+
   user: DesktopCashierUser
 }
 

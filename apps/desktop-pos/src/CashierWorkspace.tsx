@@ -571,6 +571,10 @@ function CashierWorkspace({
             الكاشير: <strong>{cashierSession.user.fullName}</strong>
             {' • '}
             {cashierSession.user.branchName || '-'}
+            {' • تصريح Offline حتى '}
+            <strong>
+              {formatWorkspaceDate(cashierSession.cashierGrantExpiresAt)}
+            </strong>
           </p>
         </div>
 

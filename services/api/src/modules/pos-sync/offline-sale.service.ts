@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg'
 import { db } from '../../db/pool'
+import { hashSessionToken } from '../auth/auth.middleware'
 import type { PosDeviceContext } from './pos-device-auth.middleware'
 
 type SyncItemStatus = 'processed' | 'needs_review' | 'failed' | 'duplicate'
@@ -30,6 +31,10 @@ type NormalizedOfflineSale = {
   saleNumber: string
   stockLocationId: string
   cashierId: string
+
+  cashierGrantId: string
+  cashierGrantToken: string
+
   shiftId: string | null
   customerId: string | null
   occurredAt: string
@@ -168,13 +173,35 @@ function normalizeOfflineSale(payload: unknown): NormalizedOfflineSale {
 
   const cashierId = requiredString(input.cashierId, 'cashierId')
 
-  if (!uuidPattern.test(stockLocationId) || !uuidPattern.test(cashierId)) {
+  const cashierGrantId = requiredString(input.cashierGrantId, 'cashierGrantId')
+
+  const cashierGrantToken = requiredString(
+    input.cashierGrantToken,
+    'cashierGrantToken',
+    64,
+  )
+
+  if (
+    !uuidPattern.test(stockLocationId) ||
+    !uuidPattern.test(cashierId) ||
+    !uuidPattern.test(cashierGrantId)
+  ) {
     throw new OfflineSaleProcessingError({
       statusCode: 400,
       code: 'INVALID_PAYLOAD',
       message: 'stockLocationId or cashierId is invalid',
       conflictType: 'invalid_payload',
     })
+
+    if (!/^[0-9a-f]{64}$/i.test(cashierGrantToken)) {
+      throw new OfflineSaleProcessingError({
+        statusCode: 400,
+        code: 'INVALID_CASHIER_GRANT',
+        message: 'cashierGrantToken is invalid',
+        conflictType: 'cashier_grant_invalid',
+        severity: 'critical',
+      })
+    }
   }
 
   const shiftId = optionalUuid(input.shiftId, 'shiftId')
@@ -323,6 +350,10 @@ function normalizeOfflineSale(payload: unknown): NormalizedOfflineSale {
     saleNumber,
     stockLocationId,
     cashierId,
+
+    cashierGrantId,
+    cashierGrantToken,
+
     shiftId,
     customerId,
     occurredAt: occurredAtDate.toISOString(),
@@ -528,6 +559,77 @@ export async function processOfflineSale(
         },
       })
     }
+
+    const cashierGrantResult = await client.query(
+      `
+    SELECT id
+    FROM pos_cashier_grants
+
+    WHERE company_id = $1
+      AND id = $2
+      AND branch_id = $3
+      AND device_id = $4
+      AND cashier_id = $5
+      AND token_hash = $6
+
+      AND revoked_at IS NULL
+
+      -- قد تتم المزامنة بعد انتهاء المنحة.
+      -- المهم أن البيع حدث أثناء صلاحيتها.
+      AND issued_at <=
+          $7::timestamptz
+
+      AND expires_at >=
+          $7::timestamptz
+
+    FOR SHARE;
+    `,
+      [
+        device.companyId,
+        input.cashierGrantId,
+        device.branchId,
+        device.deviceId,
+        input.cashierId,
+
+        hashSessionToken(input.cashierGrantToken),
+
+        input.occurredAt,
+      ],
+    )
+
+    if ((cashierGrantResult.rowCount ?? 0) === 0) {
+      throw new OfflineSaleProcessingError({
+        statusCode: 409,
+        code: 'CASHIER_GRANT_INVALID',
+
+        message: 'Cashier offline grant is invalid for this sale',
+
+        syncStatus: 'needs_review',
+
+        conflictType: 'cashier_grant_invalid',
+
+        severity: 'critical',
+
+        details: {
+          cashierId: input.cashierId,
+
+          cashierGrantId: input.cashierGrantId,
+
+          deviceId: device.deviceId,
+        },
+      })
+    }
+
+    await client.query(
+      `
+  UPDATE pos_cashier_grants
+  SET last_used_at = NOW()
+
+  WHERE company_id = $1
+    AND id = $2;
+  `,
+      [device.companyId, input.cashierGrantId],
+    )
 
     if (input.customerId) {
       const customerResult = await client.query(
@@ -791,6 +893,7 @@ export async function processOfflineSale(
           customer_id,
 
           pos_device_id,
+          pos_cashier_grant_id,
 
           sale_number,
           source,
@@ -810,11 +913,11 @@ export async function processOfflineSale(
         )
         VALUES (
           $1, $2, $3, $4, $5, $6,
-          $7,
-          $8, 'offline_pos', $9, $10,
-          $11, 0, 0, $11, $12, $13,
-          $14,
+          $7, $8,
+          $9, 'offline_pos', $10, $11,
+          $12, 0, 0, $12, $13, $14,
           $15,
+          $16,
           NOW()
         )
         RETURNING *;
@@ -826,13 +929,19 @@ export async function processOfflineSale(
         input.cashierId,
         input.shiftId,
         input.customerId,
+
         device.deviceId,
+
+        input.cashierGrantId,
+
         input.saleNumber,
         input.localSaleId,
         input.idempotencyKey,
+
         subtotal,
         paidTotal,
         changeTotal,
+
         saleStatus,
         input.occurredAt,
       ],

@@ -9,6 +9,8 @@ import {
   logoutCashier,
   lookupPosCatalogItem,
   searchPosCatalog,
+  clearCashierGrants,
+  getCashierGrantToken,
 } from './cashier-service'
 import {
   applyPendingSaleSyncResults,
@@ -195,6 +197,10 @@ function createLocalPendingSale(input: SavePendingSaleInput) {
     throw new Error('يجب تسجيل دخول الكاشير أولًا.')
   }
 
+  if (!deviceIdPattern.test(cashierSession.cashierGrantId)) {
+    throw new Error('تصريح الكاشير Offline غير صالح. سجل الدخول مرة أخرى.')
+  }
+
   const stockLocationId =
     typeof input?.stockLocationId === 'string'
       ? input.stockLocationId.trim()
@@ -283,6 +289,10 @@ function createLocalPendingSale(input: SavePendingSaleInput) {
     stockLocationId,
 
     cashierId: cashierSession.user.id,
+
+    // نخزن معرف المنحة فقط.
+    // المفتاح الخام لا يدخل SQLite.
+    cashierGrantId: cashierSession.cashierGrantId,
 
     shiftId: null,
     customerId: null,
@@ -451,13 +461,88 @@ async function syncPendingSales(manual: boolean) {
     return emptyResult
   }
 
-  const localSaleIds = selectedSales.map((sale) => sale.localSaleId)
+  const syncableSales: typeof selectedSales = []
+
+  const syncPayloads: Record<string, unknown>[] = []
+
+  const missingGrantResults: Array<{
+    localSaleId: string
+    status: 'needs_review'
+    errorMessage: string
+  }> = []
+
+  for (const sale of selectedSales) {
+    const payload = asRecord(sale.payload)
+
+    const cashierGrantId =
+      typeof payload.cashierGrantId === 'string'
+        ? payload.cashierGrantId.trim()
+        : ''
+
+    const cashierGrantToken = getCashierGrantToken(cashierGrantId)
+
+    if (!deviceIdPattern.test(cashierGrantId) || !cashierGrantToken) {
+      missingGrantResults.push({
+        localSaleId: sale.localSaleId,
+
+        status: 'needs_review',
+
+        errorMessage:
+          'الفاتورة لا تحتوي على تصريح كاشير Offline صالح. قد تكون فاتورة قديمة قبل تفعيل Cashier Grants.',
+      })
+
+      continue
+    }
+
+    syncableSales.push(sale)
+
+    // المفتاح يضاف في الذاكرة فقط
+    // ولا يتم تحديث payload_json داخل SQLite.
+    syncPayloads.push({
+      ...payload,
+      cashierGrantToken,
+    })
+  }
+
+  if (missingGrantResults.length > 0) {
+    applyPendingSaleSyncResults(
+      missingGrantResults.map((result) => result.localSaleId),
+
+      missingGrantResults,
+    )
+  }
+
+  if (syncableSales.length === 0) {
+    syncInProgress = false
+
+    const reviewOnlyResult = {
+      inProgress: false,
+
+      selectedItems: selectedSales.length,
+
+      processedItems: 0,
+
+      reviewItems: missingGrantResults.length,
+
+      failedItems: 0,
+
+      pendingSalesCount: countPendingSales(),
+
+      message: `${missingGrantResults.length} فاتورة تحتاج مراجعة لأنها لا تملك تصريح كاشير صالح.`,
+    }
+
+    broadcastSyncCompleted(reviewOnlyResult)
+
+    return reviewOnlyResult
+  }
+
+  const localSaleIds = syncableSales.map((sale) => sale.localSaleId)
 
   try {
     // المفتاح حتمي لنفس مجموعة الفواتير.
     // لو وصلت الدفعة للسيرفر وفُقد الرد،
     // المحاولة التالية تحصل على نفس Batch بدل إنشاء دفعة مكررة.
-    const batchIdentity = selectedSales
+    const batchIdentity = syncableSales
       .map((sale) => sale.idempotencyKey)
       .sort()
       .join('|')
@@ -469,7 +554,7 @@ async function syncPendingSales(manual: boolean) {
     const response = await requestDeviceApi('/api/pos-sync/batches', 'POST', {
       batchKey,
 
-      sales: selectedSales.map((sale) => sale.payload),
+      sales: syncPayloads,
     })
 
     const responseRecord = asRecord(response)
@@ -524,11 +609,14 @@ async function syncPendingSales(manual: boolean) {
         result.status === 'processed' || result.status === 'duplicate',
     ).length
 
-    const reviewItems = results.filter(
+    const serverReviewItems = results.filter(
       (result) => result.status === 'needs_review',
     ).length
 
-    const failedItems = selectedSales.length - processedItems - reviewItems
+    const reviewItems = missingGrantResults.length + serverReviewItems
+
+    const failedItems =
+      syncableSales.length - processedItems - serverReviewItems
 
     const completedResult = {
       inProgress: false,
@@ -559,8 +647,9 @@ async function syncPendingSales(manual: boolean) {
       inProgress: false,
       selectedItems: selectedSales.length,
       processedItems: 0,
-      reviewItems: 0,
-      failedItems: selectedSales.length,
+      reviewItems: missingGrantResults.length,
+
+      failedItems: syncableSales.length,
 
       pendingSalesCount: countPendingSales(),
 
@@ -611,6 +700,8 @@ function registerIpcHandlers() {
 
       if (deviceIdentityChanged) {
         clearCashierSession()
+        clearCashierGrants()
+
         clearWorkspaceCache()
         clearCatalogCache()
       }
@@ -627,6 +718,8 @@ function registerIpcHandlers() {
 
   ipcMain.handle('desktop-pos:clear-device-config', () => {
     clearCashierSession()
+    clearCashierGrants()
+
     clearWorkspaceCache()
     clearCatalogCache()
     deleteSetting(DEVICE_SERVER_URL_KEY)

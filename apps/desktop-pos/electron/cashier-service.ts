@@ -32,6 +32,10 @@ export type CashierSessionUser = {
 
 export type PublicCashierSession = {
   expiresAt: string
+
+  cashierGrantId: string
+  cashierGrantExpiresAt: string
+
   user: CashierSessionUser
 }
 
@@ -87,7 +91,24 @@ type StoredCashierSession = {
   token: string
   tokenType: string
   expiresAt: string
+
+  cashierGrantId: string
+  cashierGrantExpiresAt: string
+
   user: CashierSessionUser
+}
+
+type StoredCashierGrant = {
+  grantId: string
+  grantToken: string
+
+  issuedAt: string
+  expiresAt: string
+
+  cashierId: string
+  deviceId: string
+  companyId: string
+  branchId: string
 }
 
 type CashierLoginInput = {
@@ -122,6 +143,8 @@ const DEVICE_ID_KEY = 'pos.device.id'
 const DEVICE_SECRET_KEY = 'pos.device.encrypted-secret'
 
 const CASHIER_SESSION_KEY = 'pos.cashier.encrypted-session'
+
+const CASHIER_GRANTS_KEY = 'pos.cashier.encrypted-grants'
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -237,6 +260,9 @@ function parseCashierSession(value: string): StoredCashierSession | null {
       typeof parsed.token !== 'string' ||
       !parsed.token ||
       typeof parsed.expiresAt !== 'string' ||
+      typeof parsed.cashierGrantId !== 'string' ||
+      !uuidPattern.test(parsed.cashierGrantId) ||
+      typeof parsed.cashierGrantExpiresAt !== 'string' ||
       typeof parsed.user !== 'object' ||
       parsed.user === null ||
       typeof parsed.user.id !== 'string' ||
@@ -267,11 +293,13 @@ function getStoredCashierSession(): StoredCashierSession | null {
       return null
     }
 
-    const expiresAt = new Date(session.expiresAt)
+    // جلسة الـ Bearer قد تنتهي قبل تصريح Offline.
+    // نحتفظ بهوية الكاشير محليًا حتى انتهاء المنحة.
+    const grantExpiresAt = new Date(session.cashierGrantExpiresAt)
 
     if (
-      Number.isNaN(expiresAt.getTime()) ||
-      expiresAt.getTime() <= Date.now()
+      Number.isNaN(grantExpiresAt.getTime()) ||
+      grantExpiresAt.getTime() <= Date.now()
     ) {
       deleteSetting(CASHIER_SESSION_KEY)
       return null
@@ -290,6 +318,99 @@ function saveCashierSession(session: StoredCashierSession) {
   setSetting(CASHIER_SESSION_KEY, encryptedSession)
 }
 
+function parseCashierGrants(value: string): StoredCashierGrant[] {
+  try {
+    const parsed = JSON.parse(value) as unknown
+
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed.filter((value): value is StoredCashierGrant => {
+      if (typeof value !== 'object' || value === null) {
+        return false
+      }
+
+      const grant = value as Partial<StoredCashierGrant>
+
+      return (
+        typeof grant.grantId === 'string' &&
+        uuidPattern.test(grant.grantId) &&
+        typeof grant.grantToken === 'string' &&
+        /^[0-9a-f]{64}$/i.test(grant.grantToken) &&
+        typeof grant.issuedAt === 'string' &&
+        typeof grant.expiresAt === 'string' &&
+        typeof grant.cashierId === 'string' &&
+        typeof grant.deviceId === 'string' &&
+        typeof grant.companyId === 'string' &&
+        typeof grant.branchId === 'string'
+      )
+    })
+  } catch {
+    return []
+  }
+}
+
+function getStoredCashierGrants(): StoredCashierGrant[] {
+  const encryptedGrants = getSetting(CASHIER_GRANTS_KEY)
+
+  if (!encryptedGrants) {
+    return []
+  }
+
+  try {
+    return parseCashierGrants(decryptStoredValue(encryptedGrants))
+  } catch {
+    deleteSetting(CASHIER_GRANTS_KEY)
+
+    return []
+  }
+}
+
+function saveCashierGrants(grants: StoredCashierGrant[]) {
+  if (grants.length === 0) {
+    deleteSetting(CASHIER_GRANTS_KEY)
+
+    return
+  }
+
+  setSetting(
+    CASHIER_GRANTS_KEY,
+
+    encryptStoredValue(JSON.stringify(grants)),
+  )
+}
+
+function saveCashierGrant(grant: StoredCashierGrant) {
+  const currentGrants = getStoredCashierGrants()
+
+  const nextGrants = [
+    ...currentGrants.filter(
+      (currentGrant) => currentGrant.grantId !== grant.grantId,
+    ),
+
+    grant,
+  ]
+
+  saveCashierGrants(nextGrants)
+}
+
+export function clearCashierGrants() {
+  deleteSetting(CASHIER_GRANTS_KEY)
+}
+
+export function getCashierGrantToken(grantId: string) {
+  if (!uuidPattern.test(grantId)) {
+    return null
+  }
+
+  const grant = getStoredCashierGrants().find(
+    (currentGrant) => currentGrant.grantId === grantId,
+  )
+
+  return grant?.grantToken ?? null
+}
+
 export function clearCashierSession() {
   deleteSetting(CASHIER_SESSION_KEY)
 }
@@ -303,6 +424,11 @@ export function getPublicCashierSession(): PublicCashierSession | null {
 
   return {
     expiresAt: session.expiresAt,
+
+    cashierGrantId: session.cashierGrantId,
+
+    cashierGrantExpiresAt: session.cashierGrantExpiresAt,
+
     user: session.user,
   }
 }
@@ -330,6 +456,64 @@ async function requestDeviceBootstrap() {
       'serverTime' | 'device' | 'stockLocations'
     >
   }>
+}
+
+async function issueCashierGrant(
+  config: StoredDeviceConfig,
+  bearerToken: string,
+) {
+  const response = (await requestJson(
+    `${config.serverUrl}/api/pos-sync/cashier-grants`,
+    {
+      method: 'POST',
+
+      headers: {
+        Accept: 'application/json',
+
+        'Content-Type': 'application/json',
+
+        Authorization: `Bearer ${bearerToken}`,
+
+        'X-POS-Device-Id': config.deviceId,
+
+        'X-POS-Device-Secret': config.deviceSecret,
+      },
+    },
+  )) as {
+    data?: {
+      grantId?: unknown
+      grantToken?: unknown
+      issuedAt?: unknown
+      expiresAt?: unknown
+      cashierId?: unknown
+      deviceId?: unknown
+    }
+  }
+
+  const grant = response.data
+
+  if (
+    !grant ||
+    typeof grant.grantId !== 'string' ||
+    !uuidPattern.test(grant.grantId) ||
+    typeof grant.grantToken !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(grant.grantToken) ||
+    typeof grant.issuedAt !== 'string' ||
+    typeof grant.expiresAt !== 'string' ||
+    typeof grant.cashierId !== 'string' ||
+    typeof grant.deviceId !== 'string'
+  ) {
+    throw new Error('استجابة تصريح الكاشير Offline غير مكتملة.')
+  }
+
+  return {
+    grantId: grant.grantId,
+    grantToken: grant.grantToken,
+    issuedAt: grant.issuedAt,
+    expiresAt: grant.expiresAt,
+    cashierId: grant.cashierId,
+    deviceId: grant.deviceId,
+  }
 }
 
 async function refreshCatalogCache() {
@@ -519,6 +703,31 @@ export async function loginCashier(input: CashierLoginInput) {
     throw new Error('الكاشير لا يتبع نفس شركة وفرع جهاز POS.')
   }
 
+  const cashierGrant = await issueCashierGrant(config, loginData.token)
+
+  if (
+    cashierGrant.cashierId !== user.id ||
+    cashierGrant.deviceId !== config.deviceId
+  ) {
+    throw new Error('تصريح الكاشير لا يطابق المستخدم أو جهاز POS.')
+  }
+
+  saveCashierGrant({
+    grantId: cashierGrant.grantId,
+
+    grantToken: cashierGrant.grantToken,
+
+    issuedAt: cashierGrant.issuedAt,
+
+    expiresAt: cashierGrant.expiresAt,
+
+    cashierId: user.id,
+    deviceId: config.deviceId,
+
+    companyId: user.companyId,
+    branchId: user.branchId,
+  })
+
   const storedSession: StoredCashierSession = {
     token: loginData.token,
 
@@ -526,6 +735,10 @@ export async function loginCashier(input: CashierLoginInput) {
       typeof loginData.tokenType === 'string' ? loginData.tokenType : 'Bearer',
 
     expiresAt: loginData.expiresAt,
+
+    cashierGrantId: cashierGrant.grantId,
+
+    cashierGrantExpiresAt: cashierGrant.expiresAt,
 
     user: {
       id: user.id,

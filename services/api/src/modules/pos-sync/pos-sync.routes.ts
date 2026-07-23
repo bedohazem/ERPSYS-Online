@@ -1,6 +1,12 @@
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import { db } from '../../db/pool'
+import {
+  getAuthContext,
+  hashSessionToken,
+  requireAuth,
+  requirePermission,
+} from '../auth/auth.middleware'
 import {
   getPosDeviceContext,
   requirePosDevice,
@@ -22,6 +28,16 @@ function asRecord(value: unknown): Record<string, unknown> {
   }
 
   return value as Record<string, unknown>
+}
+
+function sanitizeOfflineSalePayload(value: unknown): Record<string, unknown> {
+  const sale = asRecord(value)
+
+  // المفتاح يستخدم أثناء المعالجة فقط.
+  // ممنوع تخزينه داخل request_payload أو item_payload.
+  const { cashierGrantToken: _cashierGrantToken, ...safeSale } = sale
+
+  return safeSale
 }
 
 function isUniqueViolation(error: unknown) {
@@ -147,6 +163,100 @@ async function createConflict(options: {
 // كل المسارات التالية تستخدم Device Authentication.
 // ======================================================
 posDeviceSyncRouter.use('/api/pos-sync', requirePosDevice)
+
+// ======================================================
+// POST /api/pos-sync/cashier-grants
+//
+// يحتاج في نفس الطلب إلى:
+// - Device Authentication
+// - Bearer Authentication
+// - sales.create
+//
+// المفتاح الخام يظهر مرة واحدة فقط.
+// ======================================================
+posDeviceSyncRouter.post(
+  '/api/pos-sync/cashier-grants',
+
+  requireAuth,
+
+  requirePermission('sales.create'),
+
+  async (_req, res, next) => {
+    try {
+      const device = getPosDeviceContext(res)
+
+      const auth = getAuthContext(res)
+
+      if (
+        auth.companyId !== device.companyId ||
+        auth.branchId !== device.branchId
+      ) {
+        return res.status(403).json({
+          error: 'Cashier session does not match POS device branch',
+        })
+      }
+
+      const grantToken = randomBytes(32).toString('hex')
+
+      const grantTokenHash = hashSessionToken(grantToken)
+
+      const result = await db.query(
+        `
+          INSERT INTO pos_cashier_grants (
+            company_id,
+            branch_id,
+            device_id,
+            cashier_id,
+            auth_session_id,
+            token_hash,
+            expires_at
+          )
+          VALUES (
+            $1, $2, $3, $4, $5, $6,
+
+            -- يسمح للكاشير بالبيع Offline
+            -- لمدة سبعة أيام من المصادقة.
+            NOW() + INTERVAL '7 days'
+          )
+          RETURNING
+            id,
+            cashier_id,
+            device_id,
+            issued_at,
+            expires_at;
+          `,
+        [
+          device.companyId,
+          device.branchId,
+          device.deviceId,
+          auth.userId,
+          auth.sessionId,
+          grantTokenHash,
+        ],
+      )
+
+      const grant = result.rows[0]
+
+      return res.status(201).json({
+        data: {
+          grantId: grant.id,
+
+          grantToken,
+
+          issuedAt: grant.issued_at,
+
+          expiresAt: grant.expires_at,
+
+          cashierId: grant.cashier_id,
+
+          deviceId: grant.device_id,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
 
 // ======================================================
 // POST /api/pos-sync/heartbeat
@@ -375,7 +485,12 @@ posDeviceSyncRouter.post('/api/pos-sync/batches', async (req, res, next) => {
         device.deviceId,
         batchKey,
         sales.length,
-        body,
+
+        {
+          ...body,
+
+          sales: sales.map(sanitizeOfflineSalePayload),
+        },
       ],
     )
 
@@ -438,7 +553,14 @@ posDeviceSyncRouter.post('/api/pos-sync/batches', async (req, res, next) => {
             )
             RETURNING *;
             `,
-        [device.companyId, batch.id, localEntityId, idempotencyKey, rawSale],
+        [
+          device.companyId,
+          batch.id,
+          localEntityId,
+          idempotencyKey,
+
+          sanitizeOfflineSalePayload(rawSale),
+        ],
       )
 
       const syncItem = syncItemResult.rows[0]
