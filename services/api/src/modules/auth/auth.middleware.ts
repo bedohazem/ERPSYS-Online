@@ -560,6 +560,38 @@ export function requireBusinessPermission(
   }
 
   // ======================================================
+  // صلاحيات الاستبدالات.
+  //
+  // القراءة متاحة لمن يملك exchanges.view أو
+  // exchanges.create لأن منشئ الاستبدال يحتاج البحث
+  // عن الفاتورة والأصناف قبل الحفظ.
+  // ======================================================
+  if (path === '/api/exchanges' || path.startsWith('/api/exchanges/')) {
+    if (isReadRequest) {
+      const auth = getAuthContext(res)
+
+      const canReadExchanges =
+        auth.roles.includes('admin') ||
+        auth.permissions.includes('exchanges.view') ||
+        auth.permissions.includes('exchanges.create')
+
+      if (!canReadExchanges) {
+        return res.status(403).json({
+          error: 'Permission required: exchanges.view or exchanges.create',
+        })
+      }
+
+      return next()
+    }
+
+    if (path.endsWith('/void')) {
+      return requirePermission('exchanges.void')(req, res, next)
+    }
+
+    return requirePermission('exchanges.create')(req, res, next)
+  }
+
+  // ======================================================
   // إدارة أجهزة POS.
   //
   // القراءة تحتاج view أو manage.
