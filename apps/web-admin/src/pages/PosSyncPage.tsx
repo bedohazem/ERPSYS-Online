@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { requestJson } from '../lib/http'
+import { ApiError, requestJson } from '../lib/http'
 
 type ApiResponse<T> = {
   data: T
@@ -101,6 +101,13 @@ type PosSyncConflict = {
 
   error_code: string | null
   error_message: string | null
+  resolution_action: string | null
+
+  resolution_note: string | null
+
+  resolved_at: string | null
+
+  resolved_by: string | null
 }
 
 type PosSyncBatchDetails = {
@@ -110,6 +117,10 @@ type PosSyncBatchDetails = {
 }
 
 type ConflictActionStatus = 'open' | 'reviewed' | 'ignored'
+
+type ConflictResolutionAction =
+  | 'accept_submitted_price'
+  | 'retry_stock_deduction'
 
 type PosSyncPageProps = {
   companyId: string
@@ -185,6 +196,7 @@ function translateConflictType(conflictType: string) {
     price_changed: 'تغير السعر',
     variant_not_found: 'الصنف غير موجود',
     cashier_not_found: 'الكاشير غير موجود',
+    cashier_grant_invalid: 'تصريح الكاشير غير صالح',
     stock_location_not_found: 'مكان التخزين غير موجود',
     customer_not_found: 'العميل غير موجود',
     shift_not_found: 'وردية الكاشير غير صالحة',
@@ -498,6 +510,112 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
           ? currentError.message
           : 'تعذر تحديث حالة التعارض.',
       )
+    } finally {
+      conflictActionLock.current = false
+      setRunningConflictId(null)
+    }
+  }
+
+  async function resolveConflict(
+    conflict: PosSyncConflict,
+    action: ConflictResolutionAction,
+  ) {
+    if (conflictActionLock.current) {
+      return
+    }
+
+    const actionLabel =
+      action === 'accept_submitted_price'
+        ? 'قبول السعر المسجل في الفاتورة'
+        : 'إعادة محاولة خصم المخزون'
+
+    const note = window.prompt('ملاحظة الحل — اختيارية:', '')
+
+    if (note === null) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      `${actionLabel} للعملية ${conflict.local_entity_id || conflict.id}؟`,
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    conflictActionLock.current = true
+
+    setRunningConflictId(conflict.id)
+
+    setError('')
+    setSuccess('')
+
+    try {
+      await requestJson(
+        `/api/pos-sync-admin/conflicts/${encodeURIComponent(
+          conflict.id,
+        )}/resolve`,
+
+        {
+          method: 'POST',
+
+          headers: {
+            'Content-Type': 'application/json',
+          },
+
+          body: JSON.stringify({
+            action,
+
+            note: note.trim() || null,
+          }),
+        },
+      )
+
+      setSuccess(`تم ${actionLabel} بنجاح.`)
+
+      await Promise.all([
+        loadConflicts(),
+        loadBatches(),
+
+        selectedBatchDetails
+          ? loadBatchDetails(selectedBatchDetails.batch.id)
+          : Promise.resolve(),
+      ])
+    } catch (currentError) {
+      if (currentError instanceof ApiError) {
+        const errorData = currentError.data as {
+          details?: {
+            shortages?: Array<{
+              variantId?: unknown
+              availableQuantity?: unknown
+              requestedQuantity?: unknown
+            }>
+          }
+        } | null
+
+        const shortages = errorData?.details?.shortages
+
+        if (Array.isArray(shortages) && shortages.length > 0) {
+          const shortageText = shortages
+            .map(
+              (shortage) =>
+                `${String(shortage.variantId || '-')}: المتاح ${String(
+                  shortage.availableQuantity ?? 0,
+                )} والمطلوب ${String(shortage.requestedQuantity ?? 0)}`,
+            )
+            .join(' — ')
+
+          setError(`${currentError.message}: ${shortageText}`)
+        } else {
+          setError(currentError.message)
+        }
+      } else {
+        setError(
+          currentError instanceof Error
+            ? currentError.message
+            : 'تعذر حل التعارض.',
+        )
+      }
     } finally {
       conflictActionLock.current = false
       setRunningConflictId(null)
@@ -948,6 +1066,9 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
                 <option value="price_changed">تغير السعر</option>
                 <option value="variant_not_found">الصنف غير موجود</option>
                 <option value="cashier_not_found">الكاشير غير موجود</option>
+                <option value="cashier_grant_invalid">
+                  تصريح الكاشير غير صالح
+                </option>
                 <option value="stock_location_not_found">
                   مكان التخزين غير موجود
                 </option>
@@ -1080,7 +1201,43 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
                         <td>
                           {canManageSync ? (
                             <div className="pos-sync-action-buttons">
-                              {conflict.status === 'open' ? (
+                              {conflict.status !== 'resolved' &&
+                              conflict.conflict_type === 'price_changed' ? (
+                                <button
+                                  type="button"
+                                  className="table-button primary-button"
+                                  disabled={actionRunning}
+                                  onClick={() =>
+                                    void resolveConflict(
+                                      conflict,
+                                      'accept_submitted_price',
+                                    )
+                                  }
+                                >
+                                  قبول سعر الفاتورة
+                                </button>
+                              ) : null}
+
+                              {conflict.status !== 'resolved' &&
+                              conflict.conflict_type === 'negative_stock' ? (
+                                <button
+                                  type="button"
+                                  className="table-button primary-button"
+                                  disabled={actionRunning}
+                                  onClick={() =>
+                                    void resolveConflict(
+                                      conflict,
+                                      'retry_stock_deduction',
+                                    )
+                                  }
+                                >
+                                  إعادة خصم المخزون
+                                </button>
+                              ) : null}
+
+                              {conflict.status === 'resolved' ? (
+                                <span className="muted">تم الحل نهائيًا</span>
+                              ) : conflict.status === 'open' ? (
                                 <>
                                   <button
                                     type="button"
@@ -1096,19 +1253,21 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
                                     تمت المراجعة
                                   </button>
 
-                                  <button
-                                    type="button"
-                                    className="table-button danger-button"
-                                    disabled={actionRunning}
-                                    onClick={() =>
-                                      void updateConflictStatus(
-                                        conflict,
-                                        'ignored',
-                                      )
-                                    }
-                                  >
-                                    تجاهل
-                                  </button>
+                                  {conflict.severity !== 'critical' ? (
+                                    <button
+                                      type="button"
+                                      className="table-button danger-button"
+                                      disabled={actionRunning}
+                                      onClick={() =>
+                                        void updateConflictStatus(
+                                          conflict,
+                                          'ignored',
+                                        )
+                                      }
+                                    >
+                                      تجاهل
+                                    </button>
+                                  ) : null}
                                 </>
                               ) : (
                                 <button
@@ -1182,6 +1341,25 @@ function PosSyncPage({ companyId, branchId, onOpenSale }: PosSyncPageProps) {
               <strong>{formatSyncDate(selectedConflict.reviewed_at)}</strong>
             </article>
           </section>
+
+          {selectedConflict.resolution_action ? (
+            <p className="success-message">
+              تم حل التعارض باستخدام:{' '}
+              <strong>
+                {selectedConflict.resolution_action === 'accept_submitted_price'
+                  ? 'قبول السعر المسجل في الفاتورة'
+                  : selectedConflict.resolution_action ===
+                      'retry_stock_deduction'
+                    ? 'إعادة خصم المخزون'
+                    : selectedConflict.resolution_action}
+              </strong>
+              {' • '}
+              {formatSyncDate(selectedConflict.resolved_at)}
+              {selectedConflict.resolution_note
+                ? ` • ${selectedConflict.resolution_note}`
+                : ''}
+            </p>
+          ) : null}
 
           <h3>بيانات التعارض</h3>
 

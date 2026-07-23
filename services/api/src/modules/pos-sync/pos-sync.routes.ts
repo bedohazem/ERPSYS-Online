@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto'
+import type { PoolClient } from 'pg'
 import { Router } from 'express'
 import { db } from '../../db/pool'
 import {
@@ -60,6 +61,10 @@ function parseLimit(value: unknown, fallback = 50) {
 
 function roundMoney(value: number) {
   return Number(value.toFixed(2))
+}
+
+function roundQuantity(value: number) {
+  return Number(value.toFixed(3))
 }
 
 function parseNonNegativeMoney(value: unknown, fieldName: string) {
@@ -224,6 +229,228 @@ async function createConflict(options: {
       options.details,
     ],
   )
+}
+
+async function refreshSyncBatchCounters(
+  client: PoolClient,
+  companyId: string,
+  batchId: string,
+) {
+  const countsResult = await client.query(
+    `
+      SELECT
+        COUNT(*)::int
+          AS total_items,
+
+        COUNT(*) FILTER (
+          WHERE status IN (
+            'processed',
+            'duplicate'
+          )
+        )::int
+          AS processed_items,
+
+        COUNT(*) FILTER (
+          WHERE status =
+            'needs_review'
+        )::int
+          AS review_items,
+
+        COUNT(*) FILTER (
+          WHERE status = 'failed'
+        )::int
+          AS failed_items
+
+      FROM pos_offline_sync_items
+
+      WHERE company_id = $1
+        AND batch_id = $2;
+      `,
+    [companyId, batchId],
+  )
+
+  const counts = countsResult.rows[0]
+
+  const totalItems = Number(counts.total_items)
+
+  const processedItems = Number(counts.processed_items)
+
+  const reviewItems = Number(counts.review_items)
+
+  const failedItems = Number(counts.failed_items)
+
+  const status =
+    reviewItems > 0 || failedItems > 0 ? 'completed_with_errors' : 'completed'
+
+  await client.query(
+    `
+    UPDATE pos_offline_sync_batches
+
+    SET
+      total_items = $1,
+      processed_items = $2,
+      review_items = $3,
+      failed_items = $4,
+      status = $5,
+
+      response_payload =
+        COALESCE(
+          response_payload,
+          '{}'::jsonb
+        ) ||
+        jsonb_build_object(
+          'status', $5,
+          'totalItems', $1,
+          'processedItems', $2,
+          'reviewItems', $3,
+          'failedItems', $4
+        )
+
+    WHERE company_id = $6
+      AND id = $7;
+    `,
+    [
+      totalItems,
+      processedItems,
+      reviewItems,
+      failedItems,
+      status,
+
+      companyId,
+      batchId,
+    ],
+  )
+
+  return {
+    totalItems,
+    processedItems,
+    reviewItems,
+    failedItems,
+    status,
+  }
+}
+
+async function finalizeResolvedSyncItem(
+  client: PoolClient,
+
+  companyId: string,
+  syncItemId: string,
+
+  resolvedBy: string,
+  resolutionAction: string,
+) {
+  const itemResult = await client.query(
+    `
+      SELECT
+        id,
+        batch_id,
+        server_entity_type,
+        server_entity_id
+
+      FROM pos_offline_sync_items
+
+      WHERE company_id = $1
+        AND id = $2
+
+      FOR UPDATE;
+      `,
+    [companyId, syncItemId],
+  )
+
+  if ((itemResult.rowCount ?? 0) === 0) {
+    throw new Error('POS sync item was not found')
+  }
+
+  const item = itemResult.rows[0]
+
+  const remainingResult = await client.query(
+    `
+      SELECT COUNT(*)::int
+        AS total
+
+      FROM pos_pending_conflicts
+
+      WHERE company_id = $1
+        AND sync_item_id = $2
+
+        -- التجاهل أو المراجعة لا يعنيان
+        -- أن التعارض تم حله فعليًا.
+        AND status <> 'resolved';
+      `,
+    [companyId, syncItemId],
+  )
+
+  const remainingConflicts = Number(remainingResult.rows[0].total)
+
+  if (
+    remainingConflicts > 0 ||
+    item.server_entity_type !== 'sale' ||
+    !item.server_entity_id
+  ) {
+    const batch = await refreshSyncBatchCounters(
+      client,
+      companyId,
+      item.batch_id,
+    )
+
+    return {
+      finalized: false,
+      remainingConflicts,
+      batch,
+    }
+  }
+
+  await client.query(
+    `
+    UPDATE sales
+
+    SET status = 'completed'
+
+    WHERE company_id = $1
+      AND id = $2
+      AND status =
+          'pending_review';
+    `,
+    [companyId, item.server_entity_id],
+  )
+
+  await client.query(
+    `
+    UPDATE pos_offline_sync_items
+
+    SET
+      status = 'processed',
+      error_code = NULL,
+      error_message = NULL,
+      processed_at = NOW(),
+
+      result_payload =
+        COALESCE(
+          result_payload,
+          '{}'::jsonb
+        ) ||
+        jsonb_build_object(
+          'resolution',
+          jsonb_build_object(
+            'action', $3,
+            'resolvedBy', $4,
+            'resolvedAt', NOW()
+          )
+        )
+
+    WHERE company_id = $1
+      AND id = $2;
+    `,
+    [companyId, syncItemId, resolutionAction, resolvedBy],
+  )
+
+  const batch = await refreshSyncBatchCounters(client, companyId, item.batch_id)
+
+  return {
+    finalized: true,
+    remainingConflicts: 0,
+    batch,
+  }
 }
 
 // ======================================================
@@ -1317,6 +1544,111 @@ posDeviceSyncRouter.get(
 )
 
 // ======================================================
+// POST /api/pos-sync/review-results
+//
+// يستخدمه Desktop POS لمعرفة هل تم حل
+// فواتير needs_review من Web Admin.
+// ======================================================
+posDeviceSyncRouter.post(
+  '/api/pos-sync/review-results',
+
+  async (req, res, next) => {
+    try {
+      const device = getPosDeviceContext(res)
+
+      const body = asRecord(req.body)
+
+      const rawLocalSaleIds = body.localSaleIds
+
+      if (
+        !Array.isArray(rawLocalSaleIds) ||
+        rawLocalSaleIds.length === 0 ||
+        rawLocalSaleIds.length > 100
+      ) {
+        return res.status(400).json({
+          error: 'localSaleIds must contain between 1 and 100 entries',
+        })
+      }
+
+      const localSaleIds = [
+        ...new Set(
+          rawLocalSaleIds
+            .filter((value): value is string => typeof value === 'string')
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0 && value.length <= 200),
+        ),
+      ]
+
+      if (localSaleIds.length === 0) {
+        return res.status(400).json({
+          error: 'localSaleIds are invalid',
+        })
+      }
+
+      const result = await db.query(
+        `
+          SELECT DISTINCT ON (
+            psi.local_entity_id
+          )
+            psi.local_entity_id,
+            psi.status,
+            psi.server_entity_id,
+            psi.error_code,
+            psi.error_message,
+            psi.processed_at
+
+          FROM pos_offline_sync_items psi
+
+          JOIN pos_offline_sync_batches psb
+            ON psb.id =
+               psi.batch_id
+            AND psb.company_id =
+                psi.company_id
+
+          WHERE psi.company_id = $1
+            AND psb.device_id = $2
+
+            AND psi.local_entity_id =
+                ANY($3::text[])
+
+          ORDER BY
+            psi.local_entity_id,
+            psi.created_at DESC;
+          `,
+        [device.companyId, device.deviceId, localSaleIds],
+      )
+
+      const rowsByLocalSaleId = new Map(
+        result.rows.map((row) => [row.local_entity_id, row]),
+      )
+
+      return res.json({
+        data: {
+          items: localSaleIds.map(
+            (localSaleId) =>
+              rowsByLocalSaleId.get(localSaleId) ?? {
+                local_entity_id: localSaleId,
+
+                status: 'needs_review',
+
+                server_entity_id: null,
+
+                error_code: 'SYNC_ITEM_NOT_FOUND',
+
+                error_message: 'لم يتم العثور على محاولة المزامنة على السيرفر.',
+
+                processed_at: null,
+              },
+          ),
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
 // Admin: GET /api/pos-sync-admin/batches
 // ======================================================
 posSyncAdminRouter.get(
@@ -1630,6 +1962,553 @@ posSyncAdminRouter.get(
 )
 
 // ======================================================
+// Admin: POST conflict resolution
+//
+// Actions:
+// - accept_submitted_price
+// - retry_stock_deduction
+// ======================================================
+posSyncAdminRouter.post(
+  '/api/pos-sync-admin/conflicts/:conflictId/resolve',
+
+  async (req, res, next) => {
+    const client = await db.connect()
+
+    try {
+      const auth = getAuthContext(res)
+
+      const rawConflictId = req.params.conflictId
+
+      const conflictId = Array.isArray(rawConflictId)
+        ? rawConflictId[0]
+        : rawConflictId
+
+      if (typeof conflictId !== 'string' || !uuidPattern.test(conflictId)) {
+        return res.status(400).json({
+          error: 'conflictId is invalid',
+        })
+      }
+
+      const body = asRecord(req.body)
+
+      const action = typeof body.action === 'string' ? body.action.trim() : ''
+
+      const resolutionNote =
+        typeof body.note === 'string' && body.note.trim()
+          ? body.note.trim().slice(0, 500)
+          : null
+
+      const allowedActions = new Set([
+        'accept_submitted_price',
+        'retry_stock_deduction',
+      ])
+
+      if (!allowedActions.has(action)) {
+        return res.status(400).json({
+          error: 'Unsupported resolution action',
+        })
+      }
+
+      await client.query('BEGIN')
+
+      const conflictResult = await client.query(
+        `
+          SELECT
+            pc.*,
+
+            psi.batch_id,
+            psi.server_entity_type,
+            psi.server_entity_id,
+            psi.status
+              AS sync_item_status
+
+          FROM pos_pending_conflicts pc
+
+          JOIN pos_offline_sync_items psi
+            ON psi.id =
+               pc.sync_item_id
+            AND psi.company_id =
+                pc.company_id
+
+          WHERE pc.company_id = $1
+            AND pc.id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR pc.branch_id =
+                 $3::uuid
+            )
+
+          FOR UPDATE OF pc, psi;
+          `,
+        [auth.companyId, conflictId, auth.branchId],
+      )
+
+      if ((conflictResult.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK')
+
+        return res.status(404).json({
+          error: 'POS sync conflict was not found',
+        })
+      }
+
+      const conflict = conflictResult.rows[0]
+
+      if (
+        !conflict.sync_item_id ||
+        conflict.server_entity_type !== 'sale' ||
+        !conflict.server_entity_id
+      ) {
+        await client.query('ROLLBACK')
+
+        return res.status(409).json({
+          error:
+            'This conflict has no server sale that can be resolved automatically',
+        })
+      }
+
+      if (
+        action === 'accept_submitted_price' &&
+        conflict.conflict_type !== 'price_changed'
+      ) {
+        await client.query('ROLLBACK')
+
+        return res.status(400).json({
+          error: 'accept_submitted_price supports price_changed conflicts only',
+        })
+      }
+
+      if (
+        action === 'retry_stock_deduction' &&
+        conflict.conflict_type !== 'negative_stock'
+      ) {
+        await client.query('ROLLBACK')
+
+        return res.status(400).json({
+          error: 'retry_stock_deduction supports negative_stock conflicts only',
+        })
+      }
+
+      if (action === 'accept_submitted_price') {
+        await client.query(
+          `
+          UPDATE pos_pending_conflicts
+
+          SET
+            status = 'resolved',
+
+            resolution_action = $1,
+            resolution_note = $2,
+
+            resolved_at = NOW(),
+            resolved_by = $3,
+
+            reviewed_at =
+              COALESCE(
+                reviewed_at,
+                NOW()
+              ),
+
+            reviewed_by =
+              COALESCE(
+                reviewed_by,
+                $3
+              )
+
+          WHERE company_id = $4
+            AND sync_item_id = $5
+            AND conflict_type =
+                'price_changed'
+
+            AND status IN (
+              'open',
+              'reviewed',
+              'ignored'
+            );
+          `,
+          [
+            action,
+            resolutionNote,
+            auth.userId,
+
+            auth.companyId,
+            conflict.sync_item_id,
+          ],
+        )
+      }
+
+      if (action === 'retry_stock_deduction') {
+        const saleResult = await client.query(
+          `
+            SELECT
+              id,
+              branch_id,
+              stock_location_id,
+              cashier_id,
+              sale_number,
+              status
+
+            FROM sales
+
+            WHERE company_id = $1
+              AND id = $2
+
+            FOR UPDATE;
+            `,
+          [auth.companyId, conflict.server_entity_id],
+        )
+
+        if ((saleResult.rowCount ?? 0) === 0) {
+          await client.query('ROLLBACK')
+
+          return res.status(404).json({
+            error: 'Linked offline sale was not found',
+          })
+        }
+
+        const sale = saleResult.rows[0]
+
+        if (!['pending_review', 'completed'].includes(sale.status)) {
+          await client.query('ROLLBACK')
+
+          return res.status(409).json({
+            error: 'Linked sale status does not allow stock resolution',
+          })
+        }
+
+        const saleItemsResult = await client.query(
+          `
+            SELECT
+              variant_id,
+              quantity
+
+            FROM sale_items
+
+            WHERE company_id = $1
+              AND sale_id = $2
+
+            ORDER BY variant_id ASC;
+            `,
+          [auth.companyId, sale.id],
+        )
+
+        if ((saleItemsResult.rowCount ?? 0) === 0) {
+          await client.query('ROLLBACK')
+
+          return res.status(409).json({
+            error: 'Linked sale has no items',
+          })
+        }
+
+        const movementResult = await client.query(
+          `
+            SELECT COUNT(*)::int
+              AS total
+
+            FROM stock_movements
+
+            WHERE company_id = $1
+              AND movement_type =
+                  'sale'
+              AND reference_type =
+                  'sale'
+              AND reference_id = $2;
+            `,
+          [auth.companyId, sale.id],
+        )
+
+        const existingMovementCount = Number(movementResult.rows[0].total)
+
+        if (
+          existingMovementCount > 0 &&
+          existingMovementCount !== saleItemsResult.rows.length
+        ) {
+          await client.query('ROLLBACK')
+
+          return res.status(409).json({
+            error:
+              'Sale has an incomplete stock movement set and requires manual investigation',
+          })
+        }
+
+        if (existingMovementCount === 0) {
+          for (const item of saleItemsResult.rows) {
+            await client.query(
+              `
+              INSERT INTO stock_balances (
+                company_id,
+                branch_id,
+                stock_location_id,
+                variant_id,
+                quantity
+              )
+              VALUES (
+                $1, $2, $3, $4, 0
+              )
+
+              ON CONFLICT (
+                company_id,
+                stock_location_id,
+                variant_id
+              )
+              DO NOTHING;
+              `,
+              [
+                auth.companyId,
+                sale.branch_id,
+                sale.stock_location_id,
+                item.variant_id,
+              ],
+            )
+          }
+
+          const variantIds = saleItemsResult.rows.map((item) => item.variant_id)
+
+          const balancesResult = await client.query(
+            `
+              SELECT
+                variant_id,
+                quantity
+
+              FROM stock_balances
+
+              WHERE company_id = $1
+                AND stock_location_id =
+                    $2
+
+                AND variant_id =
+                    ANY($3::uuid[])
+
+              ORDER BY variant_id ASC
+
+              FOR UPDATE;
+              `,
+            [auth.companyId, sale.stock_location_id, variantIds],
+          )
+
+          const balances = new Map(
+            balancesResult.rows.map((row) => [
+              row.variant_id,
+              Number(row.quantity),
+            ]),
+          )
+
+          const shortages = saleItemsResult.rows
+            .map((item) => {
+              const availableQuantity = balances.get(item.variant_id) ?? 0
+
+              const requestedQuantity = Number(item.quantity)
+
+              return {
+                variantId: item.variant_id,
+
+                availableQuantity,
+                requestedQuantity,
+              }
+            })
+            .filter((item) => item.availableQuantity < item.requestedQuantity)
+
+          if (shortages.length > 0) {
+            await client.query('ROLLBACK')
+
+            return res.status(409).json({
+              error: 'Stock is still insufficient for this sale',
+
+              details: {
+                shortages,
+              },
+            })
+          }
+
+          for (const item of saleItemsResult.rows) {
+            const quantityBefore = balances.get(item.variant_id) ?? 0
+
+            const soldQuantity = Number(item.quantity)
+
+            const quantityAfter = roundQuantity(quantityBefore - soldQuantity)
+
+            await client.query(
+              `
+              UPDATE stock_balances
+
+              SET
+                quantity = $1,
+                updated_at = NOW()
+
+              WHERE company_id = $2
+                AND stock_location_id =
+                    $3
+                AND variant_id = $4;
+              `,
+              [
+                quantityAfter,
+
+                auth.companyId,
+                sale.stock_location_id,
+                item.variant_id,
+              ],
+            )
+
+            await client.query(
+              `
+              INSERT INTO stock_movements (
+                company_id,
+                branch_id,
+                stock_location_id,
+                variant_id,
+
+                movement_type,
+                quantity,
+                quantity_before,
+                quantity_after,
+
+                reference_type,
+                reference_id,
+                note,
+                created_by
+              )
+              VALUES (
+                $1, $2, $3, $4,
+                'sale',
+                $5, $6, $7,
+                'sale',
+                $8,
+                $9,
+                $10
+              );
+              `,
+              [
+                auth.companyId,
+                sale.branch_id,
+                sale.stock_location_id,
+                item.variant_id,
+
+                -Math.abs(soldQuantity),
+
+                quantityBefore,
+                quantityAfter,
+
+                sale.id,
+
+                `Resolved offline POS sale ${sale.sale_number}`,
+
+                auth.userId,
+              ],
+            )
+          }
+        }
+
+        await client.query(
+          `
+          UPDATE pos_pending_conflicts
+
+          SET
+            status = 'resolved',
+
+            resolution_action = $1,
+            resolution_note = $2,
+
+            resolved_at = NOW(),
+            resolved_by = $3,
+
+            reviewed_at =
+              COALESCE(
+                reviewed_at,
+                NOW()
+              ),
+
+            reviewed_by =
+              COALESCE(
+                reviewed_by,
+                $3
+              )
+
+          WHERE company_id = $4
+            AND sync_item_id = $5
+            AND conflict_type =
+                'negative_stock'
+
+            AND status IN (
+              'open',
+              'reviewed',
+              'ignored'
+            );
+          `,
+          [
+            action,
+            resolutionNote,
+            auth.userId,
+
+            auth.companyId,
+            conflict.sync_item_id,
+          ],
+        )
+      }
+
+      const finalization = await finalizeResolvedSyncItem(
+        client,
+
+        auth.companyId,
+        conflict.sync_item_id,
+
+        auth.userId,
+        action,
+      )
+
+      const conflictsResult = await client.query(
+        `
+          SELECT
+            pc.*,
+
+            reviewer.full_name
+              AS reviewed_by_name,
+
+            resolver.full_name
+              AS resolved_by_name
+
+          FROM pos_pending_conflicts pc
+
+          LEFT JOIN users reviewer
+            ON reviewer.id =
+               pc.reviewed_by
+
+          LEFT JOIN users resolver
+            ON resolver.id =
+               pc.resolved_by
+
+          WHERE pc.company_id = $1
+            AND pc.sync_item_id = $2
+
+          ORDER BY pc.created_at ASC;
+          `,
+        [auth.companyId, conflict.sync_item_id],
+      )
+
+      await client.query('COMMIT')
+
+      return res.json({
+        data: {
+          syncItemId: conflict.sync_item_id,
+
+          saleId: conflict.server_entity_id,
+
+          action,
+          finalization,
+
+          conflicts: conflictsResult.rows,
+        },
+      })
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+
+      return next(error)
+    } finally {
+      client.release()
+    }
+  },
+)
+
+// ======================================================
 // Admin: PATCH conflict status
 // ======================================================
 posSyncAdminRouter.patch(
@@ -1662,6 +2541,49 @@ posSyncAdminRouter.patch(
 
       const selectedBranchId =
         typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+
+      const existingConflictResult = await db.query(
+        `
+    SELECT
+      status,
+      severity,
+      conflict_type
+
+    FROM pos_pending_conflicts
+
+    WHERE company_id = $1
+      AND id = $2
+
+      AND (
+        $3::uuid IS NULL
+        OR branch_id =
+           $3::uuid
+      )
+
+    LIMIT 1;
+    `,
+        [companyId.trim(), conflictId, selectedBranchId],
+      )
+
+      if ((existingConflictResult.rowCount ?? 0) === 0) {
+        return res.status(404).json({
+          error: 'POS sync conflict was not found',
+        })
+      }
+
+      const existingConflict = existingConflictResult.rows[0]
+
+      if (existingConflict.status === 'resolved') {
+        return res.status(409).json({
+          error: 'Resolved conflict cannot be reopened or changed',
+        })
+      }
+
+      if (status === 'ignored' && existingConflict.severity === 'critical') {
+        return res.status(409).json({
+          error: 'Critical conflict cannot be ignored; it must be resolved',
+        })
+      }
 
       const result = await db.query(
         `

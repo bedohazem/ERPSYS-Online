@@ -857,6 +857,40 @@ function mapPendingSaleRow(row: PendingSaleDatabaseRow): PendingSaleRecord {
   }
 }
 
+export function listPendingSalesForReview(limit = 100): PendingSaleRecord[] {
+  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 100)
+
+  const rows = getDatabase()
+    .prepare(
+      `
+      SELECT
+        id,
+        local_sale_id,
+        idempotency_key,
+        payload_json,
+        status,
+        attempt_count,
+        last_error,
+        created_at,
+        updated_at
+
+      FROM pending_sales
+
+      WHERE status =
+            'needs_review'
+
+      ORDER BY
+        updated_at ASC,
+        created_at ASC
+
+      LIMIT ?;
+      `,
+    )
+    .all(safeLimit) as PendingSaleDatabaseRow[]
+
+  return rows.map(mapPendingSaleRow)
+}
+
 // يأخذ مجموعة للمزامنة ويحوّلها إلى syncing داخل Transaction واحدة.
 // failed تُعاد تلقائيًا حتى 5 محاولات، أو دائمًا عند Sync Now اليدوي.
 export function takePendingSalesForSync(

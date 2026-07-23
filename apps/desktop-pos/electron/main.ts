@@ -28,6 +28,7 @@ import {
   clearCatalogCache,
   clearWorkspaceCache,
   countBlockingPendingSalesForShift,
+  listPendingSalesForReview,
 } from './local-store'
 
 type SaveDeviceConfigInput = {
@@ -433,6 +434,96 @@ async function requestDeviceApi(
   }
 }
 
+async function reconcileReviewedPendingSales() {
+  const reviewSales = listPendingSalesForReview(100)
+
+  if (reviewSales.length === 0) {
+    return {
+      checkedItems: 0,
+      resolvedItems: 0,
+      remainingItems: 0,
+    }
+  }
+
+  const localSaleIds = reviewSales.map((sale) => sale.localSaleId)
+
+  const response = await requestDeviceApi(
+    '/api/pos-sync/review-results',
+    'POST',
+    {
+      localSaleIds,
+    },
+  )
+
+  const responseRecord = asRecord(response)
+
+  const data = asRecord(responseRecord.data)
+
+  if (!Array.isArray(data.items)) {
+    throw new Error('استجابة نتائج مراجعة المبيعات غير مكتملة.')
+  }
+
+  const responseItems = new Map<string, Record<string, unknown>>()
+
+  for (const rawItem of data.items) {
+    const item = asRecord(rawItem)
+
+    const localSaleId =
+      typeof item.local_entity_id === 'string'
+        ? item.local_entity_id.trim()
+        : ''
+
+    if (localSaleId) {
+      responseItems.set(localSaleId, item)
+    }
+  }
+
+  let resolvedItems = 0
+  let remainingItems = 0
+
+  const results = localSaleIds.map((localSaleId) => {
+    const item = responseItems.get(localSaleId)
+
+    const rawStatus =
+      typeof item?.status === 'string' ? item.status : 'needs_review'
+
+    const resolved = rawStatus === 'processed' || rawStatus === 'duplicate'
+
+    if (resolved) {
+      resolvedItems += 1
+    } else {
+      remainingItems += 1
+    }
+
+    const errorCode =
+      typeof item?.error_code === 'string' ? item.error_code : ''
+
+    const errorMessage =
+      typeof item?.error_message === 'string' ? item.error_message : ''
+
+    return {
+      localSaleId,
+
+      status: resolved
+        ? (rawStatus as 'processed' | 'duplicate')
+        : ('needs_review' as const),
+
+      errorMessage:
+        [errorCode, errorMessage].filter(Boolean).join(': ') ||
+        (resolved ? null : 'ما زالت الفاتورة تحت المراجعة في Web Admin.'),
+    }
+  })
+
+  applyPendingSaleSyncResults(localSaleIds, results)
+
+  return {
+    checkedItems: reviewSales.length,
+
+    resolvedItems,
+    remainingItems,
+  }
+}
+
 async function syncPendingSales(manual: boolean) {
   if (syncInProgress) {
     return {
@@ -458,6 +549,23 @@ async function syncPendingSales(manual: boolean) {
 
   syncInProgress = true
 
+  let reviewReconciliation = {
+    checkedItems: 0,
+    resolvedItems: 0,
+    remainingItems: 0,
+  }
+
+  let reviewReconciliationError = ''
+
+  try {
+    reviewReconciliation = await reconcileReviewedPendingSales()
+  } catch (error) {
+    reviewReconciliationError =
+      error instanceof Error
+        ? error.message
+        : 'تعذر تحديث نتائج مراجعة المبيعات.'
+  }
+
   let selectedSales: ReturnType<typeof takePendingSalesForSync>
 
   try {
@@ -472,12 +580,24 @@ async function syncPendingSales(manual: boolean) {
 
     const emptyResult = {
       inProgress: false,
-      selectedItems: 0,
-      processedItems: 0,
-      reviewItems: 0,
+
+      selectedItems: reviewReconciliation.checkedItems,
+
+      processedItems: reviewReconciliation.resolvedItems,
+
+      reviewItems: reviewReconciliation.remainingItems,
+
       failedItems: 0,
+
       pendingSalesCount: countPendingSales(),
-      message: 'لا توجد مبيعات مؤجلة قابلة للمزامنة.',
+
+      message:
+        reviewReconciliationError ||
+        (reviewReconciliation.resolvedItems > 0
+          ? `تم إنهاء ${reviewReconciliation.resolvedItems} فاتورة بعد حل تعارضاتها في Web Admin.`
+          : reviewReconciliation.remainingItems > 0
+            ? `${reviewReconciliation.remainingItems} فاتورة ما زالت تحت المراجعة.`
+            : 'لا توجد مبيعات مؤجلة قابلة للمزامنة.'),
     }
 
     if (manual) {
@@ -650,9 +770,11 @@ async function syncPendingSales(manual: boolean) {
     const completedResult = {
       inProgress: false,
       batchKey,
-      selectedItems: selectedSales.length,
-      processedItems,
-      reviewItems,
+      selectedItems: selectedSales.length + reviewReconciliation.checkedItems,
+
+      processedItems: processedItems + reviewReconciliation.resolvedItems,
+
+      reviewItems: reviewItems + reviewReconciliation.remainingItems,
       failedItems,
 
       pendingSalesCount: countPendingSales(),
@@ -660,7 +782,13 @@ async function syncPendingSales(manual: boolean) {
       message:
         `تمت مزامنة ${processedItems}، ` +
         `${reviewItems} تحتاج مراجعة، ` +
-        `${failedItems} فشلت.`,
+        `${failedItems} فشلت.` +
+        (reviewReconciliation.resolvedItems > 0
+          ? ` وتم إنهاء ${reviewReconciliation.resolvedItems} فاتورة مراجعة سابقة.`
+          : '') +
+        (reviewReconciliationError
+          ? ` تنبيه: ${reviewReconciliationError}`
+          : ''),
     }
 
     broadcastSyncCompleted(completedResult)
@@ -674,10 +802,11 @@ async function syncPendingSales(manual: boolean) {
 
     const failedResult = {
       inProgress: false,
-      selectedItems: selectedSales.length,
-      processedItems: 0,
-      reviewItems: 0,
+      selectedItems: selectedSales.length + reviewReconciliation.checkedItems,
 
+      processedItems: reviewReconciliation.resolvedItems,
+
+      reviewItems: reviewReconciliation.remainingItems,
       failedItems: missingGrantResults.length + syncableSales.length,
 
       pendingSalesCount: countPendingSales(),
