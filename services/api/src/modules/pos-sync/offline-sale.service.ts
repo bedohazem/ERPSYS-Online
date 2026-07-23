@@ -189,19 +189,19 @@ function normalizeOfflineSale(payload: unknown): NormalizedOfflineSale {
     throw new OfflineSaleProcessingError({
       statusCode: 400,
       code: 'INVALID_PAYLOAD',
-      message: 'stockLocationId or cashierId is invalid',
+      message: 'stockLocationId, cashierId, or cashierGrantId is invalid',
       conflictType: 'invalid_payload',
     })
+  }
 
-    if (!/^[0-9a-f]{64}$/i.test(cashierGrantToken)) {
-      throw new OfflineSaleProcessingError({
-        statusCode: 400,
-        code: 'INVALID_CASHIER_GRANT',
-        message: 'cashierGrantToken is invalid',
-        conflictType: 'cashier_grant_invalid',
-        severity: 'critical',
-      })
-    }
+  if (!/^[0-9a-f]{64}$/i.test(cashierGrantToken)) {
+    throw new OfflineSaleProcessingError({
+      statusCode: 400,
+      code: 'INVALID_CASHIER_GRANT',
+      message: 'cashierGrantToken is invalid',
+      conflictType: 'cashier_grant_invalid',
+      severity: 'critical',
+    })
   }
 
   const shiftId = optionalUuid(input.shiftId, 'shiftId')

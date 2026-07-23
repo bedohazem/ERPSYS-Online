@@ -135,6 +135,7 @@ type CatalogSnapshotItem = {
 }
 
 class PosConnectionError extends Error {}
+class PosSessionExpiredError extends Error {}
 
 const DEVICE_SERVER_URL_KEY = 'pos.device.server-url'
 
@@ -616,15 +617,32 @@ async function requestCashierApi(apiPath: string) {
     throw new Error('يجب تسجيل دخول الكاشير أولًا.')
   }
 
-  return requestJson(`${config.serverUrl}${apiPath}`, {
-    method: 'GET',
+  try {
+    return await requestJson(`${config.serverUrl}${apiPath}`, {
+      method: 'GET',
 
-    headers: {
-      Accept: 'application/json',
+      headers: {
+        Accept: 'application/json',
 
-      Authorization: `Bearer ${session.token}`,
-    },
-  })
+        Authorization: `Bearer ${session.token}`,
+      },
+    })
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      [
+        'Session is invalid or expired',
+        'Authentication is required',
+        'Invalid authentication token',
+      ].includes(error.message)
+    ) {
+      throw new PosSessionExpiredError(
+        'انتهت جلسة السيرفر، وسيتم استخدام الكتالوج المحلي حتى تسجيل الدخول مرة أخرى.',
+      )
+    }
+
+    throw error
+  }
 }
 
 export async function loginCashier(input: CashierLoginInput) {
@@ -942,7 +960,10 @@ export async function searchPosCatalog(input: CatalogSearchInput) {
         }))
       : []
   } catch (error) {
-    if (!(error instanceof PosConnectionError)) {
+    if (
+      !(error instanceof PosConnectionError) &&
+      !(error instanceof PosSessionExpiredError)
+    ) {
       throw error
     }
 
@@ -1000,7 +1021,10 @@ export async function lookupPosCatalogItem(input: CatalogSearchInput) {
       catalog_source: 'server' as const,
     }
   } catch (error) {
-    if (!(error instanceof PosConnectionError)) {
+    if (
+      !(error instanceof PosConnectionError) &&
+      !(error instanceof PosSessionExpiredError)
+    ) {
       throw error
     }
 
