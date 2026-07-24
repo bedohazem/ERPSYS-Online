@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { requestJson } from '../lib/http'
+import { useAuth } from '../auth/AuthContext'
+
+import { ApiError, requestJson } from '../lib/http'
 
 type ExchangeSummary = {
   id: string
@@ -29,6 +31,11 @@ type ExchangeSummary = {
 
   status: string
   reason: string | null
+
+  void_reason: string | null
+  voided_by: string | null
+  voided_by_name: string | null
+  voided_at: string | null
 
   return_items_count: number
   issue_items_count: number
@@ -101,6 +108,10 @@ type ExchangePayment = {
 
   reference: string | null
 
+  payment_role: 'settlement' | 'void_reversal'
+
+  reverses_payment_id: string | null
+
   created_at: string
 }
 
@@ -129,6 +140,8 @@ type ExchangeStockMovement = {
   reference_type: string | null
 
   reference_id: string | null
+
+  reversal_of_movement_id: string | null
 
   note: string | null
 
@@ -286,6 +299,12 @@ function ExchangesPage({
   branchId,
   onOpenSale,
 }: ExchangesPageProps) {
+  const { user } = useAuth()
+
+  const canVoidExchange =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('exchanges.void') ||
+    false
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([])
 
   const [selectedDetails, setSelectedDetails] =
@@ -300,6 +319,12 @@ function ExchangesPage({
   const [loadingDetails, setLoadingDetails] = useState(false)
 
   const [error, setError] = useState('')
+
+  const [success, setSuccess] = useState('')
+
+  const [voidingExchangeId, setVoidingExchangeId] = useState<string | null>(
+    null,
+  )
 
   const filteredExchanges = useMemo(() => {
     const searchValue = searchText.trim().toLowerCase()
@@ -391,6 +416,159 @@ function ExchangesPage({
     }
   }
 
+  async function voidExchange(exchange: {
+    id: string
+    exchange_number: string
+
+    status: string
+
+    difference_total: string
+
+    paid_difference_total: string
+
+    refunded_difference_total: string
+  }) {
+    if (!canVoidExchange || voidingExchangeId) {
+      return
+    }
+
+    if (exchange.status !== 'completed') {
+      setError('لا يمكن إلغاء إلا عملية استبدال مكتملة.')
+
+      return
+    }
+
+    const reason = window.prompt('سبب إلغاء الاستبدال — مطلوب:', '')
+
+    if (reason === null) {
+      return
+    }
+
+    if (reason.trim().length < 3) {
+      setError('سبب الإلغاء يجب ألا يقل عن 3 أحرف.')
+
+      return
+    }
+
+    let paymentReference = ''
+
+    if (Number(exchange.difference_total) !== 0) {
+      const enteredReference = window.prompt(
+        'مرجع حركة عكس فرق الاستبدال — اختياري:',
+        '',
+      )
+
+      if (enteredReference === null) {
+        return
+      }
+
+      paymentReference = enteredReference.trim()
+    }
+
+    const financialEffect =
+      Number(exchange.difference_total) > 0
+        ? `سيتم رد ${formatCurrency(exchange.paid_difference_total)} للعميل.`
+        : Number(exchange.difference_total) < 0
+          ? `سيتم تحصيل ${formatCurrency(
+              exchange.refunded_difference_total,
+            )} من العميل.`
+          : 'لا توجد حركة مالية عكسية.'
+
+    const confirmed = window.confirm(
+      `إلغاء الاستبدال ${exchange.exchange_number}؟\n\n` +
+        `${financialEffect}\n\n` +
+        'سيتم أيضًا عكس جميع حركات المخزون المرتبطة بالعملية.\n' +
+        'لا يمكن التراجع عن هذا الإجراء.',
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setVoidingExchangeId(exchange.id)
+
+    setError('')
+    setSuccess('')
+
+    try {
+      const response = await requestJson<
+        ApiResponse<ExchangeDetails> & {
+          alreadyVoided: boolean
+        }
+      >(
+        `/api/exchanges/${encodeURIComponent(exchange.id)}/void`,
+
+        {
+          method: 'POST',
+
+          headers: {
+            'Content-Type': 'application/json',
+          },
+
+          body: JSON.stringify({
+            reason: reason.trim(),
+
+            paymentReference: paymentReference || null,
+          }),
+        },
+      )
+
+      setSelectedDetails((currentDetails) =>
+        currentDetails?.exchange.id === exchange.id
+          ? response.data
+          : currentDetails,
+      )
+
+      setSuccess(
+        response.alreadyVoided
+          ? 'عملية الاستبدال ملغاة بالفعل.'
+          : `تم إلغاء الاستبدال ${exchange.exchange_number} وعكس المخزون والتسوية المالية.`,
+      )
+
+      await loadExchanges()
+    } catch (currentError) {
+      if (currentError instanceof ApiError) {
+        const errorData = currentError.data as {
+          details?: {
+            shortages?: Array<{
+              variantId?: unknown
+              currentQuantity?: unknown
+              reversalQuantity?: unknown
+              finalQuantity?: unknown
+            }>
+          }
+        } | null
+
+        const shortages = errorData?.details?.shortages
+
+        if (Array.isArray(shortages) && shortages.length > 0) {
+          const shortageText = shortages
+            .map(
+              (shortage) =>
+                `${String(shortage.variantId || '-')}: الحالي ${String(
+                  shortage.currentQuantity ?? 0,
+                )}، حركة الإلغاء ${String(
+                  shortage.reversalQuantity ?? 0,
+                )}، الناتج ${String(shortage.finalQuantity ?? 0)}`,
+            )
+            .join(' — ')
+
+          setError(`${currentError.message}: ${shortageText}`)
+        } else {
+          setError(currentError.message)
+        }
+      } else {
+        setError(
+          currentError instanceof Error
+            ? currentError.message
+            : 'تعذر إلغاء الاستبدال.',
+        )
+      }
+    } finally {
+      setVoidingExchangeId(null)
+    }
+  }
+
   useEffect(() => {
     if (!companyId.trim()) {
       return
@@ -460,6 +638,7 @@ function ExchangesPage({
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
+        {success ? <p className="success-message">{success}</p> : null}
 
         {filteredExchanges.length === 0 ? (
           <p className="muted">
@@ -565,6 +744,21 @@ function ExchangesPage({
                             فتح الفاتورة
                           </button>
                         ) : null}
+
+                        {canVoidExchange && exchange.status === 'completed' ? (
+                          <button
+                            type="button"
+                            className="table-button danger-button"
+                            disabled={voidingExchangeId !== null}
+                            onClick={() => void voidExchange(exchange)}
+                          >
+                            {voidingExchangeId === exchange.id
+                              ? 'جاري الإلغاء...'
+                              : 'إلغاء الاستبدال'}
+                          </button>
+                        ) : exchange.status === 'voided' ? (
+                          <span className="muted">تم الإلغاء</span>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -594,14 +788,54 @@ function ExchangesPage({
               </p>
             </div>
 
-            <button
-              type="button"
-              className="table-button"
-              onClick={() => setSelectedDetails(null)}
-            >
-              إغلاق التفاصيل
-            </button>
+            <div className="section-actions">
+              {canVoidExchange &&
+              selectedDetails.exchange.status === 'completed' ? (
+                <button
+                  type="button"
+                  className="table-button danger-button"
+                  disabled={voidingExchangeId !== null}
+                  onClick={() => void voidExchange(selectedDetails.exchange)}
+                >
+                  {voidingExchangeId === selectedDetails.exchange.id
+                    ? 'جاري الإلغاء...'
+                    : 'إلغاء الاستبدال'}
+                </button>
+              ) : null}
+
+              <button
+                type="button"
+                className="table-button"
+                disabled={voidingExchangeId !== null}
+                onClick={() => setSelectedDetails(null)}
+              >
+                إغلاق التفاصيل
+              </button>
+            </div>
           </div>
+
+          {selectedDetails.exchange.status === 'voided' ? (
+            <p className="error-message">
+              تم إلغاء هذه العملية
+              {selectedDetails.exchange.voided_at
+                ? ` بتاريخ ${formatDate(selectedDetails.exchange.voided_at)}`
+                : ''}
+              {selectedDetails.exchange.voided_by_name
+                ? ` بواسطة ${selectedDetails.exchange.voided_by_name}`
+                : ''}
+              {selectedDetails.exchange.void_reason
+                ? ` — السبب: ${selectedDetails.exchange.void_reason}`
+                : ''}
+            </p>
+          ) : null}
+
+          {selectedDetails.exchange.status === 'completed' &&
+          canVoidExchange ? (
+            <p className="muted">
+              عند الإلغاء سيعود الصنف البديل إلى المخزون، وسيتم خصم الصنف الذي
+              أعاده العميل، كما ستُعكس تسوية فرق السعر.
+            </p>
+          ) : null}
 
           <section className="mini-cards-grid">
             <article className="mini-card">
@@ -813,6 +1047,7 @@ function ExchangesPage({
               <table>
                 <thead>
                   <tr>
+                    <th>نوع الحركة</th>
                     <th>الاتجاه</th>
                     <th>الطريقة</th>
                     <th>المبلغ</th>
@@ -824,6 +1059,17 @@ function ExchangesPage({
                 <tbody>
                   {selectedDetails.payments.map((payment) => (
                     <tr key={payment.id}>
+                      <td>
+                        {payment.payment_role === 'void_reversal' ? (
+                          <span className="status-badge status-badge-warning">
+                            عكس بسبب الإلغاء
+                          </span>
+                        ) : (
+                          <span className="status-badge status-badge-success">
+                            التسوية الأصلية
+                          </span>
+                        )}
+                      </td>
                       <td>
                         {translatePaymentDirection(payment.payment_direction)}
                       </td>
@@ -857,6 +1103,7 @@ function ExchangesPage({
               <table>
                 <thead>
                   <tr>
+                    <th>نوع السجل</th>
                     <th>الصنف</th>
                     <th>SKU</th>
                     <th>المقاس</th>
@@ -872,6 +1119,17 @@ function ExchangesPage({
                 <tbody>
                   {selectedDetails.stockMovements.map((movement) => (
                     <tr key={movement.id}>
+                      <td>
+                        {movement.reversal_of_movement_id ? (
+                          <span className="status-badge status-badge-warning">
+                            حركة عكسية
+                          </span>
+                        ) : (
+                          <span className="status-badge status-badge-success">
+                            حركة أصلية
+                          </span>
+                        )}
+                      </td>
                       <td>{movement.product_name}</td>
 
                       <td>{movement.sku}</td>

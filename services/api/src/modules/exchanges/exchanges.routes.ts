@@ -837,7 +837,6 @@ exchangesRouter.get(
   },
 )
 
-
 // ======================================================
 // POST /api/exchanges/:exchangeId/void
 //
@@ -860,45 +859,25 @@ exchangesRouter.post(
   '/api/exchanges/:exchangeId/void',
 
   async (req, res, next) => {
-    const client =
-      await db.connect()
+    const client = await db.connect()
 
-    let transactionStarted =
-      false
+    let transactionStarted = false
 
     try {
-      const auth =
-        getAuthContext(res)
+      const auth = getAuthContext(res)
 
-      const exchangeId =
-        normalizeParam(
-          req.params.exchangeId,
-        )
+      const exchangeId = normalizeParam(req.params.exchangeId)
 
-      if (
-        typeof exchangeId !==
-          'string' ||
-        !uuidPattern.test(
-          exchangeId,
-        )
-      ) {
-        throw new ExchangeApiError(
-          400,
-          'exchangeId is invalid',
-        )
+      if (typeof exchangeId !== 'string' || !uuidPattern.test(exchangeId)) {
+        throw new ExchangeApiError(400, 'exchangeId is invalid')
       }
 
       const reason =
-        typeof req.body?.reason ===
-          'string'
-          ? req.body.reason
-              .trim()
-              .slice(0, 500)
+        typeof req.body?.reason === 'string'
+          ? req.body.reason.trim().slice(0, 500)
           : ''
 
-      if (
-        reason.length < 3
-      ) {
+      if (reason.length < 3) {
         throw new ExchangeApiError(
           400,
           'Void reason must contain at least 3 characters',
@@ -906,14 +885,9 @@ exchangesRouter.post(
       }
 
       const paymentReference =
-        typeof req.body
-          ?.paymentReference ===
-          'string' &&
-        req.body.paymentReference
-          .trim()
-          ? req.body.paymentReference
-              .trim()
-              .slice(0, 120)
+        typeof req.body?.paymentReference === 'string' &&
+        req.body.paymentReference.trim()
+          ? req.body.paymentReference.trim().slice(0, 120)
           : null
 
       await client.query('BEGIN')
@@ -923,9 +897,8 @@ exchangesRouter.post(
       // ==================================================
       // Lock exchange header
       // ==================================================
-      const exchangeResult =
-        await client.query(
-          `
+      const exchangeResult = await client.query(
+        `
           SELECT *
 
           FROM exchanges
@@ -941,42 +914,25 @@ exchangesRouter.post(
 
           FOR UPDATE;
           `,
-          [
-            auth.companyId,
-            exchangeId,
-            auth.branchId,
-          ],
-        )
+        [auth.companyId, exchangeId, auth.branchId],
+      )
 
-      if (
-        (exchangeResult.rowCount ??
-          0) === 0
-      ) {
+      if ((exchangeResult.rowCount ?? 0) === 0) {
         throw new ExchangeApiError(
           404,
           'Exchange was not found or belongs to another branch',
         )
       }
 
-      const exchange =
-        exchangeResult.rows[0]
+      const exchange = exchangeResult.rows[0]
 
       // إعادة نفس النتيجة بدون عكس العملية مرة أخرى.
-      if (
-        exchange.status ===
-        'voided'
-      ) {
-        await client.query(
-          'COMMIT',
-        )
+      if (exchange.status === 'voided') {
+        await client.query('COMMIT')
 
         transactionStarted = false
 
-        const details =
-          await loadExchangeDetails(
-            auth.companyId,
-            exchangeId,
-          )
+        const details = await loadExchangeDetails(auth.companyId, exchangeId)
 
         return res.status(200).json({
           alreadyVoided: true,
@@ -984,10 +940,7 @@ exchangesRouter.post(
         })
       }
 
-      if (
-        exchange.status !==
-        'completed'
-      ) {
+      if (exchange.status !== 'completed') {
         throw new ExchangeApiError(
           409,
           'Only completed exchanges can be voided',
@@ -1002,9 +955,8 @@ exchangesRouter.post(
       // عند الإلغاء نسترجع الصنف البديل أولًا،
       // ثم نخصم الصنف الذي كان العميل قد أعاده.
       // ==================================================
-      const originalMovementsResult =
-        await client.query(
-          `
+      const originalMovementsResult = await client.query(
+        `
           SELECT
             id,
             branch_id,
@@ -1037,20 +989,22 @@ exchangesRouter.post(
                 IS NULL
 
           ORDER BY
+            CASE
+              WHEN quantity < 0
+              THEN 0
+              ELSE 1
+            END,
+
             created_at DESC,
             id DESC
 
           FOR UPDATE;
           `,
-          [
-            auth.companyId,
-            exchangeId,
-          ],
-        )
+        [auth.companyId, exchangeId],
+      )
 
-      const expectedMovementsResult =
-        await client.query(
-          `
+      const expectedMovementsResult = await client.query(
+        `
           SELECT
             (
               SELECT COUNT(*)::int
@@ -1071,27 +1025,18 @@ exchangesRouter.post(
             )
               AS expected_count;
           `,
-          [
-            auth.companyId,
-            exchangeId,
-          ],
-        )
+        [auth.companyId, exchangeId],
+      )
 
-      const expectedMovementCount =
-        Number(
-          expectedMovementsResult
-            .rows[0]
-            .expected_count,
-        )
+      const expectedMovementCount = Number(
+        expectedMovementsResult.rows[0].expected_count,
+      )
 
-      const originalMovements =
-        originalMovementsResult.rows
+      const originalMovements = originalMovementsResult.rows
 
       if (
-        originalMovements.length ===
-          0 ||
-        originalMovements.length !==
-          expectedMovementCount
+        originalMovements.length === 0 ||
+        originalMovements.length !== expectedMovementCount
       ) {
         throw new ExchangeApiError(
           409,
@@ -1099,21 +1044,17 @@ exchangesRouter.post(
           {
             expectedMovementCount,
 
-            actualMovementCount:
-              originalMovements.length,
+            actualMovementCount: originalMovements.length,
           },
         )
       }
 
-      const originalMovementIds =
-        originalMovements.map(
-          (movement) =>
-            movement.id,
-        )
+      const originalMovementIds = originalMovements.map(
+        (movement) => movement.id,
+      )
 
-      const existingStockReversalsResult =
-        await client.query(
-          `
+      const existingStockReversalsResult = await client.query(
+        `
           SELECT COUNT(*)::int
             AS reversal_count
 
@@ -1124,19 +1065,10 @@ exchangesRouter.post(
             AND reversal_of_movement_id =
                 ANY($2::uuid[]);
           `,
-          [
-            auth.companyId,
-            originalMovementIds,
-          ],
-        )
+        [auth.companyId, originalMovementIds],
+      )
 
-      if (
-        Number(
-          existingStockReversalsResult
-            .rows[0]
-            .reversal_count,
-        ) > 0
-      ) {
+      if (Number(existingStockReversalsResult.rows[0].reversal_count) > 0) {
         throw new ExchangeApiError(
           409,
           'Exchange already contains stock reversal movements',
@@ -1146,9 +1078,8 @@ exchangesRouter.post(
       // ==================================================
       // Original settlement payments
       // ==================================================
-      const originalPaymentsResult =
-        await client.query(
-          `
+      const originalPaymentsResult = await client.query(
+        `
           SELECT *
 
           FROM exchange_payments
@@ -1165,15 +1096,11 @@ exchangesRouter.post(
 
           FOR UPDATE;
           `,
-          [
-            auth.companyId,
-            exchangeId,
-          ],
-        )
+        [auth.companyId, exchangeId],
+      )
 
-      const existingPaymentReversalsResult =
-        await client.query(
-          `
+      const existingPaymentReversalsResult = await client.query(
+        `
           SELECT COUNT(*)::int
             AS reversal_count
 
@@ -1185,19 +1112,10 @@ exchangesRouter.post(
             AND payment_role =
                 'void_reversal';
           `,
-          [
-            auth.companyId,
-            exchangeId,
-          ],
-        )
+        [auth.companyId, exchangeId],
+      )
 
-      if (
-        Number(
-          existingPaymentReversalsResult
-            .rows[0]
-            .reversal_count,
-        ) > 0
-      ) {
+      if (Number(existingPaymentReversalsResult.rows[0].reversal_count) > 0) {
         throw new ExchangeApiError(
           409,
           'Exchange already contains payment reversal records',
@@ -1209,19 +1127,11 @@ exchangesRouter.post(
       // ==================================================
       const variantIds = [
         ...new Set(
-          originalMovements.map(
-            (movement) =>
-              String(
-                movement.variant_id,
-              ),
-          ),
+          originalMovements.map((movement) => String(movement.variant_id)),
         ),
       ].sort()
 
-      for (
-        const variantId of
-        variantIds
-      ) {
+      for (const variantId of variantIds) {
         await client.query(
           `
           INSERT INTO stock_balances (
@@ -1251,9 +1161,8 @@ exchangesRouter.post(
         )
       }
 
-      const balancesResult =
-        await client.query(
-          `
+      const balancesResult = await client.query(
+        `
           SELECT
             variant_id,
             quantity
@@ -1273,27 +1182,16 @@ exchangesRouter.post(
 
           FOR UPDATE;
           `,
-          [
-            auth.companyId,
-            exchange.stock_location_id,
-            variantIds,
-          ],
-        )
+        [auth.companyId, exchange.stock_location_id, variantIds],
+      )
 
-      const runningBalances =
-        new Map<string, number>(
-          balancesResult.rows.map(
-            (balance) => [
-              String(
-                balance.variant_id,
-              ),
+      const runningBalances = new Map<string, number>(
+        balancesResult.rows.map((balance) => [
+          String(balance.variant_id),
 
-              Number(
-                balance.quantity,
-              ),
-            ],
-          ),
-        )
+          Number(balance.quantity),
+        ]),
+      )
 
       // ==================================================
       // Calculate final balances before changing anything
@@ -1306,92 +1204,54 @@ exchangesRouter.post(
       // - returned item
       // + issued item
       // ==================================================
-      const reversalByVariant =
-        new Map<string, number>()
+      const reversalByVariant = new Map<string, number>()
 
-      for (
-        const movement of
-        originalMovements
-      ) {
-        const variantId =
-          String(
-            movement.variant_id,
-          )
+      for (const movement of originalMovements) {
+        const variantId = String(movement.variant_id)
 
-        const originalQuantity =
-          Number(
-            movement.quantity,
-          )
+        const originalQuantity = Number(movement.quantity)
 
-        if (
-          !Number.isFinite(
-            originalQuantity,
-          ) ||
-          originalQuantity === 0
-        ) {
+        if (!Number.isFinite(originalQuantity) || originalQuantity === 0) {
           throw new ExchangeApiError(
             409,
             'Exchange contains an invalid stock movement',
             {
-              movementId:
-                movement.id,
+              movementId: movement.id,
             },
           )
         }
 
-        const reversalQuantity =
-          roundQuantity(
-            -originalQuantity,
-          )
+        const reversalQuantity = roundQuantity(-originalQuantity)
 
         reversalByVariant.set(
           variantId,
 
           roundQuantity(
-            (
-              reversalByVariant.get(
-                variantId,
-              ) ?? 0
-            ) + reversalQuantity,
+            (reversalByVariant.get(variantId) ?? 0) + reversalQuantity,
           ),
         )
       }
 
-      const shortages =
-        variantIds
-          .map((variantId) => {
-            const currentQuantity =
-              runningBalances.get(
-                variantId,
-              ) ?? 0
+      const shortages = variantIds
+        .map((variantId) => {
+          const currentQuantity = runningBalances.get(variantId) ?? 0
 
-            const reversalQuantity =
-              reversalByVariant.get(
-                variantId,
-              ) ?? 0
+          const reversalQuantity = reversalByVariant.get(variantId) ?? 0
 
-            const finalQuantity =
-              roundQuantity(
-                currentQuantity +
-                  reversalQuantity,
-              )
-
-            return {
-              variantId,
-              currentQuantity,
-              reversalQuantity,
-              finalQuantity,
-            }
-          })
-          .filter(
-            (item) =>
-              item.finalQuantity <
-              0,
+          const finalQuantity = roundQuantity(
+            currentQuantity + reversalQuantity,
           )
 
-      if (
-        shortages.length > 0
-      ) {
+          return {
+            variantId,
+            currentQuantity,
+            reversalQuantity,
+            finalQuantity,
+          }
+        })
+        .filter((item) => item.finalQuantity < 0)
+
+      if (shortages.length > 0) {
         throw new ExchangeApiError(
           409,
           'Stock is insufficient to void this exchange safely',
@@ -1404,37 +1264,18 @@ exchangesRouter.post(
       // ==================================================
       // Reverse stock movements
       // ==================================================
-      const createdStockReversalIds:
-        string[] = []
+      const createdStockReversalIds: string[] = []
 
-      for (
-        const originalMovement of
-        originalMovements
-      ) {
-        const variantId =
-          String(
-            originalMovement
-              .variant_id,
-          )
+      for (const originalMovement of originalMovements) {
+        const variantId = String(originalMovement.variant_id)
 
-        const quantityBefore =
-          runningBalances.get(
-            variantId,
-          ) ?? 0
+        const quantityBefore = runningBalances.get(variantId) ?? 0
 
-        const reversalQuantity =
-          roundQuantity(
-            -Number(
-              originalMovement
-                .quantity,
-            ),
-          )
+        const reversalQuantity = roundQuantity(
+          -Number(originalMovement.quantity),
+        )
 
-        const quantityAfter =
-          roundQuantity(
-            quantityBefore +
-              reversalQuantity,
-          )
+        const quantityAfter = roundQuantity(quantityBefore + reversalQuantity)
 
         await client.query(
           `
@@ -1461,9 +1302,8 @@ exchangesRouter.post(
           ],
         )
 
-        const reversalResult =
-          await client.query(
-            `
+        const reversalResult = await client.query(
+          `
             INSERT INTO stock_movements (
               company_id,
               branch_id,
@@ -1496,58 +1336,44 @@ exchangesRouter.post(
 
             RETURNING id;
             `,
-            [
-              auth.companyId,
-              exchange.branch_id,
-              exchange.stock_location_id,
-              variantId,
+          [
+            auth.companyId,
+            exchange.branch_id,
+            exchange.stock_location_id,
+            variantId,
 
-              reversalQuantity,
-              quantityBefore,
-              quantityAfter,
+            reversalQuantity,
+            quantityBefore,
+            quantityAfter,
 
-              exchangeId,
+            exchangeId,
 
-              originalMovement.id,
+            originalMovement.id,
 
-              `Void reversal for exchange ${exchange.exchange_number}`,
+            `Void reversal for exchange ${exchange.exchange_number}`,
 
-              auth.userId,
-            ],
-          )
-
-        createdStockReversalIds.push(
-          reversalResult.rows[0].id,
+            auth.userId,
+          ],
         )
 
-        runningBalances.set(
-          variantId,
-          quantityAfter,
-        )
+        createdStockReversalIds.push(reversalResult.rows[0].id)
+
+        runningBalances.set(variantId, quantityAfter)
       }
 
       // ==================================================
       // Reverse exchange payments
       // ==================================================
-      const createdPaymentReversalIds:
-        string[] = []
+      const createdPaymentReversalIds: string[] = []
 
-      for (
-        const originalPayment of
-        originalPaymentsResult.rows
-      ) {
-        const reversedDirection =
-          reversePaymentDirection(
-            originalPayment
-              .payment_direction,
-          )
+      for (const originalPayment of originalPaymentsResult.rows) {
+        const reversedDirection = reversePaymentDirection(
+          originalPayment.payment_direction,
+        )
 
         const originalReference =
-          typeof originalPayment
-            .reference ===
-            'string' &&
-          originalPayment.reference
-            .trim()
+          typeof originalPayment.reference === 'string' &&
+          originalPayment.reference.trim()
             ? originalPayment.reference.trim()
             : null
 
@@ -1556,17 +1382,14 @@ exchangesRouter.post(
 
           paymentReference,
 
-          originalReference
-            ? `Original: ${originalReference}`
-            : null,
+          originalReference ? `Original: ${originalReference}` : null,
         ]
           .filter(Boolean)
           .join(' | ')
           .slice(0, 200)
 
-        const reversalResult =
-          await client.query(
-            `
+        const reversalResult = await client.query(
+          `
             INSERT INTO exchange_payments (
               company_id,
               exchange_id,
@@ -1588,31 +1411,27 @@ exchangesRouter.post(
 
             RETURNING id;
             `,
-            [
-              auth.companyId,
-              exchangeId,
+          [
+            auth.companyId,
+            exchangeId,
 
-              reversedDirection,
-              originalPayment.method,
-              originalPayment.amount,
-              combinedReference ||
-                null,
+            reversedDirection,
+            originalPayment.method,
+            originalPayment.amount,
+            combinedReference || null,
 
-              originalPayment.id,
-            ],
-          )
-
-        createdPaymentReversalIds.push(
-          reversalResult.rows[0].id,
+            originalPayment.id,
+          ],
         )
+
+        createdPaymentReversalIds.push(reversalResult.rows[0].id)
       }
 
       // ==================================================
       // Mark exchange as voided
       // ==================================================
-      const voidedExchangeResult =
-        await client.query(
-          `
+      const voidedExchangeResult = await client.query(
+        `
           UPDATE exchanges
 
           SET
@@ -1626,14 +1445,8 @@ exchangesRouter.post(
 
           RETURNING *;
           `,
-          [
-            reason,
-            auth.userId,
-
-            auth.companyId,
-            exchangeId,
-          ],
-        )
+        [reason, auth.userId, auth.companyId, exchangeId],
+      )
 
       // ==================================================
       // Audit log
@@ -1674,17 +1487,13 @@ exchangesRouter.post(
           exchangeId,
 
           JSON.stringify({
-            status:
-              exchange.status,
+            status: exchange.status,
 
-            returnedTotal:
-              exchange.returned_total,
+            returnedTotal: exchange.returned_total,
 
-            issuedTotal:
-              exchange.issued_total,
+            issuedTotal: exchange.issued_total,
 
-            differenceTotal:
-              exchange.difference_total,
+            differenceTotal: exchange.difference_total,
           }),
 
           JSON.stringify({
@@ -1692,18 +1501,14 @@ exchangesRouter.post(
 
             reason,
 
-            stockReversalIds:
-              createdStockReversalIds,
+            stockReversalIds: createdStockReversalIds,
 
-            paymentReversalIds:
-              createdPaymentReversalIds,
+            paymentReversalIds: createdPaymentReversalIds,
           }),
 
           req.ip || null,
 
-          req.get(
-            'user-agent',
-          ) || null,
+          req.get('user-agent') || null,
         ],
       )
 
@@ -1711,12 +1516,10 @@ exchangesRouter.post(
 
       transactionStarted = false
 
-      const details =
-        await loadExchangeDetails(
-          auth.companyId,
-          voidedExchangeResult
-            .rows[0].id,
-        )
+      const details = await loadExchangeDetails(
+        auth.companyId,
+        voidedExchangeResult.rows[0].id,
+      )
 
       return res.json({
         alreadyVoided: false,
@@ -1724,18 +1527,12 @@ exchangesRouter.post(
       })
     } catch (error) {
       if (transactionStarted) {
-        await client
-          .query('ROLLBACK')
-          .catch(() => {})
+        await client.query('ROLLBACK').catch(() => {})
 
         transactionStarted = false
       }
 
-      return handleExchangeError(
-        error,
-        res,
-        next,
-      )
+      return handleExchangeError(error, res, next)
     } finally {
       client.release()
     }
