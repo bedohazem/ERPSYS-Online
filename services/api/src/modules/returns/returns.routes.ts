@@ -1,7 +1,23 @@
 import { Router } from 'express'
 import { db } from '../../db/pool'
+import { getAuthContext } from '../auth/auth.middleware'
 
 export const returnsRouter = Router()
+
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function roundMoney(value: number) {
+  return Number(value.toFixed(2))
+}
+
+function roundQuantity(value: number) {
+  return Number(value.toFixed(3))
+}
+
+function normalizeParam(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value
+}
 
 // ======================================================
 // ReturnsApiError
@@ -15,10 +31,14 @@ export const returnsRouter = Router()
 // ======================================================
 class ReturnsApiError extends Error {
   statusCode: number
+  details?: unknown
 
-  constructor(statusCode: number, message: string) {
+  constructor(statusCode: number, message: string, details?: unknown) {
     super(message)
+
     this.statusCode = statusCode
+
+    this.details = details
   }
 }
 
@@ -150,6 +170,14 @@ returnsRouter.get('/api/returns', async (req, res, next) => {
         r.refund_total,
         r.status,
         r.reason,
+
+        r.void_reason,
+        r.voided_by,
+
+        voider.full_name
+          AS voided_by_name,
+
+        r.voided_at,
         r.created_at,
 
         -- عدد الأصناف داخل المرتجع
@@ -159,6 +187,10 @@ returnsRouter.get('/api/returns', async (req, res, next) => {
       JOIN stock_locations sl ON sl.id = r.stock_location_id
       LEFT JOIN customers c ON c.id = r.customer_id
       LEFT JOIN sales s ON s.id = r.original_sale_id
+      LEFT JOIN users voider
+        ON voider.id = r.voided_by
+        AND voider.company_id =
+            r.company_id
       LEFT JOIN return_items ri ON ri.return_id = r.id
       WHERE r.company_id = $1
         AND ($2::uuid IS NULL OR r.branch_id = $2::uuid)
@@ -167,7 +199,8 @@ returnsRouter.get('/api/returns', async (req, res, next) => {
         b.name,
         sl.name,
         c.name,
-        s.sale_number
+        s.sale_number,
+        voider.full_name
       ORDER BY r.created_at DESC
       LIMIT $3;
       `,
@@ -234,8 +267,18 @@ returnsRouter.get('/api/returns/:returnId', async (req, res, next) => {
         r.refund_total,
         r.status,
         r.reason,
+
         r.created_by,
-        u.full_name AS created_by_name,
+        u.full_name
+          AS created_by_name,
+
+        r.void_reason,
+        r.voided_by,
+
+        voider.full_name
+          AS voided_by_name,
+
+        r.voided_at,
         r.created_at,
         r.synced_at
       FROM returns r
@@ -243,7 +286,15 @@ returnsRouter.get('/api/returns/:returnId', async (req, res, next) => {
       JOIN stock_locations sl ON sl.id = r.stock_location_id
       LEFT JOIN customers c ON c.id = r.customer_id
       LEFT JOIN sales s ON s.id = r.original_sale_id
-      LEFT JOIN users u ON u.id = r.created_by
+      LEFT JOIN users u
+        ON u.id = r.created_by
+        AND u.company_id =
+            r.company_id
+
+      LEFT JOIN users voider
+        ON voider.id = r.voided_by
+        AND voider.company_id =
+            r.company_id
       WHERE r.company_id = $1
         AND r.id = $2;
       `,
@@ -289,9 +340,15 @@ returnsRouter.get('/api/returns/:returnId', async (req, res, next) => {
       SELECT
         id,
         return_id,
+
         method,
         amount,
         reference,
+
+        refund_role,
+        payment_direction,
+        reverses_refund_id,
+
         created_at
       FROM return_refunds
       WHERE company_id = $1
@@ -301,11 +358,90 @@ returnsRouter.get('/api/returns/:returnId', async (req, res, next) => {
       [companyId, returnId],
     )
 
+    const stockMovementsResult = await db.query(
+      `
+      SELECT
+        sm.id,
+        sm.company_id,
+        sm.branch_id,
+        sm.stock_location_id,
+        sm.variant_id,
+
+        sm.movement_type,
+        sm.quantity,
+        sm.quantity_before,
+        sm.quantity_after,
+
+        sm.reference_type,
+        sm.reference_id,
+
+        sm.reversal_of_movement_id,
+
+        sm.note,
+        sm.created_at,
+
+        pv.sku,
+        pv.primary_barcode,
+
+        p.name
+          AS product_name,
+
+        fs.name
+          AS size_name,
+
+        fc.name
+          AS color_name,
+
+        sl.name
+          AS stock_location_name
+
+      FROM stock_movements sm
+
+      JOIN product_variants pv
+        ON pv.id = sm.variant_id
+        AND pv.company_id =
+            sm.company_id
+
+      JOIN products p
+        ON p.id = pv.product_id
+        AND p.company_id =
+            pv.company_id
+
+      JOIN stock_locations sl
+        ON sl.id =
+          sm.stock_location_id
+        AND sl.company_id =
+            sm.company_id
+
+      LEFT JOIN fashion_sizes fs
+        ON fs.id = pv.size_id
+        AND fs.company_id =
+            pv.company_id
+
+      LEFT JOIN fashion_colors fc
+        ON fc.id = pv.color_id
+        AND fc.company_id =
+            pv.company_id
+
+      WHERE sm.company_id = $1
+        AND sm.reference_type =
+            'return'
+
+        AND sm.reference_id = $2
+
+      ORDER BY
+        sm.created_at ASC,
+        sm.id ASC;
+      `,
+      [companyId, returnId],
+    )
+
     res.json({
       data: {
         return: returnResult.rows[0],
         items: itemsResult.rows,
         refunds: refundsResult.rows,
+        stockMovements: stockMovementsResult.rows,
       },
     })
   } catch (error) {
@@ -331,6 +467,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
   const client = await db.connect()
 
   try {
+    const auth = getAuthContext(res)
     const {
       companyId,
 
@@ -342,7 +479,6 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       source,
       idempotencyKey,
       reason,
-      createdBy,
       items,
       refunds,
     } = req.body
@@ -566,10 +702,57 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
         // نجمع الكميات اللي اترجعت قبل كده لنفس sale item
         const alreadyReturnedResult = await client.query(
           `
-          SELECT COALESCE(SUM(quantity), 0) AS returned_quantity
-          FROM return_items
-          WHERE company_id = $1
-            AND original_sale_item_id = $2;
+          SELECT
+            COALESCE(
+              SUM(
+                consumed_items.quantity
+              ),
+              0
+            ) AS returned_quantity
+
+          FROM (
+            SELECT
+              ri.quantity
+
+            FROM return_items ri
+
+            JOIN returns r
+              ON r.id = ri.return_id
+              AND r.company_id =
+                  ri.company_id
+
+            WHERE ri.company_id = $1
+
+              AND ri.original_sale_item_id =
+                  $2
+
+              AND r.status IN (
+                'completed',
+                'pending_review'
+              )
+
+            UNION ALL
+
+            SELECT
+              eri.quantity
+
+            FROM exchange_return_items eri
+
+            JOIN exchanges e
+              ON e.id = eri.exchange_id
+              AND e.company_id =
+                  eri.company_id
+
+            WHERE eri.company_id = $1
+
+              AND eri.original_sale_item_id =
+                  $2
+
+              AND e.status IN (
+                'completed',
+                'pending_review'
+              )
+          ) consumed_items;
           `,
           [companyId, originalSaleItemId],
         )
@@ -767,7 +950,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
         subtotal,
         refundTotal,
         reason || null,
-        createdBy || null,
+        auth.userId,
       ],
     )
 
@@ -914,7 +1097,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           quantityAfter,
           createdReturn.id,
           `Return ${createdReturn.return_number}`,
-          createdBy || null,
+          auth.userId,
         ],
       )
     }
@@ -1007,7 +1190,15 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
 
     // أخطاء المرتجعات المتوقعة ترجع برسالة واضحة
     if (error instanceof ReturnsApiError) {
-      return res.status(error.statusCode).json({ error: error.message })
+      return res.status(error.statusCode).json({
+        error: error.message,
+
+        ...(error.details
+          ? {
+              details: error.details,
+            }
+          : {}),
+      })
     }
 
     return next(error)
@@ -1015,3 +1206,717 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
     client.release()
   }
 })
+
+// ======================================================
+// POST /api/returns/:returnId/void
+//
+// Body:
+// {
+//   reason: string,
+//   collectionReference?: string
+// }
+//
+// الإلغاء يعكس:
+// 1. الزيادة التي حدثت في المخزون.
+// 2. المبلغ الذي تم رده للعميل.
+// 3. حالة المرتجع.
+// 4. ويسجل Audit Log.
+// ======================================================
+returnsRouter.post(
+  '/api/returns/:returnId/void',
+
+  async (req, res, next) => {
+    const client = await db.connect()
+
+    let transactionStarted = false
+
+    try {
+      const auth = getAuthContext(res)
+
+      const returnId = normalizeParam(req.params.returnId)
+
+      if (typeof returnId !== 'string' || !uuidPattern.test(returnId)) {
+        throw new ReturnsApiError(400, 'returnId is invalid')
+      }
+
+      const reason =
+        typeof req.body?.reason === 'string'
+          ? req.body.reason.trim().slice(0, 500)
+          : ''
+
+      if (reason.length < 3) {
+        throw new ReturnsApiError(
+          400,
+          'Void reason must contain at least 3 characters',
+        )
+      }
+
+      const collectionReference =
+        typeof req.body?.collectionReference === 'string' &&
+        req.body.collectionReference.trim()
+          ? req.body.collectionReference.trim().slice(0, 120)
+          : null
+
+      await client.query('BEGIN')
+
+      transactionStarted = true
+
+      // ==================================================
+      // Lock return header
+      // ==================================================
+      const returnResult = await client.query(
+        `
+          SELECT *
+
+          FROM returns
+
+          WHERE company_id = $1
+            AND id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR branch_id =
+                 $3::uuid
+            )
+
+          FOR UPDATE;
+          `,
+        [auth.companyId, returnId, auth.branchId],
+      )
+
+      if ((returnResult.rowCount ?? 0) === 0) {
+        throw new ReturnsApiError(
+          404,
+          'Return was not found or belongs to another branch',
+        )
+      }
+
+      const returnDocument = returnResult.rows[0]
+
+      if (returnDocument.status === 'voided') {
+        await client.query('COMMIT')
+
+        transactionStarted = false
+
+        return res.json({
+          alreadyVoided: true,
+
+          data: {
+            return: returnDocument,
+
+            stockReversalIds: [],
+
+            refundReversalIds: [],
+          },
+        })
+      }
+
+      if (returnDocument.status !== 'completed') {
+        throw new ReturnsApiError(409, 'Only completed returns can be voided')
+      }
+
+      // ==================================================
+      // Original return stock movements
+      // ==================================================
+      const originalMovementsResult = await client.query(
+        `
+          SELECT
+            id,
+            branch_id,
+            stock_location_id,
+            variant_id,
+
+            movement_type,
+            quantity,
+
+            quantity_before,
+            quantity_after,
+
+            reference_type,
+            reference_id,
+
+            note,
+            created_at
+
+          FROM stock_movements
+
+          WHERE company_id = $1
+
+            AND reference_type =
+                'return'
+
+            AND reference_id = $2
+
+            AND movement_type =
+                'return'
+
+            AND reversal_of_movement_id
+                IS NULL
+
+          ORDER BY
+            created_at DESC,
+            id DESC
+
+          FOR UPDATE;
+          `,
+        [auth.companyId, returnId],
+      )
+
+      const expectedMovementsResult = await client.query(
+        `
+          SELECT COUNT(*)::int
+            AS expected_count
+
+          FROM return_items
+
+          WHERE company_id = $1
+            AND return_id = $2;
+          `,
+        [auth.companyId, returnId],
+      )
+
+      const expectedMovementCount = Number(
+        expectedMovementsResult.rows[0].expected_count,
+      )
+
+      const originalMovements = originalMovementsResult.rows
+
+      if (
+        originalMovements.length === 0 ||
+        originalMovements.length !== expectedMovementCount
+      ) {
+        throw new ReturnsApiError(
+          409,
+          'Return stock movement history is incomplete and cannot be reversed safely',
+          {
+            expectedMovementCount,
+
+            actualMovementCount: originalMovements.length,
+          },
+        )
+      }
+
+      const originalMovementIds = originalMovements.map((movement) =>
+        String(movement.id),
+      )
+
+      const existingStockReversalsResult = await client.query(
+        `
+          SELECT COUNT(*)::int
+            AS reversal_count
+
+          FROM stock_movements
+
+          WHERE company_id = $1
+
+            AND reversal_of_movement_id =
+                ANY($2::uuid[]);
+          `,
+        [auth.companyId, originalMovementIds],
+      )
+
+      if (Number(existingStockReversalsResult.rows[0].reversal_count) > 0) {
+        throw new ReturnsApiError(
+          409,
+          'Return already contains stock reversal movements',
+        )
+      }
+
+      // ==================================================
+      // Original refunds
+      // ==================================================
+      const originalRefundsResult = await client.query(
+        `
+          SELECT *
+
+          FROM return_refunds
+
+          WHERE company_id = $1
+            AND return_id = $2
+
+            AND refund_role =
+                'refund'
+
+          ORDER BY
+            created_at ASC,
+            id ASC
+
+          FOR UPDATE;
+          `,
+        [auth.companyId, returnId],
+      )
+
+      if ((originalRefundsResult.rowCount ?? 0) === 0) {
+        throw new ReturnsApiError(
+          409,
+          'Return refund history is missing and cannot be reversed safely',
+        )
+      }
+
+      const originalRefundTotal = roundMoney(
+        originalRefundsResult.rows.reduce(
+          (total, refund) => total + Number(refund.amount),
+
+          0,
+        ),
+      )
+
+      if (
+        Math.abs(originalRefundTotal - Number(returnDocument.refund_total)) >
+        0.01
+      ) {
+        throw new ReturnsApiError(
+          409,
+          'Return refund history does not match the return total',
+          {
+            expectedRefundTotal: returnDocument.refund_total,
+
+            actualRefundTotal: originalRefundTotal,
+          },
+        )
+      }
+
+      const existingRefundReversalsResult = await client.query(
+        `
+          SELECT COUNT(*)::int
+            AS reversal_count
+
+          FROM return_refunds
+
+          WHERE company_id = $1
+            AND return_id = $2
+
+            AND refund_role =
+                'void_reversal';
+          `,
+        [auth.companyId, returnId],
+      )
+
+      if (Number(existingRefundReversalsResult.rows[0].reversal_count) > 0) {
+        throw new ReturnsApiError(
+          409,
+          'Return already contains refund reversal records',
+        )
+      }
+
+      // ==================================================
+      // Lock affected stock balances
+      // ==================================================
+      const variantIds = [
+        ...new Set(
+          originalMovements.map((movement) => String(movement.variant_id)),
+        ),
+      ].sort()
+
+      for (const variantId of variantIds) {
+        await client.query(
+          `
+          INSERT INTO stock_balances (
+            company_id,
+            branch_id,
+            stock_location_id,
+            variant_id,
+            quantity
+          )
+          VALUES (
+            $1, $2, $3, $4, 0
+          )
+
+          ON CONFLICT (
+            company_id,
+            stock_location_id,
+            variant_id
+          )
+          DO NOTHING;
+          `,
+          [
+            auth.companyId,
+            returnDocument.branch_id,
+            returnDocument.stock_location_id,
+            variantId,
+          ],
+        )
+      }
+
+      const balancesResult = await client.query(
+        `
+          SELECT
+            variant_id,
+            quantity
+
+          FROM stock_balances
+
+          WHERE company_id = $1
+
+            AND stock_location_id =
+                $2
+
+            AND variant_id =
+                ANY($3::uuid[])
+
+          ORDER BY
+            variant_id ASC
+
+          FOR UPDATE;
+          `,
+        [auth.companyId, returnDocument.stock_location_id, variantIds],
+      )
+
+      const runningBalances = new Map<string, number>(
+        balancesResult.rows.map((balance) => [
+          String(balance.variant_id),
+
+          Number(balance.quantity),
+        ]),
+      )
+
+      // ==================================================
+      // Calculate final balances before modification
+      // ==================================================
+      const reversalByVariant = new Map<string, number>()
+
+      for (const movement of originalMovements) {
+        const variantId = String(movement.variant_id)
+
+        const originalQuantity = Number(movement.quantity)
+
+        if (!Number.isFinite(originalQuantity) || originalQuantity <= 0) {
+          throw new ReturnsApiError(
+            409,
+            'Return contains an invalid original stock movement',
+            {
+              movementId: movement.id,
+
+              quantity: movement.quantity,
+            },
+          )
+        }
+
+        const reversalQuantity = roundQuantity(-originalQuantity)
+
+        reversalByVariant.set(
+          variantId,
+
+          roundQuantity(
+            (reversalByVariant.get(variantId) ?? 0) + reversalQuantity,
+          ),
+        )
+      }
+
+      const shortages = variantIds
+        .map((variantId) => {
+          const currentQuantity = runningBalances.get(variantId) ?? 0
+
+          const reversalQuantity = reversalByVariant.get(variantId) ?? 0
+
+          const finalQuantity = roundQuantity(
+            currentQuantity + reversalQuantity,
+          )
+
+          return {
+            variantId,
+            currentQuantity,
+            reversalQuantity,
+            finalQuantity,
+          }
+        })
+        .filter((item) => item.finalQuantity < 0)
+
+      if (shortages.length > 0) {
+        throw new ReturnsApiError(
+          409,
+          'Stock is insufficient to void this return safely',
+          {
+            shortages,
+          },
+        )
+      }
+
+      // ==================================================
+      // Reverse stock movements
+      // ==================================================
+      const createdStockReversalIds: string[] = []
+
+      for (const originalMovement of originalMovements) {
+        const variantId = String(originalMovement.variant_id)
+
+        const quantityBefore = runningBalances.get(variantId) ?? 0
+
+        const reversalQuantity = roundQuantity(
+          -Number(originalMovement.quantity),
+        )
+
+        const quantityAfter = roundQuantity(quantityBefore + reversalQuantity)
+
+        await client.query(
+          `
+          UPDATE stock_balances
+
+          SET
+            quantity = $1,
+            branch_id = $2,
+            updated_at = NOW()
+
+          WHERE company_id = $3
+
+            AND stock_location_id =
+                $4
+
+            AND variant_id = $5;
+          `,
+          [
+            quantityAfter,
+            returnDocument.branch_id,
+            auth.companyId,
+            returnDocument.stock_location_id,
+            variantId,
+          ],
+        )
+
+        const reversalResult = await client.query(
+          `
+            INSERT INTO stock_movements (
+              company_id,
+              branch_id,
+              stock_location_id,
+              variant_id,
+
+              movement_type,
+              quantity,
+              quantity_before,
+              quantity_after,
+
+              reference_type,
+              reference_id,
+
+              reversal_of_movement_id,
+
+              note,
+              created_by
+            )
+            VALUES (
+              $1, $2, $3, $4,
+              'return',
+              $5, $6, $7,
+              'return',
+              $8,
+              $9,
+              $10,
+              $11
+            )
+
+            RETURNING id;
+            `,
+          [
+            auth.companyId,
+            returnDocument.branch_id,
+            returnDocument.stock_location_id,
+            variantId,
+
+            reversalQuantity,
+            quantityBefore,
+            quantityAfter,
+
+            returnId,
+
+            originalMovement.id,
+
+            `Void reversal for return ${returnDocument.return_number}`,
+
+            auth.userId,
+          ],
+        )
+
+        createdStockReversalIds.push(reversalResult.rows[0].id)
+
+        runningBalances.set(variantId, quantityAfter)
+      }
+
+      // ==================================================
+      // Reverse refunds
+      //
+      // المرتجع الأصلي رد مبلغ للعميل.
+      // الإلغاء يسجل أن المبلغ أصبح مطلوبًا من العميل.
+      // ==================================================
+      const createdRefundReversalIds: string[] = []
+
+      for (const originalRefund of originalRefundsResult.rows) {
+        const originalReference =
+          typeof originalRefund.reference === 'string' &&
+          originalRefund.reference.trim()
+            ? originalRefund.reference.trim()
+            : null
+
+        const combinedReference = [
+          `Void ${returnDocument.return_number}`,
+
+          collectionReference,
+
+          originalReference ? `Original: ${originalReference}` : null,
+        ]
+          .filter(Boolean)
+          .join(' | ')
+          .slice(0, 200)
+
+        const reversalResult = await client.query(
+          `
+            INSERT INTO return_refunds (
+              company_id,
+              return_id,
+
+              method,
+              amount,
+              reference,
+
+              refund_role,
+              payment_direction,
+              reverses_refund_id
+            )
+            VALUES (
+              $1, $2,
+              $3, $4, $5,
+              'void_reversal',
+              'collected_from_customer',
+              $6
+            )
+
+            RETURNING id;
+            `,
+          [
+            auth.companyId,
+            returnId,
+
+            originalRefund.method,
+            originalRefund.amount,
+            combinedReference || null,
+
+            originalRefund.id,
+          ],
+        )
+
+        createdRefundReversalIds.push(reversalResult.rows[0].id)
+      }
+
+      // ==================================================
+      // Mark return as voided
+      // ==================================================
+      const voidedReturnResult = await client.query(
+        `
+          UPDATE returns
+
+          SET
+            status = 'voided',
+            void_reason = $1,
+            voided_by = $2,
+            voided_at = NOW()
+
+          WHERE company_id = $3
+            AND id = $4
+
+          RETURNING *;
+          `,
+        [reason, auth.userId, auth.companyId, returnId],
+      )
+
+      // ==================================================
+      // Audit log
+      // ==================================================
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          company_id,
+          branch_id,
+          user_id,
+
+          action,
+          entity_type,
+          entity_id,
+
+          old_data,
+          new_data,
+
+          ip_address,
+          user_agent
+        )
+        VALUES (
+          $1, $2, $3,
+          'return.void',
+          'return',
+          $4,
+          $5::jsonb,
+          $6::jsonb,
+          $7,
+          $8
+        );
+        `,
+        [
+          auth.companyId,
+          returnDocument.branch_id,
+          auth.userId,
+
+          returnId,
+
+          JSON.stringify({
+            status: returnDocument.status,
+
+            subtotal: returnDocument.subtotal,
+
+            refundTotal: returnDocument.refund_total,
+          }),
+
+          JSON.stringify({
+            status: 'voided',
+
+            reason,
+
+            stockReversalIds: createdStockReversalIds,
+
+            refundReversalIds: createdRefundReversalIds,
+          }),
+
+          req.ip || null,
+
+          req.get('user-agent') || null,
+        ],
+      )
+
+      await client.query('COMMIT')
+
+      transactionStarted = false
+
+      return res.json({
+        alreadyVoided: false,
+
+        data: {
+          return: voidedReturnResult.rows[0],
+
+          stockReversalIds: createdStockReversalIds,
+
+          refundReversalIds: createdRefundReversalIds,
+        },
+      })
+    } catch (error) {
+      if (transactionStarted) {
+        await client.query('ROLLBACK').catch(() => {})
+
+        transactionStarted = false
+      }
+
+      if (error instanceof ReturnsApiError) {
+        return res.status(error.statusCode).json({
+          error: error.message,
+
+          ...(error.details
+            ? {
+                details: error.details,
+              }
+            : {}),
+        })
+      }
+
+      return next(error)
+    } finally {
+      client.release()
+    }
+  },
+)

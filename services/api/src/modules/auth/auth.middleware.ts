@@ -562,6 +562,40 @@ export function requireBusinessPermission(
   }
 
   // ======================================================
+  // صلاحيات المرتجعات.
+  //
+  // القراءة متاحة لمن يملك view أو create أو void.
+  // الإلغاء يحتاج returns.void.
+  // باقي الكتابة تحتاج returns.create.
+  // ======================================================
+  if (path === '/api/returns' || path.startsWith('/api/returns/')) {
+    if (isReadRequest) {
+      const auth = getAuthContext(res)
+
+      const canReadReturns =
+        auth.roles.includes('admin') ||
+        auth.permissions.includes('returns.view') ||
+        auth.permissions.includes('returns.create') ||
+        auth.permissions.includes('returns.void')
+
+      if (!canReadReturns) {
+        return res.status(403).json({
+          error:
+            'Permission required: returns.view, returns.create or returns.void',
+        })
+      }
+
+      return next()
+    }
+
+    if (path.endsWith('/void')) {
+      return requirePermission('returns.void')(req, res, next)
+    }
+
+    return requirePermission('returns.create')(req, res, next)
+  }
+
+  // ======================================================
   // صلاحيات الاستبدالات.
   //
   // القراءة متاحة لمن يملك exchanges.view أو
@@ -685,11 +719,6 @@ export function requireBusinessPermission(
       prefix: '/api/sales',
       read: 'sales.view',
       write: 'sales.create',
-    },
-    {
-      prefix: '/api/returns',
-      read: 'returns.view',
-      write: 'returns.create',
     },
     {
       prefix: '/api/reports',
