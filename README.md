@@ -10,7 +10,9 @@ The correct direction is:
 
 General ERP/POS Core
 
-- Fashion Retail Module first
+**+**
+
+Fashion Retail Module first
 
 ## Current Goal
 
