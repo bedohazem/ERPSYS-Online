@@ -73,16 +73,25 @@ function isPostgresUniqueViolation(error: unknown) {
 async function loadReturnByIdempotency(
   companyId: string,
   idempotencyKey: string,
+  branchId: string | null,
 ) {
   const returnResult = await db.query(
     `
-    SELECT *
-    FROM returns
-    WHERE company_id = $1
-      AND idempotency_key = $2
-    LIMIT 1;
-    `,
-    [companyId, idempotencyKey],
+      SELECT *
+
+      FROM returns
+
+      WHERE company_id = $1
+        AND idempotency_key = $2
+
+        AND (
+          $3::uuid IS NULL
+          OR branch_id = $3::uuid
+        )
+
+      LIMIT 1;
+      `,
+    [companyId, idempotencyKey, branchId],
   )
 
   if ((returnResult.rowCount ?? 0) === 0) {
@@ -94,30 +103,42 @@ async function loadReturnByIdempotency(
   const [itemsResult, refundsResult] = await Promise.all([
     db.query(
       `
-        SELECT *
-        FROM return_items
-        WHERE company_id = $1
-          AND return_id = $2
-        ORDER BY created_at ASC;
-        `,
+      SELECT *
+
+      FROM return_items
+
+      WHERE company_id = $1
+        AND return_id = $2
+
+      ORDER BY
+        created_at ASC,
+        id ASC;
+      `,
       [companyId, returnDocument.id],
     ),
 
     db.query(
       `
-        SELECT *
-        FROM return_refunds
-        WHERE company_id = $1
-          AND return_id = $2
-        ORDER BY created_at ASC;
-        `,
+      SELECT *
+
+      FROM return_refunds
+
+      WHERE company_id = $1
+        AND return_id = $2
+
+      ORDER BY
+        created_at ASC,
+        id ASC;
+      `,
       [companyId, returnDocument.id],
     ),
   ])
 
   return {
     return: returnDocument,
+
     items: itemsResult.rows,
+
     refunds: refundsResult.rows,
   }
 }
@@ -230,25 +251,27 @@ returnsRouter.get('/api/returns', async (req, res, next) => {
 // مثال:
 // /api/returns/RETURN_ID?companyId=xxx
 // ======================================================
-returnsRouter.get('/api/returns/:returnId', async (req, res, next) => {
-  try {
-    const returnId = req.params.returnId
-    const companyId = req.query.companyId
+returnsRouter.get(
+  '/api/returns/:returnId',
 
-    if (!returnId || typeof returnId !== 'string') {
-      return res.status(400).json({ error: 'returnId is required' })
-    }
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res
-        .status(400)
-        .json({ error: 'companyId query parameter is required' })
-    }
+      const returnId = normalizeParam(req.params.returnId)
 
-    // أول Query:
-    // نجيب بيانات المرتجع الرئيسية
-    const returnResult = await db.query(
-      `
+      if (typeof returnId !== 'string' || !uuidPattern.test(returnId)) {
+        return res.status(400).json({
+          error: 'returnId is invalid',
+        })
+      }
+
+      const companyId = auth.companyId
+
+      // أول Query:
+      // نجيب بيانات المرتجع الرئيسية
+      const returnResult = await db.query(
+        `
       SELECT
         r.id,
         r.company_id,
@@ -296,20 +319,26 @@ returnsRouter.get('/api/returns/:returnId', async (req, res, next) => {
         AND voider.company_id =
             r.company_id
       WHERE r.company_id = $1
-        AND r.id = $2;
+        AND r.id = $2
+
+        AND (
+          $3::uuid IS NULL
+          OR r.branch_id =
+            $3::uuid
+        );
       `,
-      [companyId, returnId],
-    )
+        [companyId, returnId, auth.branchId],
+      )
 
-    // لو المرتجع مش موجود داخل نفس الشركة
-    if ((returnResult.rowCount ?? 0) === 0) {
-      return res.status(404).json({ error: 'Return was not found' })
-    }
+      // لو المرتجع مش موجود داخل نفس الشركة
+      if ((returnResult.rowCount ?? 0) === 0) {
+        return res.status(404).json({ error: 'Return was not found' })
+      }
 
-    // ثاني Query:
-    // نجيب الأصناف المرتجعة
-    const itemsResult = await db.query(
-      `
+      // ثاني Query:
+      // نجيب الأصناف المرتجعة
+      const itemsResult = await db.query(
+        `
       SELECT
         id,
         return_id,
@@ -330,13 +359,13 @@ returnsRouter.get('/api/returns/:returnId', async (req, res, next) => {
         AND return_id = $2
       ORDER BY created_at ASC;
       `,
-      [companyId, returnId],
-    )
+        [companyId, returnId],
+      )
 
-    // ثالث Query:
-    // نجيب طرق رد الفلوس
-    const refundsResult = await db.query(
-      `
+      // ثالث Query:
+      // نجيب طرق رد الفلوس
+      const refundsResult = await db.query(
+        `
       SELECT
         id,
         return_id,
@@ -355,11 +384,11 @@ returnsRouter.get('/api/returns/:returnId', async (req, res, next) => {
         AND return_id = $2
       ORDER BY created_at ASC;
       `,
-      [companyId, returnId],
-    )
+        [companyId, returnId],
+      )
 
-    const stockMovementsResult = await db.query(
-      `
+      const stockMovementsResult = await db.query(
+        `
       SELECT
         sm.id,
         sm.company_id,
@@ -433,21 +462,22 @@ returnsRouter.get('/api/returns/:returnId', async (req, res, next) => {
         sm.created_at ASC,
         sm.id ASC;
       `,
-      [companyId, returnId],
-    )
+        [companyId, returnId],
+      )
 
-    res.json({
-      data: {
-        return: returnResult.rows[0],
-        items: itemsResult.rows,
-        refunds: refundsResult.rows,
-        stockMovements: stockMovementsResult.rows,
-      },
-    })
-  } catch (error) {
-    next(error)
-  }
-})
+      res.json({
+        data: {
+          return: returnResult.rows[0],
+          items: itemsResult.rows,
+          refunds: refundsResult.rows,
+          stockMovements: stockMovementsResult.rows,
+        },
+      })
+    } catch (error) {
+      next(error)
+    }
+  },
+)
 
 // ======================================================
 // POST /api/returns
@@ -517,8 +547,9 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
     }
 
     const existingReturn = await loadReturnByIdempotency(
-      companyId,
+      auth.companyId,
       idempotencyKey,
+      auth.branchId,
     )
 
     if (existingReturn) {
@@ -592,6 +623,9 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
     // هنا بنجهز الأصناف قبل إنشاء المرتجع
     // عشان نحسب الإجماليات ونتأكد من صحة البيانات
     const preparedItems: any[] = []
+
+    const usedOriginalSaleItemIds = new Set<string>()
+
     let subtotal = 0
 
     // ======================================================
@@ -627,6 +661,17 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           'originalSaleItemId is required. Manual returns are not supported',
         )
       }
+      if (usedOriginalSaleItemIds.has(originalSaleItemId)) {
+        throw new ReturnsApiError(
+          400,
+          'The same original sale item cannot be repeated in one return',
+          {
+            originalSaleItemId,
+          },
+        )
+      }
+
+      usedOriginalSaleItemIds.add(originalSaleItemId)
       const variantId = item.variantId
       const quantity = Number(item.quantity)
       const unitPrice = Number(item.unitPrice)
@@ -1163,20 +1208,18 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           ? (req.body as Record<string, unknown>)
           : {}
 
-      const requestCompanyId =
-        typeof requestBody.companyId === 'string'
-          ? requestBody.companyId.trim()
-          : ''
+      const auth = getAuthContext(res)
 
       const requestIdempotencyKey =
         typeof requestBody.idempotencyKey === 'string'
           ? requestBody.idempotencyKey.trim()
           : ''
 
-      if (requestCompanyId && requestIdempotencyKey) {
+      if (requestIdempotencyKey) {
         const existingReturn = await loadReturnByIdempotency(
-          requestCompanyId,
+          auth.companyId,
           requestIdempotencyKey,
+          auth.branchId,
         )
 
         if (existingReturn) {
