@@ -41,7 +41,14 @@
 - Sales invoices
 - Payments
 - Returns
-- Exchanges
+- ✅ Exchanges — implementation completed
+  - Secure exchange creation
+  - Returned and issued item inventory movements
+  - Customer payment or refund difference
+  - Exchange history and details
+  - Safe void with inventory and payment reversals
+  - Audit trail
+  - 🧪 Final integrated acceptance test pending
 - Cashier shifts
 
 ## Phase 6 - Web Admin
@@ -93,3 +100,7 @@
 - Advanced analytics
 - OCR supplier invoices
 - Demand forecasting
+
+## Feature Documentation
+
+- [Exchange Management](./features/exchanges.md)

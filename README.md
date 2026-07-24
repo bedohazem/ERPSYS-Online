@@ -9,8 +9,8 @@ ERPSYS Online is not a huge generic ERP from day one, and it is not locked to fa
 The correct direction is:
 
 General ERP/POS Core
-+
-Fashion Retail Module first
+
+- Fashion Retail Module first
 
 ## Current Goal
 
@@ -57,3 +57,10 @@ Turn the system into a SaaS product for small and medium retail brands.
 ## First Vertical
 
 Fashion Retail ERP/POS.
+
+## Project Documentation
+
+- [Architecture](./docs/architecture.md)
+- [Database](./docs/database.md)
+- [Roadmap](./docs/roadmap.md)
+- [Exchange Management](./docs/features/exchanges.md)
