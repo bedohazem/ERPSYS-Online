@@ -14,6 +14,7 @@ import PosSyncPage from './pages/PosSyncPage'
 import NewSalePage from './pages/NewSalePage'
 import NewReturnPage from './pages/NewReturnPage'
 import NewExchangePage from './pages/NewExchangePage'
+import ExchangesPage from './pages/ExchangesPage'
 // شاشة إدارة مستخدمي الشركة.
 import UsersPage from './pages/UsersPage'
 // شاشة عرض الأدوار والصلاحيات.
@@ -39,6 +40,7 @@ type PageName =
   | 'new-sale'
   | 'new-return'
   | 'new-exchange'
+  | 'exchanges'
 
 // ======================================================
 // صفحات لوحة الإدارة.
@@ -88,6 +90,14 @@ const pageDefinitions: Array<{
     label: 'استبدال جديد',
     icon: '⇄',
     permission: 'exchanges.create',
+  },
+  {
+    name: 'exchanges',
+    label: 'سجل الاستبدالات',
+    icon: '≋',
+    permission: 'exchanges.view',
+
+    anyPermissions: ['exchanges.view', 'exchanges.create'],
   },
   {
     name: 'returns',
@@ -903,6 +913,14 @@ function App() {
               branchId={branchId}
               initialSaleId={selectedExchangeSaleId}
               onInitialSaleHandled={() => setSelectedExchangeSaleId(null)}
+            />
+          ) : null}
+
+          {activePage === 'exchanges' ? (
+            <ExchangesPage
+              companyId={companyId}
+              branchId={branchId}
+              onOpenSale={openSaleFromPosSync}
             />
           ) : null}
         </div>

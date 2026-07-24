@@ -193,10 +193,14 @@ async function loadExchangeDetails(companyId: string, exchangeId: string) {
     return null
   }
 
-  const [returnItemsResult, issueItemsResult, paymentsResult] =
-    await Promise.all([
-      db.query(
-        `
+  const [
+    returnItemsResult,
+    issueItemsResult,
+    paymentsResult,
+    stockMovementsResult,
+  ] = await Promise.all([
+    db.query(
+      `
       SELECT *
 
       FROM exchange_return_items
@@ -208,11 +212,11 @@ async function loadExchangeDetails(companyId: string, exchangeId: string) {
         created_at ASC,
         id ASC;
       `,
-        [companyId, exchangeId],
-      ),
+      [companyId, exchangeId],
+    ),
 
-      db.query(
-        `
+    db.query(
+      `
       SELECT *
 
       FROM exchange_issue_items
@@ -224,11 +228,11 @@ async function loadExchangeDetails(companyId: string, exchangeId: string) {
         created_at ASC,
         id ASC;
       `,
-        [companyId, exchangeId],
-      ),
+      [companyId, exchangeId],
+    ),
 
-      db.query(
-        `
+    db.query(
+      `
       SELECT *
 
       FROM exchange_payments
@@ -240,9 +244,83 @@ async function loadExchangeDetails(companyId: string, exchangeId: string) {
         created_at ASC,
         id ASC;
       `,
-        [companyId, exchangeId],
-      ),
-    ])
+      [companyId, exchangeId],
+    ),
+
+    db.query(
+      `
+  SELECT
+    sm.id,
+    sm.company_id,
+    sm.branch_id,
+    sm.stock_location_id,
+    sm.variant_id,
+
+    sm.movement_type,
+    sm.quantity,
+    sm.quantity_before,
+    sm.quantity_after,
+
+    sm.reference_type,
+    sm.reference_id,
+    sm.note,
+    sm.created_at,
+
+    pv.sku,
+    pv.primary_barcode,
+
+    p.name
+      AS product_name,
+
+    fs.name
+      AS size_name,
+
+    fc.name
+      AS color_name,
+
+    sl.name
+      AS stock_location_name
+
+  FROM stock_movements sm
+
+  JOIN product_variants pv
+    ON pv.id = sm.variant_id
+    AND pv.company_id =
+        sm.company_id
+
+  JOIN products p
+    ON p.id = pv.product_id
+    AND p.company_id =
+        pv.company_id
+
+  JOIN stock_locations sl
+    ON sl.id =
+       sm.stock_location_id
+    AND sl.company_id =
+        sm.company_id
+
+  LEFT JOIN fashion_sizes fs
+    ON fs.id = pv.size_id
+    AND fs.company_id =
+        pv.company_id
+
+  LEFT JOIN fashion_colors fc
+    ON fc.id = pv.color_id
+    AND fc.company_id =
+        pv.company_id
+
+  WHERE sm.company_id = $1
+    AND sm.reference_type =
+        'exchange'
+    AND sm.reference_id = $2
+
+  ORDER BY
+    sm.created_at ASC,
+    sm.id ASC;
+  `,
+      [companyId, exchangeId],
+    ),
+  ])
 
   return {
     exchange: exchangeResult.rows[0],
@@ -252,6 +330,8 @@ async function loadExchangeDetails(companyId: string, exchangeId: string) {
     issueItems: issueItemsResult.rows,
 
     payments: paymentsResult.rows,
+
+    stockMovements: stockMovementsResult.rows,
   }
 }
 
