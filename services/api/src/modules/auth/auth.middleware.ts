@@ -575,11 +575,13 @@ export function requireBusinessPermission(
       const canReadExchanges =
         auth.roles.includes('admin') ||
         auth.permissions.includes('exchanges.view') ||
-        auth.permissions.includes('exchanges.create')
+        auth.permissions.includes('exchanges.create') ||
+        auth.permissions.includes('exchanges.void')
 
       if (!canReadExchanges) {
         return res.status(403).json({
-          error: 'Permission required: exchanges.view or exchanges.create',
+          error:
+            'Permission required: exchanges.view, exchanges.create or exchanges.void',
         })
       }
 
