@@ -104,6 +104,8 @@ const pageDefinitions: Array<{
     label: 'المرتجعات',
     icon: '↙',
     permission: 'returns.view',
+
+    anyPermissions: ['returns.view', 'returns.create', 'returns.void'],
   },
   {
     name: 'products',

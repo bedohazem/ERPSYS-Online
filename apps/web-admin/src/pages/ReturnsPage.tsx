@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission } from '../auth/permissions'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
-import { requestJson } from '../lib/http'
+import { ApiError, requestJson } from '../lib/http'
 
 type ReturnDocument = {
   id: string
@@ -20,6 +20,12 @@ type ReturnDocument = {
   refund_total: string
   status: string
   reason: string | null
+
+  void_reason: string | null
+  voided_by: string | null
+  voided_by_name: string | null
+  voided_at: string | null
+
   created_at: string
   items_count: number
 }
@@ -51,9 +57,50 @@ type ReturnItem = {
 type ReturnRefund = {
   id: string
   return_id: string
+
   method: string
   amount: string
   reference: string | null
+
+  refund_role: 'refund' | 'void_reversal'
+
+  payment_direction: 'refunded_to_customer' | 'collected_from_customer'
+
+  reverses_refund_id: string | null
+
+  created_at: string
+}
+
+type ReturnStockMovement = {
+  id: string
+  variant_id: string
+
+  sku: string
+
+  primary_barcode: string | null
+
+  product_name: string
+
+  size_name: string | null
+
+  color_name: string | null
+
+  stock_location_name: string
+
+  movement_type: string
+
+  quantity: string
+  quantity_before: string
+  quantity_after: string
+
+  reference_type: string | null
+
+  reference_id: string | null
+
+  reversal_of_movement_id: string | null
+
+  note: string | null
+
   created_at: string
 }
 
@@ -61,6 +108,7 @@ type ReturnDetails = {
   return: ReturnDocument
   items: ReturnItem[]
   refunds: ReturnRefund[]
+  stockMovements: ReturnStockMovement[]
 }
 
 type ApiResponse<T> = {
@@ -156,6 +204,32 @@ function translateRefundMethod(method: string) {
   return methodLabels[method] || method
 }
 
+function translateRefundDirection(direction: string) {
+  if (direction === 'refunded_to_customer') {
+    return 'تم رده للعميل'
+  }
+
+  if (direction === 'collected_from_customer') {
+    return 'تم تحصيله من العميل'
+  }
+
+  return direction
+}
+
+function getReturnMovementClass(quantity: number | string) {
+  const numericQuantity = Number(quantity)
+
+  if (numericQuantity > 0) {
+    return 'movement-badge ' + 'movement-badge-in'
+  }
+
+  if (numericQuantity < 0) {
+    return 'movement-badge ' + 'movement-badge-out'
+  }
+
+  return 'movement-badge'
+}
+
 type ReturnsPageProps = {
   companyId: string
   branchId: string
@@ -170,9 +244,18 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
   const [loadingDetails, setLoadingDetails] = useState(false)
   const [error, setError] = useState('')
 
+  const [success, setSuccess] = useState('')
+
+  const [voidingReturnId, setVoidingReturnId] = useState<string | null>(null)
+
   const { user } = useAuth()
 
-  const canViewReturns = hasPermission(user, 'returns.view')
+  const canReadReturns =
+    hasPermission(user, 'returns.view') ||
+    hasPermission(user, 'returns.create') ||
+    hasPermission(user, 'returns.void')
+
+  const canVoidReturn = hasPermission(user, 'returns.void')
 
   // ======================================================
   // loadReturns
@@ -220,12 +303,12 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
   // أو تغير الشركة أو الفرع المرتبط بالجلسة.
   // ======================================================
   useEffect(() => {
-    if (!canViewReturns || !companyId.trim()) {
+    if (!canReadReturns || !companyId.trim()) {
       return
     }
 
     void loadReturns()
-  }, [canViewReturns, companyId, branchId])
+  }, [canReadReturns, companyId, branchId])
 
   // ======================================================
   // loadReturnDetails
@@ -262,6 +345,144 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
     }
   }
 
+  async function voidReturn(returnDocument: {
+    id: string
+    return_number: string
+    status: string
+    refund_total: string
+  }) {
+    if (!canVoidReturn || voidingReturnId) {
+      return
+    }
+
+    if (returnDocument.status !== 'completed') {
+      setError('لا يمكن إلغاء إلا مرتجع مكتمل.')
+
+      return
+    }
+
+    const reason = window.prompt('سبب إلغاء المرتجع — مطلوب:', '')
+
+    if (reason === null) {
+      return
+    }
+
+    if (reason.trim().length < 3) {
+      setError('سبب الإلغاء يجب ألا يقل عن 3 أحرف.')
+
+      return
+    }
+
+    const enteredReference = window.prompt(
+      'مرجع تحصيل المبلغ من العميل — اختياري:',
+      '',
+    )
+
+    if (enteredReference === null) {
+      return
+    }
+
+    const collectionReference = enteredReference.trim()
+
+    const confirmed = window.confirm(
+      `إلغاء المرتجع ${returnDocument.return_number}؟\n\n` +
+        `سيتم خصم الأصناف المرتجعة من المخزون.\n` +
+        `وسيتم تسجيل تحصيل ${formatReturnCurrency(
+          returnDocument.refund_total,
+        )} من العميل.\n\n` +
+        'لن يتم حذف السجلات الأصلية، وسيتم إنشاء سجلات عكسية مرتبطة بها.',
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setVoidingReturnId(returnDocument.id)
+
+    setError('')
+    setSuccess('')
+
+    try {
+      const response = await requestJson<
+        ApiResponse<{
+          return: ReturnDocument
+
+          stockReversalIds: string[]
+
+          refundReversalIds: string[]
+        }> & {
+          alreadyVoided: boolean
+        }
+      >(
+        `/api/returns/${encodeURIComponent(returnDocument.id)}/void`,
+
+        {
+          method: 'POST',
+
+          headers: {
+            'Content-Type': 'application/json',
+          },
+
+          body: JSON.stringify({
+            reason: reason.trim(),
+
+            collectionReference: collectionReference || null,
+          }),
+        },
+      )
+
+      await loadReturns()
+
+      await loadReturnDetails(returnDocument.id)
+
+      setSuccess(
+        response.alreadyVoided
+          ? 'المرتجع ملغى بالفعل، ولم تتكرر أي حركة.'
+          : `تم إلغاء المرتجع ${returnDocument.return_number} وعكس المخزون والمبلغ المرتجع.`,
+      )
+    } catch (currentError) {
+      if (currentError instanceof ApiError) {
+        const errorData = currentError.data as {
+          details?: {
+            shortages?: Array<{
+              variantId?: unknown
+              currentQuantity?: unknown
+              reversalQuantity?: unknown
+              finalQuantity?: unknown
+            }>
+          }
+        } | null
+
+        const shortages = errorData?.details?.shortages
+
+        if (Array.isArray(shortages) && shortages.length > 0) {
+          const shortageText = shortages
+            .map(
+              (shortage) =>
+                `${String(shortage.variantId || '-')}: الحالي ${String(
+                  shortage.currentQuantity ?? 0,
+                )}، حركة الإلغاء ${String(
+                  shortage.reversalQuantity ?? 0,
+                )}، الناتج ${String(shortage.finalQuantity ?? 0)}`,
+            )
+            .join(' — ')
+
+          setError(`${currentError.message}: ${shortageText}`)
+        } else {
+          setError(currentError.message)
+        }
+      } else {
+        setError(
+          currentError instanceof Error
+            ? currentError.message
+            : 'تعذر إلغاء المرتجع.',
+        )
+      }
+    } finally {
+      setVoidingReturnId(null)
+    }
+  }
+
   return (
     <>
       <section className="panel">
@@ -273,7 +494,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
             </p>
           </div>
 
-          {canViewReturns ? (
+          {canReadReturns ? (
             <div className="section-actions">
               <span className="record-count-badge">{returns.length} مرتجع</span>
 
@@ -290,6 +511,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
+        {success ? <p className="success-message">{success}</p> : null}
 
         {returns.length === 0 ? (
           <p className="muted">
@@ -311,7 +533,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
                   <th>المبلغ المرتجع</th>
                   <th>الأصناف</th>
                   <th>الحالة</th>
-                  <th>التفاصيل</th>
+                  <th>الإجراءات</th>
                 </tr>
               </thead>
               <tbody>
@@ -354,16 +576,38 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
                       </span>
                     </td>
                     <td>
-                      {canViewReturns ? (
-                        <button
-                          type="button"
-                          className="table-button"
-                          disabled={loadingDetails}
-                          onClick={() => loadReturnDetails(returnDocument.id)}
-                        >
-                          عرض التفاصيل
-                        </button>
-                      ) : null}
+                      <div className="section-actions">
+                        {canReadReturns ? (
+                          <button
+                            type="button"
+                            className="table-button"
+                            disabled={
+                              loadingDetails || voidingReturnId !== null
+                            }
+                            onClick={() =>
+                              void loadReturnDetails(returnDocument.id)
+                            }
+                          >
+                            عرض التفاصيل
+                          </button>
+                        ) : null}
+
+                        {canVoidReturn &&
+                        returnDocument.status === 'completed' ? (
+                          <button
+                            type="button"
+                            className="table-button danger-button"
+                            disabled={voidingReturnId !== null}
+                            onClick={() => void voidReturn(returnDocument)}
+                          >
+                            {voidingReturnId === returnDocument.id
+                              ? 'جاري الإلغاء...'
+                              : 'إلغاء المرتجع'}
+                          </button>
+                        ) : returnDocument.status === 'voided' ? (
+                          <span className="muted">تم الإلغاء</span>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -387,15 +631,56 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
                 {formatReturnDateTime(selectedReturnDetails.return.created_at)}
               </p>
             </div>
-            <button
-              type="button"
-              className="table-button"
-              disabled={loadingDetails}
-              onClick={() => setSelectedReturnDetails(null)}
-            >
-              إغلاق التفاصيل
-            </button>
+            <div className="section-actions">
+              {canVoidReturn &&
+              selectedReturnDetails.return.status === 'completed' ? (
+                <button
+                  type="button"
+                  className="table-button danger-button"
+                  disabled={voidingReturnId !== null}
+                  onClick={() => void voidReturn(selectedReturnDetails.return)}
+                >
+                  {voidingReturnId === selectedReturnDetails.return.id
+                    ? 'جاري الإلغاء...'
+                    : 'إلغاء المرتجع'}
+                </button>
+              ) : null}
+
+              <button
+                type="button"
+                className="table-button"
+                disabled={loadingDetails || voidingReturnId !== null}
+                onClick={() => setSelectedReturnDetails(null)}
+              >
+                إغلاق التفاصيل
+              </button>
+            </div>
           </div>
+
+          {selectedReturnDetails.return.status === 'voided' ? (
+            <p className="error-message">
+              تم إلغاء هذا المرتجع
+              {selectedReturnDetails.return.voided_at
+                ? ` بتاريخ ${formatReturnDateTime(
+                    selectedReturnDetails.return.voided_at,
+                  )}`
+                : ''}
+              {selectedReturnDetails.return.voided_by_name
+                ? ` بواسطة ${selectedReturnDetails.return.voided_by_name}`
+                : ''}
+              {selectedReturnDetails.return.void_reason
+                ? ` — السبب: ${selectedReturnDetails.return.void_reason}`
+                : ''}
+            </p>
+          ) : null}
+
+          {selectedReturnDetails.return.status === 'completed' &&
+          canVoidReturn ? (
+            <p className="muted">
+              عند الإلغاء سيتم خصم الأصناف التي دخلت المخزون بسبب المرتجع، كما
+              سيتم تسجيل تحصيل المبلغ الذي سبق رده للعميل.
+            </p>
+          ) : null}
 
           <section className="mini-cards-grid">
             <article className="mini-card">
@@ -492,7 +777,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
             </table>
           </div>
 
-          <h3>طرق رد المبلغ</h3>
+          <h3>الحركات المالية للمرتجع</h3>
 
           {selectedReturnDetails.refunds.length === 0 ? (
             <p className="muted">لا توجد بيانات رد مبلغ لهذا المرتجع.</p>
@@ -501,14 +786,32 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
               <table>
                 <thead>
                   <tr>
-                    <th>طريقة الرد</th>
+                    <th>نوع السجل</th>
+                    <th>الاتجاه</th>
+                    <th>الطريقة</th>
                     <th>المبلغ</th>
                     <th>المرجع</th>
+                    <th>التاريخ</th>
                   </tr>
                 </thead>
                 <tbody>
                   {selectedReturnDetails.refunds.map((refund) => (
                     <tr key={refund.id}>
+                      <td>
+                        {refund.refund_role === 'void_reversal' ? (
+                          <span className="status-badge status-badge-warning">
+                            تحصيل بسبب الإلغاء
+                          </span>
+                        ) : (
+                          <span className="status-badge status-badge-success">
+                            رد المبلغ الأصلي
+                          </span>
+                        )}
+                      </td>
+
+                      <td>
+                        {translateRefundDirection(refund.payment_direction)}
+                      </td>
                       <td>
                         <span className="payment-method-badge">
                           {translateRefundMethod(refund.method)}
@@ -519,6 +822,74 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
                         {formatReturnCurrency(refund.amount)}
                       </td>
                       <td>{refund.reference || '-'}</td>
+                      <td>{formatReturnDateTime(refund.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <h3>حركات المخزون</h3>
+
+          {selectedReturnDetails.stockMovements.length === 0 ? (
+            <p className="muted">لا توجد حركات مخزون مرتبطة بهذا المرتجع.</p>
+          ) : (
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>نوع السجل</th>
+                    <th>الصنف</th>
+                    <th>SKU</th>
+                    <th>المقاس</th>
+                    <th>اللون</th>
+                    <th>قبل</th>
+                    <th>الحركة</th>
+                    <th>بعد</th>
+                    <th>مكان التخزين</th>
+                    <th>التاريخ</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {selectedReturnDetails.stockMovements.map((movement) => (
+                    <tr key={movement.id}>
+                      <td>
+                        {movement.reversal_of_movement_id ? (
+                          <span className="status-badge status-badge-warning">
+                            حركة عكسية
+                          </span>
+                        ) : (
+                          <span className="status-badge status-badge-success">
+                            حركة أصلية
+                          </span>
+                        )}
+                      </td>
+
+                      <td>{movement.product_name}</td>
+
+                      <td>{movement.sku}</td>
+
+                      <td>{movement.size_name || '-'}</td>
+
+                      <td>{movement.color_name || '-'}</td>
+
+                      <td>{formatReturnQuantity(movement.quantity_before)}</td>
+
+                      <td>
+                        <span
+                          className={getReturnMovementClass(movement.quantity)}
+                        >
+                          {formatReturnQuantity(movement.quantity)}
+                        </span>
+                      </td>
+
+                      <td>{formatReturnQuantity(movement.quantity_after)}</td>
+
+                      <td>{movement.stock_location_name}</td>
+
+                      <td>{formatReturnDateTime(movement.created_at)}</td>
                     </tr>
                   ))}
                 </tbody>
