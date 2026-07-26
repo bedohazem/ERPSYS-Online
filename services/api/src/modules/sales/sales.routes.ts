@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { db } from '../../db/pool'
+import { getAuthContext } from '../auth/auth.middleware'
 
 export const salesRouter = Router()
 
@@ -16,10 +17,14 @@ export const salesRouter = Router()
 // ======================================================
 class SalesApiError extends Error {
   statusCode: number
+  details?: unknown
 
-  constructor(statusCode: number, message: string) {
+  constructor(statusCode: number, message: string, details?: unknown) {
     super(message)
+
     this.statusCode = statusCode
+
+    this.details = details
   }
 }
 
@@ -31,6 +36,14 @@ class SalesApiError extends Error {
 // ======================================================
 function roundMoney(value: number) {
   return Number(value.toFixed(2))
+}
+
+function roundQuantity(value: number) {
+  return Number(value.toFixed(3))
+}
+
+function normalizeParam(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value
 }
 
 // طرق الدفع التي يدعمها النظام حاليًا.
@@ -138,6 +151,14 @@ salesRouter.get('/api/sales', async (req, res, next) => {
         s.change_total,
         s.status,
 
+        s.void_reason,
+        s.voided_by,
+
+        voider.full_name
+          AS voided_by_name,
+
+        s.voided_at,
+
         -- وقت حدوث البيع الحقيقي.
         -- في البيع Offline قد يسبق وقت المزامنة بساعات.
         s.occurred_at,
@@ -176,6 +197,12 @@ salesRouter.get('/api/sales', async (req, res, next) => {
 
       LEFT JOIN customers c
         ON c.id = s.customer_id
+
+      LEFT JOIN users voider
+        ON voider.id =
+          s.voided_by
+        AND voider.company_id =
+            s.company_id
 
       LEFT JOIN sale_items si
         ON si.sale_id = s.id
@@ -266,6 +293,7 @@ salesRouter.get('/api/sales', async (req, res, next) => {
         b.name,
         sl.name,
         c.name,
+        voider.full_name,
         returned_items.returned_quantity
 
       ORDER BY
@@ -296,84 +324,105 @@ salesRouter.get('/api/sales', async (req, res, next) => {
 // مثال:
 // /api/sales/SALE_ID?companyId=xxx
 // ======================================================
-salesRouter.get('/api/sales/:saleId', async (req, res, next) => {
-  try {
-    // saleId جاي من الرابط نفسه
-    // مثال: /api/sales/123
-    const saleId = req.params.saleId
+salesRouter.get(
+  '/api/sales/:saleId',
 
-    // companyId جاي من query
-    // لازم نستخدمه عشان نضمن إن الفاتورة تابعة للشركة الصح
-    const companyId = req.query.companyId
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
 
-    if (!saleId || typeof saleId !== 'string') {
-      return res.status(400).json({ error: 'saleId is required' })
-    }
+      const saleId = normalizeParam(req.params.saleId)
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res
-        .status(400)
-        .json({ error: 'companyId query parameter is required' })
-    }
+      if (typeof saleId !== 'string' || !isValidUuid(saleId)) {
+        return res.status(400).json({
+          error: 'saleId is invalid',
+        })
+      }
 
-    // أول Query: نجيب بيانات الفاتورة الرئيسية
-    const saleResult = await db.query(
-      `
-      SELECT
-        s.id,
-        s.company_id,
-        s.branch_id,
-        b.name AS branch_name,
-        s.stock_location_id,
-        sl.name AS stock_location_name,
-        s.customer_id,
-        c.name AS customer_name,
-        s.cashier_id,
-        u.full_name AS cashier_name,
-        s.sale_number,
-        s.source,
-        s.local_sale_id,
-        s.idempotency_key,
-        s.subtotal,
-        s.discount_total,
-        s.tax_total,
-        s.total,
-        s.paid_total,
-        s.change_total,
-        s.status,
-        s.occurred_at,
-        s.created_at,
-        s.synced_at
-      FROM sales s
-      JOIN branches b ON b.id = s.branch_id
-      JOIN stock_locations sl ON sl.id = s.stock_location_id
-      LEFT JOIN customers c ON c.id = s.customer_id
-      LEFT JOIN users u ON u.id = s.cashier_id
-      WHERE s.company_id = $1
-        AND s.id = $2;
-      `,
-      [companyId, saleId],
-    )
+      const companyId = auth.companyId
 
-    // لو مفيش فاتورة بنفس ID داخل نفس الشركة، نرجع 404
-    if ((saleResult.rowCount ?? 0) === 0) {
-      return res.status(404).json({ error: 'Sale was not found' })
-    }
+      // أول Query: نجيب بيانات الفاتورة الرئيسية
+      const saleResult = await db.query(
+        `
+          SELECT
+            s.id,
+            s.company_id,
+            s.branch_id,
+            b.name AS branch_name,
+            s.stock_location_id,
+            sl.name AS stock_location_name,
+            s.customer_id,
+            c.name AS customer_name,
+            s.cashier_id,
+            u.full_name AS cashier_name,
+            s.sale_number,
+            s.source,
+            s.local_sale_id,
+            s.idempotency_key,
+            s.subtotal,
+            s.discount_total,
+            s.tax_total,
+            s.total,
+            s.paid_total,
+            s.change_total,
+            s.status,
 
-    // ======================================================
-    // تاني Query: نجيب أصناف الفاتورة
-    //
-    // مع كل صنف بنرجع:
-    // 1. الكمية المباعة الأصلية
-    // 2. الكمية التي تم إرجاعها سابقًا
-    // 3. الكمية المتبقية المسموح بإرجاعها
-    //
-    // الهدف:
-    // شاشة New Return تمنع المستخدم من اختيار كمية
-    // أكبر من الكمية المتبقية فعلًا.
-    // ======================================================
-    const itemsResult = await db.query(
-      `
+            s.void_reason,
+            s.voided_by,
+
+            voider.full_name
+              AS voided_by_name,
+
+            s.voided_at,
+            s.occurred_at,
+            s.created_at,
+            s.synced_at
+          FROM sales s
+          JOIN branches b ON b.id = s.branch_id
+          JOIN stock_locations sl ON sl.id = s.stock_location_id
+          LEFT JOIN customers c ON c.id = s.customer_id
+          LEFT JOIN users u
+            ON u.id = s.cashier_id
+            AND u.company_id =
+                s.company_id
+
+          LEFT JOIN users voider
+            ON voider.id =
+              s.voided_by
+            AND voider.company_id =
+                s.company_id
+
+          WHERE s.company_id = $1
+            AND s.id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR s.branch_id =
+                $3::uuid
+            );
+        `,
+        [companyId, saleId, auth.branchId],
+      )
+
+      // لو مفيش فاتورة بنفس ID داخل نفس الشركة، نرجع 404
+      if ((saleResult.rowCount ?? 0) === 0) {
+        return res.status(404).json({ error: 'Sale was not found' })
+      }
+
+      // ======================================================
+      // تاني Query: نجيب أصناف الفاتورة
+      //
+      // مع كل صنف بنرجع:
+      // 1. الكمية المباعة الأصلية
+      // 2. الكمية التي تم إرجاعها سابقًا
+      // 3. الكمية المتبقية المسموح بإرجاعها
+      //
+      // الهدف:
+      // شاشة New Return تمنع المستخدم من اختيار كمية
+      // أكبر من الكمية المتبقية فعلًا.
+      // ======================================================
+      const itemsResult = await db.query(
+        `
       SELECT
         si.id,
         si.sale_id,
@@ -478,39 +527,124 @@ salesRouter.get('/api/sales/:saleId', async (req, res, next) => {
         AND si.sale_id = $2
       ORDER BY si.created_at ASC;
       `,
-      [companyId, saleId],
-    )
+        [companyId, saleId],
+      )
 
-    // تالت Query: نجيب المدفوعات الخاصة بالفاتورة
-    const paymentsResult = await db.query(
-      `
+      // تالت Query: نجيب المدفوعات الخاصة بالفاتورة
+      const paymentsResult = await db.query(
+        `
       SELECT
         id,
         sale_id,
         method,
         amount,
         reference,
+
+        payment_role,
+        payment_direction,
+        reverses_payment_id,
+
         created_at
       FROM payments
       WHERE company_id = $1
         AND sale_id = $2
       ORDER BY created_at ASC;
       `,
-      [companyId, saleId],
-    )
+        [companyId, saleId],
+      )
 
-    // نرجع كل حاجة في Response واحد واضح
-    res.json({
-      data: {
-        sale: saleResult.rows[0],
-        items: itemsResult.rows,
-        payments: paymentsResult.rows,
-      },
-    })
-  } catch (error) {
-    next(error)
-  }
-})
+      const stockMovementsResult = await db.query(
+        `
+      SELECT
+        sm.id,
+        sm.company_id,
+        sm.branch_id,
+        sm.stock_location_id,
+        sm.variant_id,
+
+        sm.movement_type,
+        sm.quantity,
+        sm.quantity_before,
+        sm.quantity_after,
+
+        sm.reference_type,
+        sm.reference_id,
+
+        sm.reversal_of_movement_id,
+
+        sm.note,
+        sm.created_at,
+
+        pv.sku,
+        pv.primary_barcode,
+
+        p.name
+          AS product_name,
+
+        fs.name
+          AS size_name,
+
+        fc.name
+          AS color_name,
+
+        sl.name
+          AS stock_location_name
+
+      FROM stock_movements sm
+
+      JOIN product_variants pv
+        ON pv.id = sm.variant_id
+        AND pv.company_id =
+            sm.company_id
+
+      JOIN products p
+        ON p.id = pv.product_id
+        AND p.company_id =
+            pv.company_id
+
+      JOIN stock_locations sl
+        ON sl.id =
+          sm.stock_location_id
+        AND sl.company_id =
+            sm.company_id
+
+      LEFT JOIN fashion_sizes fs
+        ON fs.id = pv.size_id
+        AND fs.company_id =
+            pv.company_id
+
+      LEFT JOIN fashion_colors fc
+        ON fc.id = pv.color_id
+        AND fc.company_id =
+            pv.company_id
+
+      WHERE sm.company_id = $1
+        AND sm.reference_type =
+            'sale'
+
+        AND sm.reference_id = $2
+
+      ORDER BY
+        sm.created_at ASC,
+        sm.id ASC;
+      `,
+        [companyId, saleId],
+      )
+
+      // نرجع كل حاجة في Response واحد واضح
+      res.json({
+        data: {
+          sale: saleResult.rows[0],
+          items: itemsResult.rows,
+          payments: paymentsResult.rows,
+          stockMovements: stockMovementsResult.rows,
+        },
+      })
+    } catch (error) {
+      next(error)
+    }
+  },
+)
 
 salesRouter.post('/api/sales', async (req, res, next) => {
   const client = await db.connect()
@@ -1278,6 +1412,12 @@ salesRouter.post('/api/sales', async (req, res, next) => {
     if (error instanceof SalesApiError) {
       return res.status(error.statusCode).json({
         error: error.message,
+
+        ...(error.details
+          ? {
+              details: error.details,
+            }
+          : {}),
       })
     }
 
@@ -1287,3 +1427,831 @@ salesRouter.post('/api/sales', async (req, res, next) => {
     client.release()
   }
 })
+
+// ======================================================
+// POST /api/sales/:saleId/void
+//
+// Body:
+// {
+//   reason: string,
+//   refundReference?: string
+// }
+//
+// يمنع إلغاء فاتورة مرتبطة بمرتجع أو استبدال نشط.
+// يعكس المخزون وقيمة البيع داخل Transaction واحدة.
+// ======================================================
+salesRouter.post(
+  '/api/sales/:saleId/void',
+
+  async (req, res, next) => {
+    const client = await db.connect()
+
+    let transactionStarted = false
+
+    try {
+      const auth = getAuthContext(res)
+
+      const saleId = normalizeParam(req.params.saleId)
+
+      if (typeof saleId !== 'string' || !isValidUuid(saleId)) {
+        throw new SalesApiError(400, 'saleId is invalid')
+      }
+
+      const reason =
+        typeof req.body?.reason === 'string'
+          ? req.body.reason.trim().slice(0, 500)
+          : ''
+
+      if (reason.length < 3) {
+        throw new SalesApiError(
+          400,
+          'Void reason must contain at least 3 characters',
+        )
+      }
+
+      const refundReference =
+        typeof req.body?.refundReference === 'string' &&
+        req.body.refundReference.trim()
+          ? req.body.refundReference.trim().slice(0, 120)
+          : null
+
+      await client.query('BEGIN')
+
+      transactionStarted = true
+
+      // ==================================================
+      // Lock sale
+      // ==================================================
+      const saleResult = await client.query(
+        `
+          SELECT *
+
+          FROM sales
+
+          WHERE company_id = $1
+            AND id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR branch_id =
+                 $3::uuid
+            )
+
+          FOR UPDATE;
+          `,
+        [auth.companyId, saleId, auth.branchId],
+      )
+
+      if ((saleResult.rowCount ?? 0) === 0) {
+        throw new SalesApiError(
+          404,
+          'Sale was not found or belongs to another branch',
+        )
+      }
+
+      const sale = saleResult.rows[0]
+
+      if (sale.status === 'voided') {
+        await client.query('COMMIT')
+
+        transactionStarted = false
+
+        return res.json({
+          alreadyVoided: true,
+
+          data: {
+            sale,
+
+            stockReversalIds: [],
+
+            paymentReversalIds: [],
+          },
+        })
+      }
+
+      if (sale.status !== 'completed') {
+        throw new SalesApiError(409, 'Only completed sales can be voided')
+      }
+
+      // ==================================================
+      // منع إلغاء فاتورة مرتبطة بمرتجع أو استبدال نشط.
+      // يجب إلغاء المستندات التابعة أولًا.
+      // ==================================================
+      const dependenciesResult = await client.query(
+        `
+          SELECT
+            (
+              SELECT COUNT(*)::int
+
+              FROM returns r
+
+              WHERE r.company_id =
+                    $1
+
+                AND r.original_sale_id =
+                    $2
+
+                AND r.status <>
+                    'voided'
+            ) AS active_returns,
+
+            (
+              SELECT COUNT(*)::int
+
+              FROM exchanges e
+
+              WHERE e.company_id =
+                    $1
+
+                AND e.original_sale_id =
+                    $2
+
+                AND e.status <>
+                    'voided'
+            ) AS active_exchanges;
+          `,
+        [auth.companyId, saleId],
+      )
+
+      const activeReturns = Number(dependenciesResult.rows[0].active_returns)
+
+      const activeExchanges = Number(
+        dependenciesResult.rows[0].active_exchanges,
+      )
+
+      if (activeReturns > 0 || activeExchanges > 0) {
+        throw new SalesApiError(
+          409,
+          'Sale has active returns or exchanges and cannot be voided',
+          {
+            activeReturns,
+            activeExchanges,
+          },
+        )
+      }
+
+      // ==================================================
+      // Original stock movements
+      // ==================================================
+      const originalMovementsResult = await client.query(
+        `
+          SELECT
+            id,
+            branch_id,
+            stock_location_id,
+            variant_id,
+
+            movement_type,
+            quantity,
+            quantity_before,
+            quantity_after,
+
+            reference_type,
+            reference_id,
+
+            note,
+            created_at
+
+          FROM stock_movements
+
+          WHERE company_id = $1
+
+            AND reference_type =
+                'sale'
+
+            AND reference_id = $2
+
+            AND movement_type =
+                'sale'
+
+            AND reversal_of_movement_id
+                IS NULL
+
+          ORDER BY
+            variant_id ASC,
+            created_at ASC,
+            id ASC
+
+          FOR UPDATE;
+          `,
+        [auth.companyId, saleId],
+      )
+
+      const expectedMovementsResult = await client.query(
+        `
+          SELECT COUNT(*)::int
+            AS expected_count
+
+          FROM sale_items
+
+          WHERE company_id = $1
+            AND sale_id = $2;
+          `,
+        [auth.companyId, saleId],
+      )
+
+      const expectedMovementCount = Number(
+        expectedMovementsResult.rows[0].expected_count,
+      )
+
+      const originalMovements = originalMovementsResult.rows
+
+      if (
+        originalMovements.length === 0 ||
+        originalMovements.length !== expectedMovementCount
+      ) {
+        throw new SalesApiError(
+          409,
+          'Sale stock movement history is incomplete and cannot be reversed safely',
+          {
+            expectedMovementCount,
+
+            actualMovementCount: originalMovements.length,
+          },
+        )
+      }
+
+      for (const movement of originalMovements) {
+        const quantity = Number(movement.quantity)
+
+        if (!Number.isFinite(quantity) || quantity >= 0) {
+          throw new SalesApiError(
+            409,
+            'Sale contains an invalid original stock movement',
+            {
+              movementId: movement.id,
+
+              quantity: movement.quantity,
+            },
+          )
+        }
+      }
+
+      const originalMovementIds = originalMovements.map((movement) =>
+        String(movement.id),
+      )
+
+      const existingStockReversalsResult = await client.query(
+        `
+          SELECT COUNT(*)::int
+            AS reversal_count
+
+          FROM stock_movements
+
+          WHERE company_id = $1
+
+            AND reversal_of_movement_id =
+                ANY($2::uuid[]);
+          `,
+        [auth.companyId, originalMovementIds],
+      )
+
+      if (Number(existingStockReversalsResult.rows[0].reversal_count) > 0) {
+        throw new SalesApiError(
+          409,
+          'Sale already contains stock reversal movements',
+        )
+      }
+
+      // ==================================================
+      // Original payments
+      //
+      // مدفوعات cash ترتب أولًا لأن change_total
+      // غالبًا خرج من المبلغ النقدي.
+      // ==================================================
+      const originalPaymentsResult = await client.query(
+        `
+          SELECT *
+
+          FROM payments
+
+          WHERE company_id = $1
+            AND sale_id = $2
+
+            AND payment_role =
+                'sale_collection'
+
+          ORDER BY
+            CASE
+              WHEN method = 'cash'
+              THEN 0
+              ELSE 1
+            END,
+
+            created_at ASC,
+            id ASC
+
+          FOR UPDATE;
+          `,
+        [auth.companyId, saleId],
+      )
+
+      if ((originalPaymentsResult.rowCount ?? 0) === 0) {
+        throw new SalesApiError(
+          409,
+          'Sale payment history is missing and cannot be reversed safely',
+        )
+      }
+
+      const originalPaymentTotal = roundMoney(
+        originalPaymentsResult.rows.reduce(
+          (total, payment) => total + Number(payment.amount),
+
+          0,
+        ),
+      )
+
+      const saleTotal = roundMoney(Number(sale.total))
+
+      const paidTotal = roundMoney(Number(sale.paid_total))
+
+      const changeTotal = roundMoney(Number(sale.change_total))
+
+      if (
+        !Number.isFinite(saleTotal) ||
+        !Number.isFinite(paidTotal) ||
+        !Number.isFinite(changeTotal)
+      ) {
+        throw new SalesApiError(409, 'Sale contains invalid financial totals')
+      }
+
+      if (Math.abs(originalPaymentTotal - paidTotal) > 0.01) {
+        throw new SalesApiError(
+          409,
+          'Sale payment history does not match paid total',
+          {
+            expectedPaidTotal: paidTotal,
+
+            actualPaymentTotal: originalPaymentTotal,
+          },
+        )
+      }
+
+      if (Math.abs(paidTotal - changeTotal - saleTotal) > 0.01) {
+        throw new SalesApiError(409, 'Sale financial totals are inconsistent', {
+          saleTotal,
+          paidTotal,
+          changeTotal,
+        })
+      }
+
+      const existingPaymentReversalsResult = await client.query(
+        `
+          SELECT COUNT(*)::int
+            AS reversal_count
+
+          FROM payments
+
+          WHERE company_id = $1
+            AND sale_id = $2
+
+            AND payment_role =
+                'void_reversal';
+          `,
+        [auth.companyId, saleId],
+      )
+
+      if (Number(existingPaymentReversalsResult.rows[0].reversal_count) > 0) {
+        throw new SalesApiError(
+          409,
+          'Sale already contains payment reversal records',
+        )
+      }
+
+      // ==================================================
+      // Lock stock balances
+      // ==================================================
+      const variantIds = [
+        ...new Set(
+          originalMovements.map((movement) => String(movement.variant_id)),
+        ),
+      ].sort()
+
+      for (const variantId of variantIds) {
+        await client.query(
+          `
+          INSERT INTO stock_balances (
+            company_id,
+            branch_id,
+            stock_location_id,
+            variant_id,
+            quantity
+          )
+          VALUES (
+            $1, $2, $3, $4, 0
+          )
+
+          ON CONFLICT (
+            company_id,
+            stock_location_id,
+            variant_id
+          )
+          DO NOTHING;
+          `,
+          [auth.companyId, sale.branch_id, sale.stock_location_id, variantId],
+        )
+      }
+
+      const balancesResult = await client.query(
+        `
+          SELECT
+            variant_id,
+            quantity
+
+          FROM stock_balances
+
+          WHERE company_id = $1
+
+            AND stock_location_id =
+                $2
+
+            AND variant_id =
+                ANY($3::uuid[])
+
+          ORDER BY
+            variant_id ASC
+
+          FOR UPDATE;
+          `,
+        [auth.companyId, sale.stock_location_id, variantIds],
+      )
+
+      const runningBalances = new Map<string, number>(
+        balancesResult.rows.map((balance) => [
+          String(balance.variant_id),
+
+          Number(balance.quantity),
+        ]),
+      )
+
+      // ==================================================
+      // Reverse stock
+      // ==================================================
+      const createdStockReversalIds: string[] = []
+
+      for (const originalMovement of originalMovements) {
+        const variantId = String(originalMovement.variant_id)
+
+        const quantityBefore = runningBalances.get(variantId) ?? 0
+
+        const reversalQuantity = roundQuantity(
+          -Number(originalMovement.quantity),
+        )
+
+        const quantityAfter = roundQuantity(quantityBefore + reversalQuantity)
+
+        await client.query(
+          `
+          UPDATE stock_balances
+
+          SET
+            quantity = $1,
+            branch_id = $2,
+            updated_at = NOW()
+
+          WHERE company_id = $3
+
+            AND stock_location_id =
+                $4
+
+            AND variant_id = $5;
+          `,
+          [
+            quantityAfter,
+            sale.branch_id,
+            auth.companyId,
+            sale.stock_location_id,
+            variantId,
+          ],
+        )
+
+        const reversalResult = await client.query(
+          `
+            INSERT INTO stock_movements (
+              company_id,
+              branch_id,
+              stock_location_id,
+              variant_id,
+
+              movement_type,
+              quantity,
+              quantity_before,
+              quantity_after,
+
+              reference_type,
+              reference_id,
+
+              reversal_of_movement_id,
+
+              note,
+              created_by
+            )
+            VALUES (
+              $1, $2, $3, $4,
+              'sale',
+              $5, $6, $7,
+              'sale',
+              $8,
+              $9,
+              $10,
+              $11
+            )
+
+            RETURNING id;
+            `,
+          [
+            auth.companyId,
+            sale.branch_id,
+            sale.stock_location_id,
+            variantId,
+
+            reversalQuantity,
+            quantityBefore,
+            quantityAfter,
+
+            saleId,
+
+            originalMovement.id,
+
+            `Void reversal for sale ${sale.sale_number}`,
+
+            auth.userId,
+          ],
+        )
+
+        createdStockReversalIds.push(reversalResult.rows[0].id)
+
+        runningBalances.set(variantId, quantityAfter)
+      }
+
+      // ==================================================
+      // Prepare payment reversals
+      //
+      // paid_total قد يحتوي على المبلغ الذي أعطاه العميل،
+      // بينما change_total تم رده له بالفعل وقت البيع.
+      //
+      // المبلغ الذي يُرد عند الإلغاء هو sale.total فقط.
+      // ==================================================
+      let remainingChange = changeTotal
+
+      const paymentReversalPlans: Array<{
+        originalPaymentId: string
+        method: string
+        amount: number
+        originalReference: string | null
+      }> = []
+
+      for (const payment of originalPaymentsResult.rows) {
+        const paymentAmount = roundMoney(Number(payment.amount))
+
+        if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+          throw new SalesApiError(
+            409,
+            'Sale contains an invalid payment record',
+            {
+              paymentId: payment.id,
+            },
+          )
+        }
+
+        const appliedChange = roundMoney(
+          Math.min(paymentAmount, remainingChange),
+        )
+
+        remainingChange = roundMoney(remainingChange - appliedChange)
+
+        const reversalAmount = roundMoney(paymentAmount - appliedChange)
+
+        if (reversalAmount <= 0) {
+          continue
+        }
+
+        paymentReversalPlans.push({
+          originalPaymentId: payment.id,
+
+          method: payment.method,
+
+          amount: reversalAmount,
+
+          originalReference:
+            typeof payment.reference === 'string' && payment.reference.trim()
+              ? payment.reference.trim()
+              : null,
+        })
+      }
+
+      if (Math.abs(remainingChange) > 0.01) {
+        throw new SalesApiError(
+          409,
+          'Sale change could not be matched to original payments',
+          {
+            remainingChange,
+          },
+        )
+      }
+
+      const plannedRefundTotal = roundMoney(
+        paymentReversalPlans.reduce(
+          (total, payment) => total + payment.amount,
+
+          0,
+        ),
+      )
+
+      if (Math.abs(plannedRefundTotal - saleTotal) > 0.01) {
+        throw new SalesApiError(
+          409,
+          'Sale payment reversal total does not match sale total',
+          {
+            saleTotal,
+
+            plannedRefundTotal,
+          },
+        )
+      }
+
+      // ==================================================
+      // Create payment reversal records
+      // ==================================================
+      const createdPaymentReversalIds: string[] = []
+
+      for (const reversal of paymentReversalPlans) {
+        const combinedReference = [
+          `Void ${sale.sale_number}`,
+
+          refundReference,
+
+          reversal.originalReference
+            ? `Original: ${reversal.originalReference}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' | ')
+          .slice(0, 200)
+
+        const reversalResult = await client.query(
+          `
+            INSERT INTO payments (
+              company_id,
+              sale_id,
+
+              method,
+              amount,
+              reference,
+
+              payment_role,
+              payment_direction,
+              reverses_payment_id
+            )
+            VALUES (
+              $1, $2,
+              $3, $4, $5,
+              'void_reversal',
+              'refunded_to_customer',
+              $6
+            )
+
+            RETURNING id;
+            `,
+          [
+            auth.companyId,
+            saleId,
+
+            reversal.method,
+            reversal.amount,
+            combinedReference || null,
+
+            reversal.originalPaymentId,
+          ],
+        )
+
+        createdPaymentReversalIds.push(reversalResult.rows[0].id)
+      }
+
+      // ==================================================
+      // Mark sale voided
+      // ==================================================
+      const voidedSaleResult = await client.query(
+        `
+          UPDATE sales
+
+          SET
+            status = 'voided',
+            void_reason = $1,
+            voided_by = $2,
+            voided_at = NOW()
+
+          WHERE company_id = $3
+            AND id = $4
+
+          RETURNING *;
+          `,
+        [reason, auth.userId, auth.companyId, saleId],
+      )
+
+      // ==================================================
+      // Audit log
+      // ==================================================
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          company_id,
+          branch_id,
+          user_id,
+
+          action,
+          entity_type,
+          entity_id,
+
+          old_data,
+          new_data,
+
+          ip_address,
+          user_agent
+        )
+        VALUES (
+          $1, $2, $3,
+          'sale.void',
+          'sale',
+          $4,
+          $5::jsonb,
+          $6::jsonb,
+          $7,
+          $8
+        );
+        `,
+        [
+          auth.companyId,
+          sale.branch_id,
+          auth.userId,
+
+          saleId,
+
+          JSON.stringify({
+            status: sale.status,
+
+            total: sale.total,
+
+            paidTotal: sale.paid_total,
+
+            changeTotal: sale.change_total,
+          }),
+
+          JSON.stringify({
+            status: 'voided',
+
+            reason,
+
+            refundedTotal: plannedRefundTotal,
+
+            stockReversalIds: createdStockReversalIds,
+
+            paymentReversalIds: createdPaymentReversalIds,
+          }),
+
+          req.ip || null,
+
+          req.get('user-agent') || null,
+        ],
+      )
+
+      await client.query('COMMIT')
+
+      transactionStarted = false
+
+      return res.json({
+        alreadyVoided: false,
+
+        data: {
+          sale: voidedSaleResult.rows[0],
+
+          stockReversalIds: createdStockReversalIds,
+
+          paymentReversalIds: createdPaymentReversalIds,
+        },
+      })
+    } catch (error) {
+      if (transactionStarted) {
+        await client.query('ROLLBACK').catch(() => {})
+
+        transactionStarted = false
+      }
+
+      if (error instanceof SalesApiError) {
+        return res.status(error.statusCode).json({
+          error: error.message,
+
+          ...(error.details
+            ? {
+                details: error.details,
+              }
+            : {}),
+        })
+      }
+
+      return next(error)
+    } finally {
+      client.release()
+    }
+  },
+)

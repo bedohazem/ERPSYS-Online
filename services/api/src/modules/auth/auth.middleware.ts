@@ -375,31 +375,43 @@ export function requireBusinessPermission(
   const isReadRequest = ['GET', 'HEAD', 'OPTIONS'].includes(req.method)
 
   // ======================================================
-  // منشئ المرتجع يحتاج قراءة الفاتورة الأصلية وأصنافها.
+  // صلاحيات المبيعات.
   //
-  // لا نمنحه sales.create، بل قراءة الفواتير فقط
-  // أثناء تنفيذ دورة المرتجع.
+  // القراءة متاحة لمن يملك:
+  // - sales.view
+  // - sales.void
+  // - returns.create
+  // - exchanges.create
+  //
+  // الإلغاء يحتاج sales.void.
+  // باقي الكتابة تحتاج sales.create.
   // ======================================================
-  if (
-    isReadRequest &&
-    (path === '/api/sales' || path.startsWith('/api/sales/'))
-  ) {
-    const auth = getAuthContext(res)
+  if (path === '/api/sales' || path.startsWith('/api/sales/')) {
+    if (isReadRequest) {
+      const auth = getAuthContext(res)
 
-    const hasSalesReadAccess =
-      auth.roles.includes('admin') ||
-      auth.permissions.includes('sales.view') ||
-      auth.permissions.includes('returns.create') ||
-      auth.permissions.includes('exchanges.create')
+      const canReadSales =
+        auth.roles.includes('admin') ||
+        auth.permissions.includes('sales.view') ||
+        auth.permissions.includes('sales.void') ||
+        auth.permissions.includes('returns.create') ||
+        auth.permissions.includes('exchanges.create')
 
-    if (!hasSalesReadAccess) {
-      return res.status(403).json({
-        error:
-          'Permission required: sales.view, returns.create or exchanges.create',
-      })
+      if (!canReadSales) {
+        return res.status(403).json({
+          error:
+            'Permission required: sales.view, sales.void, returns.create or exchanges.create',
+        })
+      }
+
+      return next()
     }
 
-    return next()
+    if (path.endsWith('/void')) {
+      return requirePermission('sales.void')(req, res, next)
+    }
+
+    return requirePermission('sales.create')(req, res, next)
   }
 
   // ======================================================
@@ -714,11 +726,6 @@ export function requireBusinessPermission(
       prefix: '/api/inventory',
       read: 'inventory.view',
       write: 'inventory.adjust',
-    },
-    {
-      prefix: '/api/sales',
-      read: 'sales.view',
-      write: 'sales.create',
     },
     {
       prefix: '/api/reports',
