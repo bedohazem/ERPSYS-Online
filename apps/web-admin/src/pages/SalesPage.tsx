@@ -909,14 +909,12 @@ function SalesPage({
             <table>
               <thead>
                 <tr>
-                  <tr>
-                    <th>نوع السجل</th>
-                    <th>الاتجاه</th>
-                    <th>طريقة الدفع</th>
-                    <th>المبلغ</th>
-                    <th>مرجع الدفع</th>
-                    <th>التاريخ</th>
-                  </tr>
+                  <th>نوع السجل</th>
+                  <th>الاتجاه</th>
+                  <th>طريقة الدفع</th>
+                  <th>المبلغ</th>
+                  <th>مرجع الدفع</th>
+                  <th>التاريخ</th>
                 </tr>
               </thead>
               <tbody>
@@ -953,7 +951,7 @@ function SalesPage({
               </tbody>
             </table>
           </div>
-          
+
           <h3>حركات المخزون</h3>
 
           {selectedSaleDetails.stockMovements.length === 0 ? (

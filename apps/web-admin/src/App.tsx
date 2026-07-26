@@ -104,7 +104,7 @@ const pageDefinitions: Array<{
     icon: '≋',
     permission: 'exchanges.view',
 
-    anyPermissions: ['exchanges.view', 'exchanges.create'],
+    anyPermissions: ['exchanges.view', 'exchanges.create', 'exchanges.void'],
   },
   {
     name: 'returns',
