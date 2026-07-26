@@ -40,7 +40,16 @@
 
 - Sales invoices
 - Payments
-- Returns
+- ✅ Returns — implementation completed
+  - Secure return creation from completed sales
+  - Original sale price and quantity validation
+  - Returns and exchanges share remaining quantity protection
+  - Customer refund records
+  - Inventory increase and stock movements
+  - Return history and detailed financial records
+  - Safe void with stock and refund reversals
+  - Branch isolation and audit trail
+  - 🧪 Final integrated acceptance test pending
 - ✅ Exchanges — implementation completed
   - Secure exchange creation
   - Returned and issued item inventory movements
@@ -104,3 +113,4 @@
 ## Feature Documentation
 
 - [Exchange Management](./features/exchanges.md)
+- [Return Management](./features/returns.md)
