@@ -521,9 +521,14 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       return res.status(400).json({ error: 'companyId is required' })
     }
 
-    if (!originalSaleId || typeof originalSaleId !== 'string') {
+    const normalizedOriginalSaleId =
+      typeof originalSaleId === 'string'
+        ? originalSaleId.trim().toLowerCase()
+        : ''
+
+    if (!uuidPattern.test(normalizedOriginalSaleId)) {
       return res.status(400).json({
-        error: 'originalSaleId is required',
+        error: 'originalSaleId is invalid',
       })
     }
 
@@ -534,8 +539,19 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       return res.status(400).json({ error: 'returnNumber is required' })
     }
 
-    if (!idempotencyKey || typeof idempotencyKey !== 'string') {
-      return res.status(400).json({ error: 'idempotencyKey is required' })
+    const normalizedIdempotencyKey =
+      typeof idempotencyKey === 'string' ? idempotencyKey.trim() : ''
+
+    if (!normalizedIdempotencyKey) {
+      return res.status(400).json({
+        error: 'idempotencyKey is required',
+      })
+    }
+
+    if (normalizedIdempotencyKey.length > 200) {
+      return res.status(400).json({
+        error: 'idempotencyKey is too long',
+      })
     }
 
     if (!Array.isArray(items) || items.length === 0) {
@@ -548,7 +564,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
 
     const existingReturn = await loadReturnByIdempotency(
       auth.companyId,
-      idempotencyKey,
+      normalizedIdempotencyKey,
       auth.branchId,
     )
 
@@ -599,7 +615,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
 
   FOR SHARE OF s;
   `,
-      [companyId, originalSaleId, authenticatedBranchId],
+      [companyId, normalizedOriginalSaleId, authenticatedBranchId],
     )
 
     if ((originalSaleResult.rowCount ?? 0) === 0) {
@@ -638,10 +654,14 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       const firstKey = String(
         firstItem.originalSaleItemId || firstItem.variantId || '',
       )
+        .trim()
+        .toLowerCase()
 
       const secondKey = String(
         secondItem.originalSaleItemId || secondItem.variantId || '',
       )
+        .trim()
+        .toLowerCase()
 
       return firstKey.localeCompare(secondKey)
     })
@@ -650,7 +670,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       const originalSaleItemId =
         typeof item.originalSaleItemId === 'string' &&
         item.originalSaleItemId.trim()
-          ? item.originalSaleItemId.trim()
+          ? item.originalSaleItemId.trim().toLowerCase()
           : null
 
       // المرتجعات اليدوية غير المرتبطة بفواتير غير مسموحة حاليًا.
@@ -661,6 +681,13 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           'originalSaleItemId is required. Manual returns are not supported',
         )
       }
+
+      if (!uuidPattern.test(originalSaleItemId)) {
+        throw new ReturnsApiError(400, 'originalSaleItemId is invalid', {
+          originalSaleItemId,
+        })
+      }
+
       if (usedOriginalSaleItemIds.has(originalSaleItemId)) {
         throw new ReturnsApiError(
           400,
@@ -672,13 +699,23 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       }
 
       usedOriginalSaleItemIds.add(originalSaleItemId)
-      const variantId = item.variantId
+      const variantId =
+        typeof item.variantId === 'string'
+          ? item.variantId.trim().toLowerCase()
+          : ''
+
       const quantity = Number(item.quantity)
       const unitPrice = Number(item.unitPrice)
       const refundAmount = Number(item.refundAmount)
 
-      if (!variantId || typeof variantId !== 'string') {
-        throw new ReturnsApiError(400, 'variantId is required for each item')
+      if (!uuidPattern.test(variantId)) {
+        throw new ReturnsApiError(
+          400,
+          'variantId is invalid for a return item',
+          {
+            variantId: variantId || null,
+          },
+        )
       }
 
       if (!Number.isFinite(quantity) || quantity <= 0) {
@@ -735,7 +772,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
           -- ==================================================
           FOR UPDATE OF si;
           `,
-          [companyId, originalSaleItemId, variantId, originalSaleId],
+          [companyId, originalSaleItemId, variantId, normalizedOriginalSaleId],
         )
 
         if ((saleItemResult.rowCount ?? 0) === 0) {
@@ -988,10 +1025,10 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
         trustedBranchId,
         trustedStockLocationId,
         trustedCustomerId,
-        originalSaleId,
+        normalizedOriginalSaleId,
         returnNumber.trim(),
         source || 'online_pos',
-        idempotencyKey,
+        normalizedIdempotencyKey,
         subtotal,
         refundTotal,
         reason || null,
