@@ -711,12 +711,34 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       return res.status(400).json({ error: 'stockLocationId is required' })
     }
 
-    if (!saleNumber || typeof saleNumber !== 'string') {
-      return res.status(400).json({ error: 'saleNumber is required' })
+    const normalizedSaleNumber =
+      typeof saleNumber === 'string' ? saleNumber.trim() : ''
+
+    if (!normalizedSaleNumber) {
+      return res.status(400).json({
+        error: 'saleNumber is required',
+      })
     }
 
-    if (!idempotencyKey || typeof idempotencyKey !== 'string') {
-      return res.status(400).json({ error: 'idempotencyKey is required' })
+    if (normalizedSaleNumber.length > 120) {
+      return res.status(400).json({
+        error: 'saleNumber is too long',
+      })
+    }
+
+    const normalizedIdempotencyKey =
+      typeof idempotencyKey === 'string' ? idempotencyKey.trim() : ''
+
+    if (!normalizedIdempotencyKey) {
+      return res.status(400).json({
+        error: 'idempotencyKey is required',
+      })
+    }
+
+    if (normalizedIdempotencyKey.length > 200) {
+      return res.status(400).json({
+        error: 'idempotencyKey is too long',
+      })
     }
 
     if (!Array.isArray(items) || items.length === 0) {
@@ -801,13 +823,17 @@ salesRouter.post('/api/sales', async (req, res, next) => {
     // ======================================================
     const existingSaleResult = await client.query(
       `
-  SELECT *
-  FROM sales
-  WHERE company_id = $1
-    AND idempotency_key = $2
-  LIMIT 1;
-  `,
-      [companyId, idempotencyKey],
+    SELECT *
+
+    FROM sales
+
+    WHERE company_id = $1
+      AND idempotency_key = $2
+      AND branch_id = $3
+
+    LIMIT 1;
+    `,
+      [companyId, normalizedIdempotencyKey, branchId],
     )
 
     if ((existingSaleResult.rowCount ?? 0) > 0) {
@@ -1005,15 +1031,55 @@ salesRouter.post('/api/sales', async (req, res, next) => {
 
     const preparedItems = []
 
-    for (const item of items) {
-      const variantId = item.variantId
-      const quantity = Number(item.quantity)
+    const usedVariantIds = new Set<string>()
 
-      if (!variantId || typeof variantId !== 'string') {
-        throw new SalesApiError(400, 'variantId is required for each item')
+    // ترتيب ثابت قبل أقفال المخزون يقلل
+    // احتمالات Database Deadlock.
+    const orderedItems = [...items].sort((firstItem, secondItem) => {
+      const firstVariantId = String(firstItem.variantId || '')
+        .trim()
+        .toLowerCase()
+
+      const secondVariantId = String(secondItem.variantId || '')
+        .trim()
+        .toLowerCase()
+
+      return firstVariantId.localeCompare(secondVariantId)
+    })
+
+    for (const item of orderedItems) {
+      const variantId =
+        typeof item.variantId === 'string'
+          ? item.variantId.trim().toLowerCase()
+          : ''
+
+      if (!isValidUuid(variantId)) {
+        throw new SalesApiError(400, 'variantId is invalid for a sale item', {
+          variantId: variantId || null,
+        })
       }
 
-      if (!Number.isFinite(quantity) || quantity <= 0) {
+      if (usedVariantIds.has(variantId)) {
+        throw new SalesApiError(
+          400,
+          'The same variant cannot be repeated in one sale',
+          {
+            variantId,
+          },
+        )
+      }
+
+      usedVariantIds.add(variantId)
+
+      const rawQuantity = Number(item.quantity)
+
+      if (!Number.isFinite(rawQuantity)) {
+        throw new SalesApiError(400, 'quantity is invalid')
+      }
+
+      const quantity = roundQuantity(rawQuantity)
+
+      if (quantity <= 0) {
         throw new SalesApiError(400, 'quantity must be greater than zero')
       }
 
@@ -1099,23 +1165,31 @@ salesRouter.post('/api/sales', async (req, res, next) => {
     }> = []
 
     for (const payment of payments) {
-      const method = payment.method
-      const amount = Number(payment.amount)
+      const method =
+        typeof payment.method === 'string' ? payment.method.trim() : ''
 
-      if (typeof method !== 'string' || !allowedPaymentMethods.has(method)) {
+      const rawAmount = Number(payment.amount)
+
+      if (!allowedPaymentMethods.has(method)) {
         throw new SalesApiError(
           400,
           `Unsupported payment method: ${String(method)}`,
         )
       }
 
-      if (!Number.isFinite(amount) || amount <= 0) {
+      if (!Number.isFinite(rawAmount)) {
+        throw new SalesApiError(400, 'Payment amount is invalid')
+      }
+
+      const amount = roundMoney(rawAmount)
+
+      if (amount <= 0) {
         throw new SalesApiError(400, 'Payment amount must be greater than zero')
       }
 
       preparedPayments.push({
         method,
-        amount: roundMoney(amount),
+        amount,
         reference:
           typeof payment.reference === 'string' && payment.reference.trim()
             ? payment.reference.trim()
@@ -1179,10 +1253,10 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         selectedCashierId,
         selectedShiftId,
         selectedCustomerId,
-        saleNumber.trim(),
+        normalizedSaleNumber,
         selectedSource,
         localSaleId || null,
-        idempotencyKey,
+        normalizedIdempotencyKey,
         subtotal,
         finalDiscountTotal,
         finalTaxTotal,
@@ -1387,16 +1461,26 @@ salesRouter.post('/api/sales', async (req, res, next) => {
           ? requestBody.idempotencyKey.trim()
           : ''
 
-      if (requestCompanyId && requestIdempotencyKey) {
+      const requestBranchId =
+        typeof requestBody.branchId === 'string'
+          ? requestBody.branchId.trim().toLowerCase()
+          : ''
+
+      if (
+        requestCompanyId &&
+        requestIdempotencyKey &&
+        isValidUuid(requestBranchId)
+      ) {
         const existingSaleResult = await db.query(
           `
         SELECT *
         FROM sales
         WHERE company_id = $1
           AND idempotency_key = $2
+          AND branch_id = $3
         LIMIT 1;
         `,
-          [requestCompanyId, requestIdempotencyKey],
+          [requestCompanyId, requestIdempotencyKey, requestBranchId],
         )
 
         // وجود الفاتورة بنفس المفتاح يؤكد أن الخطأ
@@ -1440,6 +1524,9 @@ salesRouter.post('/api/sales', async (req, res, next) => {
           })
         }
       }
+      return res.status(409).json({
+        error: 'Sale number or idempotency key already exists',
+      })
     }
 
     // أخطاء البيع المتوقعة مثل عدم كفاية المخزون.
