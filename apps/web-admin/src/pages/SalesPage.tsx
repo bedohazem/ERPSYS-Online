@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
-import { requestJson } from '../lib/http'
+import { ApiError, requestJson } from '../lib/http'
 
 type Sale = {
   id: string
@@ -15,6 +15,13 @@ type Sale = {
   sale_number: string
   source: string
   local_sale_id: string | null
+
+  shift_id: string | null
+
+  shift_status: 'open' | 'closed' | null
+
+  shift_closed_at: string | null
+
   subtotal: string
   discount_total: string
   tax_total: string
@@ -22,6 +29,13 @@ type Sale = {
   paid_total: string
   change_total: string
   status: string
+  void_reason: string | null
+
+  voided_by: string | null
+
+  voided_by_name: string | null
+
+  voided_at: string | null
 
   // وقت البيع الحقيقي من جهاز POS.
   occurred_at: string
@@ -52,6 +66,9 @@ type SaleItem = {
   size_snapshot: string | null
   color_snapshot: string | null
   quantity: string
+  already_returned_quantity: string
+
+  remaining_returnable_quantity: string
   unit_price: string
   discount_amount: string
   tax_amount: string
@@ -62,9 +79,46 @@ type SaleItem = {
 type SalePayment = {
   id: string
   sale_id: string
+
   method: string
   amount: string
   reference: string | null
+
+  payment_role: 'sale_collection' | 'void_reversal'
+
+  payment_direction: 'received_from_customer' | 'refunded_to_customer'
+
+  reverses_payment_id: string | null
+
+  created_at: string
+}
+
+type SaleStockMovement = {
+  id: string
+  variant_id: string
+
+  sku: string
+
+  primary_barcode: string | null
+
+  product_name: string
+
+  size_name: string | null
+
+  color_name: string | null
+
+  stock_location_name: string
+
+  movement_type: string
+
+  quantity: string
+  quantity_before: string
+  quantity_after: string
+
+  reversal_of_movement_id: string | null
+
+  note: string | null
+
   created_at: string
 }
 
@@ -76,6 +130,7 @@ type SaleDetails = {
   }
   items: SaleItem[]
   payments: SalePayment[]
+  stockMovements: SaleStockMovement[]
 }
 
 type ApiResponse<T> = {
@@ -177,6 +232,32 @@ function translatePaymentMethod(method: string) {
   return paymentLabels[method] || method
 }
 
+function translatePaymentDirection(direction: string) {
+  if (direction === 'received_from_customer') {
+    return 'تم تحصيله من العميل'
+  }
+
+  if (direction === 'refunded_to_customer') {
+    return 'تم رده للعميل'
+  }
+
+  return direction
+}
+
+function getSaleMovementClass(quantity: number | string) {
+  const numericQuantity = Number(quantity)
+
+  if (numericQuantity > 0) {
+    return 'movement-badge ' + 'movement-badge-in'
+  }
+
+  if (numericQuantity < 0) {
+    return 'movement-badge ' + 'movement-badge-out'
+  }
+
+  return 'movement-badge'
+}
+
 type SalesPageProps = {
   companyId: string
   branchId: string
@@ -199,6 +280,10 @@ function SalesPage({
   onCreateExchange,
 }: SalesPageProps) {
   const { user } = useAuth()
+  const canVoidSale =
+    user?.roles.includes('admin') ||
+    user?.permissions.includes('sales.void') ||
+    false
   const canCreateReturn =
     user?.roles.includes('admin') ||
     user?.permissions.includes('returns.create') ||
@@ -216,6 +301,10 @@ function SalesPage({
   const [loadingSales, setLoadingSales] = useState(false)
   const [loadingDetails, setLoadingDetails] = useState(false)
   const [error, setError] = useState('')
+
+  const [success, setSuccess] = useState('')
+
+  const [voidingSaleId, setVoidingSaleId] = useState<string | null>(null)
 
   // ======================================================
   // loadSales
@@ -307,6 +396,148 @@ function SalesPage({
     }
   }
 
+  async function voidSale(sale: Sale) {
+    if (!canVoidSale || voidingSaleId) {
+      return
+    }
+
+    if (sale.status !== 'completed') {
+      setError('لا يمكن إلغاء إلا فاتورة مكتملة.')
+
+      return
+    }
+
+    if (Number(sale.returned_quantity) > 0) {
+      setError('يجب إلغاء المرتجعات والاستبدالات المرتبطة بالفاتورة أولًا.')
+
+      return
+    }
+
+    if (sale.shift_id && sale.shift_status !== 'open') {
+      setError(
+        'لا يمكن إلغاء فاتورة تابعة لوردية مغلقة. استخدم دورة المرتجعات بدلًا من ذلك.',
+      )
+
+      return
+    }
+
+    const reason = window.prompt('سبب إلغاء الفاتورة — مطلوب:', '')
+
+    if (reason === null) {
+      return
+    }
+
+    if (reason.trim().length < 3) {
+      setError('سبب الإلغاء يجب ألا يقل عن 3 أحرف.')
+
+      return
+    }
+
+    const enteredReference = window.prompt(
+      'مرجع رد المبلغ للعميل — اختياري:',
+      '',
+    )
+
+    if (enteredReference === null) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      `إلغاء الفاتورة ${sale.sale_number}؟\n\n` +
+        `سيتم رد ${formatSaleCurrency(sale.total)} للعميل.\n` +
+        'وسيتم إعادة جميع أصناف الفاتورة إلى المخزون.\n\n' +
+        'لن تُحذف السجلات الأصلية، وسيتم إنشاء حركات عكسية مرتبطة بها.',
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setVoidingSaleId(sale.id)
+
+    setError('')
+    setSuccess('')
+
+    try {
+      const response = await requestJson<
+        ApiResponse<{
+          sale: Sale
+
+          stockReversalIds: string[]
+
+          paymentReversalIds: string[]
+        }> & {
+          alreadyVoided: boolean
+        }
+      >(
+        `/api/sales/${encodeURIComponent(sale.id)}/void`,
+
+        {
+          method: 'POST',
+
+          headers: {
+            'Content-Type': 'application/json',
+          },
+
+          body: JSON.stringify({
+            reason: reason.trim(),
+
+            refundReference: enteredReference.trim() || null,
+          }),
+        },
+      )
+
+      await loadSales()
+
+      await loadSaleDetails(sale.id)
+
+      setSuccess(
+        response.alreadyVoided
+          ? 'الفاتورة ملغاة بالفعل، ولم تتكرر أي حركة.'
+          : `تم إلغاء الفاتورة ${sale.sale_number} وعكس المخزون والمدفوعات.`,
+      )
+    } catch (currentError) {
+      if (currentError instanceof ApiError) {
+        const errorData = currentError.data as {
+          details?: {
+            activeReturns?: unknown
+
+            activeExchanges?: unknown
+
+            shiftStatus?: unknown
+
+            closedAt?: unknown
+          }
+        } | null
+
+        const details = errorData?.details
+
+        if (
+          Number(details?.activeReturns ?? 0) > 0 ||
+          Number(details?.activeExchanges ?? 0) > 0
+        ) {
+          setError(
+            'لا يمكن إلغاء الفاتورة قبل إلغاء المرتجعات والاستبدالات المرتبطة بها.',
+          )
+        } else if (details?.shiftStatus === 'closed') {
+          setError(
+            'وردية الفاتورة مغلقة، لذلك استخدم دورة المرتجعات بدل إلغاء البيع.',
+          )
+        } else {
+          setError(currentError.message)
+        }
+      } else {
+        setError(
+          currentError instanceof Error
+            ? currentError.message
+            : 'تعذر إلغاء الفاتورة.',
+        )
+      }
+    } finally {
+      setVoidingSaleId(null)
+    }
+  }
+
   useEffect(() => {
     if (!companyId.trim() || !initialSaleId) {
       return
@@ -345,6 +576,7 @@ function SalesPage({
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
+        {success ? <p className="success-message">{success}</p> : null}
 
         {sales.length === 0 ? (
           <p className="muted">
@@ -372,6 +604,7 @@ function SalesPage({
                   <th>التفاصيل</th>
                   <th>مرتجع</th>
                   <th>استبدال</th>
+                  <th>إلغاء</th>
                 </tr>
               </thead>
               <tbody>
@@ -441,6 +674,7 @@ function SalesPage({
                           type="button"
                           className="table-button sale-return-button"
                           disabled={
+                            sale.status !== 'completed' ||
                             Number(sale.remaining_returnable_quantity) <= 0
                           }
                           onClick={() => onCreateReturn(sale.id)}
@@ -451,6 +685,7 @@ function SalesPage({
                         </button>
                       ) : null}
                     </td>
+
                     <td>
                       {canCreateExchange ? (
                         <button
@@ -466,6 +701,33 @@ function SalesPage({
                             ? 'غير متاح'
                             : 'إنشاء استبدال'}
                         </button>
+                      ) : null}
+                    </td>
+
+                    <td>
+                      {canVoidSale && sale.status === 'completed' ? (
+                        <button
+                          type="button"
+                          className="table-button danger-button"
+                          disabled={
+                            voidingSaleId !== null ||
+                            Number(sale.returned_quantity) > 0 ||
+                            Boolean(
+                              sale.shift_id && sale.shift_status !== 'open',
+                            )
+                          }
+                          onClick={() => void voidSale(sale)}
+                        >
+                          {voidingSaleId === sale.id
+                            ? 'جاري الإلغاء...'
+                            : Number(sale.returned_quantity) > 0
+                              ? 'ألغِ العمليات التابعة أولًا'
+                              : sale.shift_id && sale.shift_status !== 'open'
+                                ? 'الوردية مغلقة'
+                                : 'إلغاء الفاتورة'}
+                        </button>
+                      ) : sale.status === 'voided' ? (
+                        <span className="muted">تم الإلغاء</span>
                       ) : null}
                     </td>
                   </tr>
@@ -489,7 +751,74 @@ function SalesPage({
                 {formatSaleDateTime(selectedSaleDetails.sale.occurred_at)}
               </p>
             </div>
+            <div className="section-actions">
+              {canVoidSale &&
+              selectedSaleDetails.sale.status === 'completed' ? (
+                <button
+                  type="button"
+                  className="table-button danger-button"
+                  disabled={
+                    voidingSaleId !== null ||
+                    selectedSaleDetails.items.some(
+                      (item) => Number(item.already_returned_quantity) > 0,
+                    ) ||
+                    Boolean(
+                      selectedSaleDetails.sale.shift_id &&
+                      selectedSaleDetails.sale.shift_status !== 'open',
+                    )
+                  }
+                  onClick={() => void voidSale(selectedSaleDetails.sale)}
+                >
+                  {voidingSaleId === selectedSaleDetails.sale.id
+                    ? 'جاري الإلغاء...'
+                    : 'إلغاء الفاتورة'}
+                </button>
+              ) : null}
+
+              <button
+                type="button"
+                className="table-button"
+                disabled={voidingSaleId !== null}
+                onClick={() => setSelectedSaleDetails(null)}
+              >
+                إغلاق التفاصيل
+              </button>
+            </div>
           </div>
+
+          {selectedSaleDetails.sale.status === 'voided' ? (
+            <p className="error-message">
+              تم إلغاء هذه الفاتورة
+              {selectedSaleDetails.sale.voided_at
+                ? ` بتاريخ ${formatSaleDateTime(
+                    selectedSaleDetails.sale.voided_at,
+                  )}`
+                : ''}
+              {selectedSaleDetails.sale.voided_by_name
+                ? ` بواسطة ${selectedSaleDetails.sale.voided_by_name}`
+                : ''}
+              {selectedSaleDetails.sale.void_reason
+                ? ` — السبب: ${selectedSaleDetails.sale.void_reason}`
+                : ''}
+            </p>
+          ) : null}
+
+          {selectedSaleDetails.items.some(
+            (item) => Number(item.already_returned_quantity) > 0,
+          ) ? (
+            <p className="error-message">
+              توجد عمليات مرتجع أو استبدال مرتبطة بهذه الفاتورة. يجب إلغاؤها
+              أولًا قبل إلغاء البيع.
+            </p>
+          ) : null}
+
+          {selectedSaleDetails.sale.shift_id &&
+          selectedSaleDetails.sale.shift_status !== 'open' ? (
+            <p className="error-message">
+              وردية الفاتورة مغلقة؛ لا يمكن إلغاء البيع، ويمكن تنفيذ مرتجع بدلًا
+              من ذلك.
+            </p>
+          ) : null}
 
           <section className="mini-cards-grid">
             <article className="mini-card">
@@ -574,20 +903,40 @@ function SalesPage({
             </table>
           </div>
 
-          <h3>طرق الدفع</h3>
+          <h3>الحركات المالية للفاتورة</h3>
 
           <div className="table-wrapper">
             <table>
               <thead>
                 <tr>
-                  <th>طريقة الدفع</th>
-                  <th>المبلغ</th>
-                  <th>مرجع الدفع</th>
+                  <tr>
+                    <th>نوع السجل</th>
+                    <th>الاتجاه</th>
+                    <th>طريقة الدفع</th>
+                    <th>المبلغ</th>
+                    <th>مرجع الدفع</th>
+                    <th>التاريخ</th>
+                  </tr>
                 </tr>
               </thead>
               <tbody>
                 {selectedSaleDetails.payments.map((payment) => (
                   <tr key={payment.id}>
+                    <td>
+                      {payment.payment_role === 'void_reversal' ? (
+                        <span className="status-badge status-badge-warning">
+                          رد بسبب الإلغاء
+                        </span>
+                      ) : (
+                        <span className="status-badge status-badge-success">
+                          تحصيل البيع الأصلي
+                        </span>
+                      )}
+                    </td>
+
+                    <td>
+                      {translatePaymentDirection(payment.payment_direction)}
+                    </td>
                     <td>
                       <span className="payment-method-badge">
                         {translatePaymentMethod(payment.method)}
@@ -598,11 +947,79 @@ function SalesPage({
                       {formatSaleCurrency(payment.amount)}
                     </td>
                     <td>{payment.reference || '-'}</td>
+                    <td>{formatSaleDateTime(payment.created_at)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          
+          <h3>حركات المخزون</h3>
+
+          {selectedSaleDetails.stockMovements.length === 0 ? (
+            <p className="muted">لا توجد حركات مخزون مرتبطة بهذه الفاتورة.</p>
+          ) : (
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>نوع السجل</th>
+                    <th>الصنف</th>
+                    <th>SKU</th>
+                    <th>المقاس</th>
+                    <th>اللون</th>
+                    <th>قبل</th>
+                    <th>الحركة</th>
+                    <th>بعد</th>
+                    <th>مكان التخزين</th>
+                    <th>التاريخ</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {selectedSaleDetails.stockMovements.map((movement) => (
+                    <tr key={movement.id}>
+                      <td>
+                        {movement.reversal_of_movement_id ? (
+                          <span className="status-badge status-badge-warning">
+                            حركة عكسية
+                          </span>
+                        ) : (
+                          <span className="status-badge status-badge-success">
+                            حركة البيع الأصلية
+                          </span>
+                        )}
+                      </td>
+
+                      <td>{movement.product_name}</td>
+
+                      <td>{movement.sku}</td>
+
+                      <td>{movement.size_name || '-'}</td>
+
+                      <td>{movement.color_name || '-'}</td>
+
+                      <td>{formatSaleQuantity(movement.quantity_before)}</td>
+
+                      <td>
+                        <span
+                          className={getSaleMovementClass(movement.quantity)}
+                        >
+                          {formatSaleQuantity(movement.quantity)}
+                        </span>
+                      </td>
+
+                      <td>{formatSaleQuantity(movement.quantity_after)}</td>
+
+                      <td>{movement.stock_location_name}</td>
+
+                      <td>{formatSaleDateTime(movement.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       ) : null}
     </>

@@ -78,6 +78,13 @@ const pageDefinitions: Array<{
     label: 'فواتير المبيعات',
     icon: '↗',
     permission: 'sales.view',
+
+    anyPermissions: [
+      'sales.view',
+      'sales.void',
+      'returns.create',
+      'exchanges.create',
+    ],
   },
   {
     name: 'new-return',

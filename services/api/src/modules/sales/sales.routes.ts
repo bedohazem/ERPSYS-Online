@@ -143,6 +143,15 @@ salesRouter.get('/api/sales', async (req, res, next) => {
         s.sale_number,
         s.source,
         s.local_sale_id,
+
+        s.shift_id,
+
+        sale_shift.status
+          AS shift_status,
+
+        sale_shift.closed_at
+          AS shift_closed_at,
+
         s.subtotal,
         s.discount_total,
         s.tax_total,
@@ -197,6 +206,13 @@ salesRouter.get('/api/sales', async (req, res, next) => {
 
       LEFT JOIN customers c
         ON c.id = s.customer_id
+
+      LEFT JOIN cashier_shifts
+        sale_shift
+        ON sale_shift.id =
+          s.shift_id
+        AND sale_shift.company_id =
+            s.company_id
 
       LEFT JOIN users voider
         ON voider.id =
@@ -293,6 +309,8 @@ salesRouter.get('/api/sales', async (req, res, next) => {
         b.name,
         sl.name,
         c.name,
+        sale_shift.status,
+        sale_shift.closed_at,
         voider.full_name,
         returned_items.returned_quantity
 
@@ -355,6 +373,15 @@ salesRouter.get(
             c.name AS customer_name,
             s.cashier_id,
             u.full_name AS cashier_name,
+
+            s.shift_id,
+
+            sale_shift.status
+              AS shift_status,
+
+            sale_shift.closed_at
+              AS shift_closed_at,
+
             s.sale_number,
             s.source,
             s.local_sale_id,
@@ -384,6 +411,13 @@ salesRouter.get(
           LEFT JOIN users u
             ON u.id = s.cashier_id
             AND u.company_id =
+                s.company_id
+
+          LEFT JOIN cashier_shifts
+            sale_shift
+            ON sale_shift.id =
+              s.shift_id
+            AND sale_shift.company_id =
                 s.company_id
 
           LEFT JOIN users voider
@@ -1613,8 +1647,10 @@ salesRouter.post(
                 AND r.original_sale_id =
                     $2
 
-                AND r.status <>
-                    'voided'
+                AND r.status IN (
+                    'completed',
+                    'pending_review'
+                )
             ) AS active_returns,
 
             (
@@ -1628,8 +1664,10 @@ salesRouter.post(
                 AND e.original_sale_id =
                     $2
 
-                AND e.status <>
-                    'voided'
+                AND e.status IN (
+                    'completed',
+                    'pending_review'
+                )
             ) AS active_exchanges;
           `,
         [auth.companyId, saleId],
