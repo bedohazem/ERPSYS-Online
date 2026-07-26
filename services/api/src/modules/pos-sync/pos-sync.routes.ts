@@ -857,24 +857,54 @@ posDeviceSyncRouter.post(
           SELECT
             COALESCE(
               (
-                SELECT SUM(p.amount)
+                SELECT SUM(
+                  cash_sales.net_cash
+                )
 
-                FROM payments p
+                FROM (
+                  SELECT
+                    s.id,
 
-                JOIN sales s
-                  ON s.id = p.sale_id
-                  AND s.company_id =
-                      p.company_id
+                    COALESCE(
+                      SUM(p.amount) FILTER (
+                        WHERE p.method =
+                              'cash'
 
-                WHERE s.company_id = $1
-                  AND s.shift_id = $2
-                  AND p.method = 'cash'
+                          AND p.payment_role =
+                              'sale_collection'
 
-                  AND s.status IN (
-                    'completed',
-                    'pending_review',
-                    'refunded'
-                  )
+                          AND p.payment_direction =
+                              'received_from_customer'
+                      ),
+                      0
+                    )
+                    -
+                    COALESCE(
+                      s.change_total,
+                      0
+                    )
+                      AS net_cash
+
+                  FROM sales s
+
+                  LEFT JOIN payments p
+                    ON p.sale_id = s.id
+                    AND p.company_id =
+                        s.company_id
+
+                  WHERE s.company_id = $1
+                    AND s.shift_id = $2
+
+                    AND s.status IN (
+                      'completed',
+                      'pending_review',
+                      'refunded'
+                    )
+
+                  GROUP BY
+                    s.id,
+                    s.change_total
+                ) cash_sales
               ),
               0
             ) AS sales_cash,

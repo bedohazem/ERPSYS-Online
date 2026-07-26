@@ -1534,6 +1534,68 @@ salesRouter.post(
       }
 
       // ==================================================
+      // POS sale lifecycle protection
+      //
+      // فاتورة مرتبطة بورديّة لا يمكن إلغاؤها بعد إغلاق
+      // الوردية، لأن رد المبلغ يجب أن يدخل في نفس تسوية
+      // النقدية.
+      //
+      // بعد إغلاق الوردية يتم استخدام دورة المرتجعات
+      // بدل إلغاء الفاتورة الأصلية.
+      // ==================================================
+      if (sale.shift_id) {
+        const shiftResult = await client.query(
+          `
+      SELECT
+        id,
+        cashier_id,
+        status,
+        opened_at,
+        closed_at
+
+      FROM cashier_shifts
+
+      WHERE company_id = $1
+        AND id = $2
+        AND branch_id = $3
+
+      FOR UPDATE;
+      `,
+          [auth.companyId, sale.shift_id, sale.branch_id],
+        )
+
+        if ((shiftResult.rowCount ?? 0) === 0) {
+          throw new SalesApiError(
+            409,
+            'Sale cashier shift history is missing or invalid',
+          )
+        }
+
+        const saleShift = shiftResult.rows[0]
+
+        if (sale.cashier_id && saleShift.cashier_id !== sale.cashier_id) {
+          throw new SalesApiError(
+            409,
+            'Sale cashier does not match the original cashier shift',
+          )
+        }
+
+        if (saleShift.status !== 'open') {
+          throw new SalesApiError(
+            409,
+            'Sales from a closed cashier shift cannot be voided. Use the return workflow instead',
+            {
+              shiftId: saleShift.id,
+
+              shiftStatus: saleShift.status,
+
+              closedAt: saleShift.closed_at,
+            },
+          )
+        }
+      }
+
+      // ==================================================
       // منع إلغاء فاتورة مرتبطة بمرتجع أو استبدال نشط.
       // يجب إلغاء المستندات التابعة أولًا.
       // ==================================================
@@ -1795,6 +1857,31 @@ salesRouter.post(
         })
       }
 
+      const cashPaymentTotal = roundMoney(
+        originalPaymentsResult.rows.reduce(
+          (total, payment) => {
+            if (payment.method !== 'cash') {
+              return total
+            }
+
+            return total + Number(payment.amount)
+          },
+
+          0,
+        ),
+      )
+
+      if (changeTotal - cashPaymentTotal > 0.01) {
+        throw new SalesApiError(
+          409,
+          'Sale change is not fully backed by cash payments and cannot be reversed safely',
+          {
+            changeTotal,
+            cashPaymentTotal,
+          },
+        )
+      }
+
       const existingPaymentReversalsResult = await client.query(
         `
           SELECT COUNT(*)::int
@@ -2014,9 +2101,10 @@ salesRouter.post(
           )
         }
 
-        const appliedChange = roundMoney(
-          Math.min(paymentAmount, remainingChange),
-        )
+        const appliedChange =
+          payment.method === 'cash'
+            ? roundMoney(Math.min(paymentAmount, remainingChange))
+            : 0
 
         remainingChange = roundMoney(remainingChange - appliedChange)
 
