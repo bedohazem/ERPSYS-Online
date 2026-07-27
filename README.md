@@ -65,6 +65,7 @@ Fashion Retail ERP/POS.
 - [Architecture](./docs/architecture.md)
 - [Database](./docs/database.md)
 - [Roadmap](./docs/roadmap.md)
+- [Sales Management](./docs/features/sales.md)
+- [Cashier Shifts and Settlement](./docs/features/cashier-shifts.md)
 - [Exchange Management](./docs/features/exchanges.md)
 - [Return Management](./docs/features/returns.md)
-- [Sales Management](./docs/features/sales.md)

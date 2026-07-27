@@ -67,7 +67,19 @@
   - Safe void with inventory and payment reversals
   - Audit trail
   - 🧪 Final integrated acceptance test pending
-- Cashier shifts
+- ✅ Cashier shifts and cash settlement — implementation completed
+  - Secure online shift opening and closure
+  - Encrypted active-shift cache for Offline POS continuity
+  - Pending-sale and logout closure protections
+  - PostgreSQL net cash calculation
+  - Sales, returns and exchanges cash effects
+  - Expected cash and shortage/overage calculation
+  - Versioned permanent settlement snapshot
+  - Optional Desktop POS closing note
+  - Transactional audit trail
+  - Web Admin shift history and settlement details
+  - Branch isolation
+  - 🧪 Final integrated acceptance test pending
 
 ## Phase 6 - Web Admin
 
@@ -121,6 +133,7 @@
 
 ## Feature Documentation
 
+- [Cashier Shifts and Settlement](./features/cashier-shifts.md)
+- [Sales Management](./features/sales.md)
 - [Exchange Management](./features/exchanges.md)
 - [Return Management](./features/returns.md)
-- [Sales Management](./features/sales.md)
