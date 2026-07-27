@@ -201,6 +201,10 @@ const dateFormatter = new Intl.DateTimeFormat('ar-EG', {
 })
 
 function formatMoney(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === '') {
+    return '-'
+  }
+
   const numericValue = Number(value)
 
   return Number.isFinite(numericValue)
@@ -260,6 +264,14 @@ function translateDocumentStatus(status: string) {
   return labels[status] || status
 }
 
+function isSettledSaleStatus(status: string) {
+  return ['completed', 'pending_review', 'refunded'].includes(status)
+}
+
+function isSettledReturnOrExchangeStatus(status: string) {
+  return ['completed', 'pending_review'].includes(status)
+}
+
 function getStatusClass(status: string) {
   if (status === 'completed' || status === 'closed') {
     return 'status-badge ' + 'status-badge-success'
@@ -272,7 +284,11 @@ function getStatusClass(status: string) {
   return 'status-badge'
 }
 
-function getDifferenceClass(value: string | number | null) {
+function getDifferenceClass(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === '') {
+    return 'stock-quantity'
+  }
+
   const numericValue = Number(value)
 
   if (numericValue > 0) {
@@ -684,8 +700,8 @@ function CashierShiftsPage() {
 
               <strong>
                 {selectedShift.sales_count ??
-                  selectedDetails.documents.sales.filter(
-                    (sale) => sale.status !== 'voided',
+                  selectedDetails.documents.sales.filter((sale) =>
+                    isSettledSaleStatus(sale.status),
                   ).length}
               </strong>
             </article>
@@ -706,7 +722,9 @@ function CashierShiftsPage() {
 
               <strong>
                 {selectedShift.returns_count ??
-                  selectedDetails.documents.returns.length}
+                  selectedDetails.documents.returns.filter((returnDocument) =>
+                    isSettledReturnOrExchangeStatus(returnDocument.status),
+                  ).length}
               </strong>
             </article>
 
@@ -715,7 +733,9 @@ function CashierShiftsPage() {
 
               <strong>
                 {selectedShift.exchanges_count ??
-                  selectedDetails.documents.exchanges.length}
+                  selectedDetails.documents.exchanges.filter((exchange) =>
+                    isSettledReturnOrExchangeStatus(exchange.status),
+                  ).length}
               </strong>
             </article>
           </div>
