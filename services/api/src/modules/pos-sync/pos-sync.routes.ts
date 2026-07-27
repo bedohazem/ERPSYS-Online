@@ -1243,8 +1243,6 @@ posDeviceSyncRouter.post(
         ],
       )
 
-      await client.query('COMMIT')
-
       await client.query(
         `
         INSERT INTO audit_logs (
@@ -1301,6 +1299,8 @@ posDeviceSyncRouter.post(
           req.get('user-agent') || null,
         ],
       )
+
+      await client.query('COMMIT')
 
       return res.json({
         data: {
