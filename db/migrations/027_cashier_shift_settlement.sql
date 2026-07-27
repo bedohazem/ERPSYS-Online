@@ -13,9 +13,6 @@
 ALTER TABLE cashier_shifts
 ADD COLUMN IF NOT EXISTS
     closed_by UUID
-    REFERENCES_shifts
-ADD COLUMN IF NOT EXISTS
-    closed_by UUID
     REFERENCES users(id)
     ON DELETE SET NULL;
 
