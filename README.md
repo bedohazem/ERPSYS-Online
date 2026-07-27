@@ -67,3 +67,4 @@ Fashion Retail ERP/POS.
 - [Roadmap](./docs/roadmap.md)
 - [Exchange Management](./docs/features/exchanges.md)
 - [Return Management](./docs/features/returns.md)
+- [Sales Management](./docs/features/sales.md)

@@ -38,8 +38,17 @@
 
 ## Phase 5 - Sales
 
-- Sales invoices
-- Payments
+- ✅ Sales invoices and payments — implementation completed
+  - Secure Web Admin and POS sale creation
+  - PostgreSQL trusted pricing and inventory deduction
+  - Payment and customer-change validation
+  - Idempotent online and offline synchronization
+  - Sale history and detailed financial records
+  - Returns and exchanges integration
+  - Safe void with stock and payment reversals
+  - Cashier-shift-safe void accounting
+  - Branch isolation and audit trail
+  - 🧪 Final integrated acceptance test pending
 - ✅ Returns — implementation completed
   - Secure return creation from completed sales
   - Original sale price and quantity validation
@@ -114,3 +123,4 @@
 
 - [Exchange Management](./features/exchanges.md)
 - [Return Management](./features/returns.md)
+- [Sales Management](./features/sales.md)
