@@ -60,8 +60,12 @@ contextBridge.exposeInMainWorld('desktopPos', {
   openCashierShift: (input: { openingCash: number }) =>
     ipcRenderer.invoke('desktop-pos:open-cashier-shift', input),
 
-  closeCashierShift: (input: { shiftId: string; closingCash: number }) =>
-    ipcRenderer.invoke('desktop-pos:close-cashier-shift', input),
+  closeCashierShift: (input: {
+    shiftId: string
+    closingCash: number
+
+    closingNote?: string | null
+  }) => ipcRenderer.invoke('desktop-pos:close-cashier-shift', input),
 
   loadWorkspace: () => ipcRenderer.invoke('desktop-pos:load-workspace'),
 

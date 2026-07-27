@@ -81,6 +81,8 @@ function CashierWorkspace({
 
   const [closingCash, setClosingCash] = useState('')
 
+  const [closingNote, setClosingNote] = useState('')
+
   const selectedLocation =
     workspace?.stockLocations.find(
       (location) => location.id === selectedLocationId,
@@ -215,7 +217,8 @@ function CashierWorkspace({
       setCart([])
       setUsername('')
       setPassword('')
-
+      setClosingCash('')
+      setClosingNote('')
       onSessionChanged()
     } catch (currentError) {
       setError(
@@ -258,7 +261,7 @@ function CashierWorkspace({
       )
 
       setClosingCash('')
-
+      setClosingNote('')
       setSuccess(`تم فتح الوردية ${session.currentShift?.shiftNumber || ''}.`)
 
       onSessionChanged()
@@ -286,8 +289,19 @@ function CashierWorkspace({
       return
     }
 
+    const normalizedClosingNote = closingNote.trim()
+
+    if (normalizedClosingNote.length > 500) {
+      setError('ملاحظة الإغلاق يجب ألا تتجاوز 500 حرف.')
+
+      return
+    }
+
     const confirmed = window.confirm(
-      `إغلاق الوردية ${currentShift.shiftNumber}؟`,
+      `إغلاق الوردية ${currentShift.shiftNumber}؟` +
+        (normalizedClosingNote
+          ? `\n\nملاحظة الإغلاق:\n${normalizedClosingNote}`
+          : ''),
     )
 
     if (!confirmed) {
@@ -303,6 +317,7 @@ function CashierWorkspace({
         shiftId: currentShift.id,
 
         closingCash: closingCashNumber,
+        closingNote: normalizedClosingNote || null,
       })
 
       setCashierSession(result.session)
@@ -318,13 +333,15 @@ function CashierWorkspace({
 
       setOpeningCash('0')
       setClosingCash('')
+      setClosingNote('')
       setCart([])
       setSearchResults([])
 
       setSuccess(
         `تم إغلاق الوردية. المتوقع: ${formatMoney(
           result.cashSummary.expectedCash,
-        )} — الفرق: ${formatMoney(result.cashSummary.difference)}`,
+        )} — الفرق: ${formatMoney(result.cashSummary.difference)}` +
+          (result.cashSummary.closingNote ? ' — تم حفظ ملاحظة الإغلاق.' : ''),
       )
 
       onSessionChanged()
@@ -769,6 +786,23 @@ function CashierWorkspace({
                     }
                     onChange={(event) => setClosingCash(event.target.value)}
                   />
+                </label>
+
+                <label>
+                  ملاحظة الإغلاق — اختيارية
+                  <textarea
+                    value={closingNote}
+                    maxLength={500}
+                    disabled={
+                      loadingAction !== null ||
+                      workspace.workspaceSource === 'cache'
+                    }
+                    placeholder="مثال: فرق بسيط بسبب فكة أو تسليم نقدية للإدارة"
+                    onChange={(event) => setClosingNote(event.target.value)}
+                  />
+                  <small className="desktop-field-hint">
+                    {closingNote.length} / 500
+                  </small>
                 </label>
 
                 <div className="desktop-actions">

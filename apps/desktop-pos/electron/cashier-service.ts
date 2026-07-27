@@ -38,6 +38,7 @@ export type CashierShift = {
   closingCash: string | null
   expectedCash: string | null
   difference: string | null
+  closingNote: string | null
 
   openedAt: string
   closedAt: string | null
@@ -311,6 +312,8 @@ function parseCashierShift(value: unknown): CashierShift | null {
       typeof shift.expectedCash === 'string' ? shift.expectedCash : null,
 
     difference: typeof shift.difference === 'string' ? shift.difference : null,
+    closingNote:
+      typeof shift.closingNote === 'string' ? shift.closingNote : null,
 
     openedAt: shift.openedAt,
 
@@ -1040,10 +1043,30 @@ export async function openCashierShift(input: { openingCash: number }) {
 export async function closeCashierShift(input: {
   shiftId: string
   closingCash: number
+
+  closingNote?: string | null
 }) {
   const shiftId = typeof input?.shiftId === 'string' ? input.shiftId.trim() : ''
 
   const closingCash = Number(input?.closingCash)
+  const rawClosingNote = input?.closingNote
+
+  if (
+    rawClosingNote !== undefined &&
+    rawClosingNote !== null &&
+    typeof rawClosingNote !== 'string'
+  ) {
+    throw new Error('ملاحظة إغلاق الوردية غير صالحة.')
+  }
+
+  const closingNote =
+    typeof rawClosingNote === 'string' && rawClosingNote.trim()
+      ? rawClosingNote.trim()
+      : null
+
+  if (closingNote && closingNote.length > 500) {
+    throw new Error('ملاحظة إغلاق الوردية يجب ألا تتجاوز 500 حرف.')
+  }
 
   if (!uuidPattern.test(shiftId)) {
     throw new Error('معرف الوردية غير صالح.')
@@ -1066,6 +1089,7 @@ export async function closeCashierShift(input: {
 
     {
       closingCash,
+      closingNote,
     },
   )
 
@@ -1090,6 +1114,7 @@ export async function closeCashierShift(input: {
           expectedCash?: unknown
           closingCash?: unknown
           difference?: unknown
+          closingNote?: unknown
         }
       }
     }
@@ -1117,6 +1142,11 @@ export async function closeCashierShift(input: {
     difference: Number(data?.cashSummary?.difference),
   }
 
+  const responseClosingNote =
+    typeof data?.cashSummary?.closingNote === 'string'
+      ? data.cashSummary.closingNote
+      : null
+
   if (Object.values(cashSummary).some((value) => !Number.isFinite(value))) {
     throw new Error('ملخص نقدية الوردية غير صالح.')
   }
@@ -1126,7 +1156,11 @@ export async function closeCashierShift(input: {
 
     shift: closedShift,
 
-    cashSummary,
+    cashSummary: {
+      ...cashSummary,
+
+      closingNote: responseClosingNote,
+    },
   }
 }
 

@@ -18,7 +18,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -43,7 +44,8 @@ button:hover:not(:disabled) {
   background: #eff6ff;
 }
 
-input {
+input,
+textarea {
   width: 100%;
   min-height: 44px;
   padding: 10px 12px;
@@ -53,9 +55,21 @@ input {
   background: #ffffff;
 }
 
-input:focus {
+input:focus,
+textarea:focus {
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+textarea {
+  min-height: 86px;
+  resize: vertical;
+}
+
+.desktop-field-hint {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .desktop-pos-app {

@@ -24,7 +24,7 @@ type DesktopCashierShift = {
   closingCash: string | null
   expectedCash: string | null
   difference: string | null
-
+  closingNote: string | null
   openedAt: string
   closedAt: string | null
 
@@ -199,6 +199,7 @@ interface Window {
     closeCashierShift: (input: {
       shiftId: string
       closingCash: number
+      closingNote?: string | null
     }) => Promise<{
       session: DesktopCashierSession
 
@@ -212,6 +213,7 @@ interface Window {
         expectedCash: number
         closingCash: number
         difference: number
+        closingNote: string | null
       }
     }>
 
