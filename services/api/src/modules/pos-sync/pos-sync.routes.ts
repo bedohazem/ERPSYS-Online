@@ -103,6 +103,51 @@ function mapCashierShift(row: Record<string, unknown>) {
 
     difference: row.difference === null ? null : String(row.difference),
 
+    netSalesCash:
+      row.net_sales_cash === null || row.net_sales_cash === undefined
+        ? null
+        : String(row.net_sales_cash),
+
+    cashReturns:
+      row.cash_returns === null || row.cash_returns === undefined
+        ? null
+        : String(row.cash_returns),
+
+    netExchangeCash:
+      row.net_exchange_cash === null || row.net_exchange_cash === undefined
+        ? null
+        : String(row.net_exchange_cash),
+
+    salesCount:
+      row.sales_count === null || row.sales_count === undefined
+        ? null
+        : Number(row.sales_count),
+
+    voidedSalesCount:
+      row.voided_sales_count === null || row.voided_sales_count === undefined
+        ? null
+        : Number(row.voided_sales_count),
+
+    returnsCount:
+      row.returns_count === null || row.returns_count === undefined
+        ? null
+        : Number(row.returns_count),
+
+    exchangesCount:
+      row.exchanges_count === null || row.exchanges_count === undefined
+        ? null
+        : Number(row.exchanges_count),
+
+    closedBy: row.closed_by ?? null,
+
+    closingNote: typeof row.closing_note === 'string' ? row.closing_note : null,
+
+    settlementSnapshot:
+      typeof row.settlement_snapshot === 'object' &&
+      row.settlement_snapshot !== null
+        ? row.settlement_snapshot
+        : null,
+
     openedAt: row.opened_at,
     closedAt: row.closed_at,
 
@@ -817,6 +862,29 @@ posDeviceSyncRouter.post(
 
       const closingCash = parseNonNegativeMoney(body.closingCash, 'closingCash')
 
+      const rawClosingNote = body.closingNote
+
+      if (
+        rawClosingNote !== undefined &&
+        rawClosingNote !== null &&
+        typeof rawClosingNote !== 'string'
+      ) {
+        return res.status(400).json({
+          error: 'closingNote must be a string',
+        })
+      }
+
+      const closingNote =
+        typeof rawClosingNote === 'string' && rawClosingNote.trim()
+          ? rawClosingNote.trim()
+          : null
+
+      if (closingNote && closingNote.length > 500) {
+        return res.status(400).json({
+          error: 'closingNote is too long',
+        })
+      }
+
       await client.query('BEGIN')
 
       const shiftResult = await client.query(
@@ -970,7 +1038,71 @@ posDeviceSyncRouter.post(
                   )
               ),
               0
-            ) AS exchange_cash_net;
+            ) AS exchange_cash_net,
+            (
+              SELECT COUNT(*)::int
+
+              FROM sales s
+
+              WHERE s.company_id = $1
+                AND s.shift_id = $2
+
+                AND s.status IN (
+                  'completed',
+                  'pending_review',
+                  'refunded'
+                )
+            ) AS sales_count,
+
+            (
+              SELECT COUNT(*)::int
+
+              FROM sales s
+
+              WHERE s.company_id = $1
+                AND s.shift_id = $2
+                AND s.status = 'voided'
+            ) AS voided_sales_count,
+
+            (
+              SELECT COUNT(*)::int
+
+              FROM returns r
+
+              WHERE r.company_id = $1
+                AND r.branch_id = $3
+                AND r.created_by = $4
+
+                AND r.created_at >=
+                    $5::timestamptz
+
+                AND r.created_at <= NOW()
+
+                AND r.status IN (
+                  'completed',
+                  'pending_review'
+                )
+            ) AS returns_count,
+
+            (
+              SELECT COUNT(*)::int
+
+              FROM exchanges e
+
+              WHERE e.company_id = $1
+                AND e.branch_id = $3
+                AND e.created_by = $4
+
+                AND e.created_at >=
+                    $5::timestamptz
+
+                AND e.created_at <= NOW()
+
+                AND e.status IN (
+                  'completed',
+                  'pending_review'
+                )
+            ) AS exchanges_count;
           `,
         [
           device.companyId,
@@ -991,32 +1123,184 @@ posDeviceSyncRouter.post(
 
       const exchangeCashNet = Number(cash.exchange_cash_net)
 
+      const salesCount = Number(cash.sales_count)
+
+      const voidedSalesCount = Number(cash.voided_sales_count)
+
+      const returnsCount = Number(cash.returns_count)
+
+      const exchangesCount = Number(cash.exchanges_count)
+
       const expectedCash = roundMoney(
         openingCash + salesCash - returnsCash + exchangeCashNet,
       )
 
       const difference = roundMoney(closingCash - expectedCash)
 
+      const settlementSnapshot = {
+        version: 1,
+
+        computedAt: new Date().toISOString(),
+
+        shift: {
+          id: shift.id,
+
+          shiftNumber: shift.shift_number,
+
+          companyId: shift.company_id,
+
+          branchId: shift.branch_id,
+
+          cashierId: shift.cashier_id,
+
+          deviceId: shift.pos_device_id,
+
+          openedAt: shift.opened_at,
+        },
+
+        cash: {
+          openingCash: roundMoney(openingCash),
+
+          netSalesCash: roundMoney(salesCash),
+
+          cashReturns: roundMoney(returnsCash),
+
+          netExchangeCash: roundMoney(exchangeCashNet),
+
+          expectedCash,
+
+          closingCash,
+
+          difference,
+        },
+
+        documents: {
+          salesCount,
+
+          voidedSalesCount,
+
+          returnsCount,
+
+          exchangesCount,
+        },
+      }
+
       const closedResult = await client.query(
         `
-          UPDATE cashier_shifts
+        UPDATE cashier_shifts
 
-          SET
-            closing_cash = $1,
-            expected_cash = $2,
-            difference = $3,
-            closed_at = NOW(),
-            status = 'closed'
+        SET
+          closing_cash = $1,
+          expected_cash = $2,
+          difference = $3,
 
-          WHERE company_id = $4
-            AND id = $5
+          net_sales_cash = $4,
+          cash_returns = $5,
+          net_exchange_cash = $6,
 
-          RETURNING *;
-          `,
-        [closingCash, expectedCash, difference, device.companyId, shiftId],
+          sales_count = $7,
+          voided_sales_count = $8,
+          returns_count = $9,
+          exchanges_count = $10,
+
+          closed_by = $11,
+          closing_note = $12,
+
+          settlement_snapshot =
+            $13::jsonb,
+
+          closed_at = NOW(),
+          status = 'closed'
+
+        WHERE company_id = $14
+          AND id = $15
+
+        RETURNING *;
+        `,
+        [
+          closingCash,
+          expectedCash,
+          difference,
+
+          roundMoney(salesCash),
+
+          roundMoney(returnsCash),
+
+          roundMoney(exchangeCashNet),
+
+          salesCount,
+          voidedSalesCount,
+          returnsCount,
+          exchangesCount,
+
+          auth.userId,
+          closingNote,
+
+          JSON.stringify(settlementSnapshot),
+
+          device.companyId,
+          shiftId,
+        ],
       )
 
       await client.query('COMMIT')
+
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          company_id,
+          branch_id,
+          user_id,
+
+          action,
+          entity_type,
+          entity_id,
+
+          old_data,
+          new_data,
+
+          ip_address,
+          user_agent
+        )
+        VALUES (
+          $1, $2, $3,
+          'cashier_shift.close',
+          'cashier_shift',
+          $4,
+          $5::jsonb,
+          $6::jsonb,
+          $7,
+          $8
+        );
+        `,
+        [
+          device.companyId,
+          device.branchId,
+          auth.userId,
+
+          shiftId,
+
+          JSON.stringify({
+            status: shift.status,
+
+            openingCash: shift.opening_cash,
+
+            openedAt: shift.opened_at,
+          }),
+
+          JSON.stringify({
+            status: 'closed',
+
+            closingNote,
+
+            settlement: settlementSnapshot,
+          }),
+
+          req.ip || null,
+
+          req.get('user-agent') || null,
+        ],
+      )
 
       return res.json({
         data: {
@@ -1024,16 +1308,18 @@ posDeviceSyncRouter.post(
 
           cashSummary: {
             openingCash: roundMoney(openingCash),
-
             salesCash: roundMoney(salesCash),
-
             returnsCash: roundMoney(returnsCash),
-
             exchangeCashNet: roundMoney(exchangeCashNet),
-
+            salesCount,
+            voidedSalesCount,
+            returnsCount,
+            exchangesCount,
             expectedCash,
             closingCash,
             difference,
+            closingNote,
+            settlementVersion: 1,
           },
         },
       })
