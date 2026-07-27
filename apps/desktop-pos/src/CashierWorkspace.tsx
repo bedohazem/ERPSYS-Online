@@ -42,6 +42,15 @@ function formatWorkspaceDate(value: string) {
   }).format(date)
 }
 
+function isServerSessionExpiredMessage(message: string) {
+  return (
+    message.includes('انتهت جلسة السيرفر') ||
+    message.includes('Session is invalid or expired') ||
+    message.includes('Authentication is required') ||
+    message.includes('Invalid authentication token')
+  )
+}
+
 function CashierWorkspace({
   configured,
   onSessionChanged,
@@ -82,6 +91,9 @@ function CashierWorkspace({
   const [closingCash, setClosingCash] = useState('')
 
   const [closingNote, setClosingNote] = useState('')
+
+  const [serverSessionRenewalRequired, setServerSessionRenewalRequired] =
+    useState(false)
 
   const selectedLocation =
     workspace?.stockLocations.find(
@@ -161,7 +173,18 @@ function CashierWorkspace({
     if (session) {
       setCompanyCode(session.user.companyCode)
 
+      setUsername(session.user.username)
+
+      const sessionExpiresAt = new Date(session.expiresAt)
+
+      setServerSessionRenewalRequired(
+        Number.isNaN(sessionExpiresAt.getTime()) ||
+          sessionExpiresAt.getTime() <= Date.now(),
+      )
+
       await openWorkspace()
+    } else {
+      setServerSessionRenewalRequired(false)
     }
   }
 
@@ -180,7 +203,13 @@ function CashierWorkspace({
       setCashierSession(session)
       setPassword('')
 
-      setSuccess(`مرحبًا ${session.user.fullName}.`)
+      setCompanyCode(session.user.companyCode)
+
+      setUsername(session.user.username)
+
+      setServerSessionRenewalRequired(false)
+
+      setSuccess(`تم تجديد جلسة ${session.user.fullName}.`)
 
       onSessionChanged()
 
@@ -219,6 +248,7 @@ function CashierWorkspace({
       setPassword('')
       setClosingCash('')
       setClosingNote('')
+      setServerSessionRenewalRequired(false)
       onSessionChanged()
     } catch (currentError) {
       setError(
@@ -346,11 +376,20 @@ function CashierWorkspace({
 
       onSessionChanged()
     } catch (currentError) {
-      setError(
+      const errorMessage =
         currentError instanceof Error
           ? currentError.message
-          : 'تعذر إغلاق الوردية.',
-      )
+          : 'تعذر إغلاق الوردية.'
+
+      if (isServerSessionExpiredMessage(errorMessage)) {
+        setServerSessionRenewalRequired(true)
+
+        setError(
+          'انتهت جلسة السيرفر. أدخل كلمة مرور الكاشير لتجديد الجلسة، ثم اضغط إغلاق الوردية مرة أخرى.',
+        )
+      } else {
+        setError(errorMessage)
+      }
     } finally {
       setLoadingAction(null)
     }
@@ -736,8 +775,56 @@ function CashierWorkspace({
 
       {error ? <p className="desktop-message desktop-error">{error}</p> : null}
 
-      {success ? (
-        <p className="desktop-message desktop-success">{success}</p>
+      {serverSessionRenewalRequired ? (
+        <section className="desktop-payment-panel">
+          <div className="desktop-section-header">
+            <div>
+              <h3>تجديد جلسة السيرفر</h3>
+
+              <p>
+                الكاشير: <strong>{cashierSession.user.fullName}</strong>
+                {' — '}@{cashierSession.user.username}
+              </p>
+            </div>
+          </div>
+
+          <div className="desktop-form-grid">
+            <label>
+              كلمة مرور الكاشير
+              <input
+                type="password"
+                value={password}
+                autoFocus
+                disabled={loadingAction !== null}
+                placeholder="أدخل كلمة المرور لتجديد جلسة السيرفر"
+                onChange={(event) => setPassword(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && password) {
+                    void login()
+                  }
+                }}
+              />
+            </label>
+          </div>
+
+          <div className="desktop-actions">
+            <button
+              type="button"
+              className="desktop-primary-button"
+              disabled={loadingAction !== null || !password}
+              onClick={() => void login()}
+            >
+              {loadingAction === 'login'
+                ? 'جاري تجديد الجلسة...'
+                : 'تجديد جلسة السيرفر'}
+            </button>
+          </div>
+
+          <p className="desktop-trusted-note">
+            لن يتم إغلاق الوردية أو حذف المبيعات المحلية. سيتم فقط إصدار جلسة
+            سيرفر وتصريح Offline جديدين لنفس الكاشير.
+          </p>
+        </section>
       ) : null}
 
       {!workspace ? (
