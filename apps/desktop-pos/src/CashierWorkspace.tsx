@@ -775,6 +775,10 @@ function CashierWorkspace({
 
       {error ? <p className="desktop-message desktop-error">{error}</p> : null}
 
+      {success ? (
+        <p className="desktop-message desktop-success">{success}</p>
+      ) : null}
+
       {serverSessionRenewalRequired ? (
         <section className="desktop-payment-panel">
           <div className="desktop-section-header">
