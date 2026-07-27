@@ -19,7 +19,7 @@ import ExchangesPage from './pages/ExchangesPage'
 import UsersPage from './pages/UsersPage'
 // شاشة عرض الأدوار والصلاحيات.
 import RolesPage from './pages/RolesPage'
-
+import CashierShiftsPage from './pages/CashierShiftsPage'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from './lib/http'
 
@@ -41,7 +41,7 @@ type PageName =
   | 'new-return'
   | 'new-exchange'
   | 'exchanges'
-
+  | 'cashier-shifts'
 // ======================================================
 // صفحات لوحة الإدارة.
 //
@@ -175,6 +175,12 @@ const pageDefinitions: Array<{
     permission: 'pos.sync.view',
 
     anyPermissions: ['pos.sync.view', 'pos.sync.manage'],
+  },
+  {
+    name: 'cashier-shifts',
+    label: 'تسوية الورديات',
+    icon: '⌁',
+    permission: 'reports.view',
   },
   {
     name: 'customers',
@@ -898,6 +904,8 @@ function App() {
               onOpenSale={openSaleFromPosSync}
             />
           ) : null}
+
+          {activePage === 'cashier-shifts' ? <CashierShiftsPage /> : null}
 
           {activePage === 'users' ? <UsersPage /> : null}
 
