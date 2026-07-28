@@ -70,3 +70,4 @@ Fashion Retail ERP/POS.
 - [Exchange Management](./docs/features/exchanges.md)
 - [Return Management](./docs/features/returns.md)
 - [Sales Performance Analytics](./docs/features/sales-performance.md)
+- [Product Performance Analytics](./docs/features/product-performance.md)

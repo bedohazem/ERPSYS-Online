@@ -116,8 +116,17 @@
   - Web Admin summary, chart and detailed tables
   - Consistent filter reset and stale-data protection
   - 🧪 Final integrated acceptance test pending
-- Top products
-- Slow moving products
+- ✅ Product performance analytics — implementation completed
+  - Top-selling product variants
+  - Slow-moving stocked variants
+  - Date and branch filters
+  - Current PostgreSQL stock integration
+  - Gross quantity and revenue ranking
+  - No-sale stock visibility
+  - Size, color, category and brand details
+  - Authenticated branch restriction
+  - Web Admin summary, chart and detailed tables
+  - 🧪 Final integrated acceptance test pending
 - Stock shortages
 - Profits
 - Returns
@@ -147,3 +156,4 @@
 - [Exchange Management](./features/exchanges.md)
 - [Return Management](./features/returns.md)
 - [Sales Performance Analytics](./features/sales-performance.md)
+- [Product Performance Analytics](./features/product-performance.md)
