@@ -1259,13 +1259,14 @@ reportsRouter.get(
         }
       }
 
-      const queryValues = [
+      const baseQueryValues = [
         auth.companyId,
         branchId || null,
         dateFrom,
         dateTo,
-        limit,
       ]
+
+      const limitedQueryValues = [...baseQueryValues, limit]
 
       const [summaryResult, topProductsResult, slowProductsResult] =
         await Promise.all([
@@ -1467,7 +1468,7 @@ reportsRouter.get(
 
           FROM sale_totals st;
           `,
-            queryValues,
+            baseQueryValues,
           ),
 
           db.query(
@@ -1657,7 +1658,7 @@ reportsRouter.get(
 
           LIMIT $5;
           `,
-            queryValues,
+            limitedQueryValues,
           ),
 
           db.query(
@@ -1954,7 +1955,7 @@ reportsRouter.get(
 
           LIMIT $5;
           `,
-            queryValues,
+            limitedQueryValues,
           ),
         ])
 

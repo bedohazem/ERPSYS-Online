@@ -31,3 +31,4 @@ ON stock_balances (
     branch_id,
     variant_id
 );
+
