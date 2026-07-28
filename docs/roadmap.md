@@ -104,9 +104,18 @@
 
 ## Phase 8 - Reports
 
-- Daily sales
-- Branch sales
-- Cashier sales
+- ✅ Sales performance analytics — implementation completed
+  - Flexible date range up to 366 days
+  - Company, branch and cashier filters
+  - Daily, branch and cashier aggregation
+  - Gross sales and average invoice value
+  - Returns and exchanges financial effects
+  - Net revenue calculation
+  - Voided and pending-review visibility
+  - Tenant and branch isolation
+  - Web Admin summary, chart and detailed tables
+  - Consistent filter reset and stale-data protection
+  - 🧪 Final integrated acceptance test pending
 - Top products
 - Slow moving products
 - Stock shortages
@@ -137,3 +146,4 @@
 - [Sales Management](./features/sales.md)
 - [Exchange Management](./features/exchanges.md)
 - [Return Management](./features/returns.md)
+- [Sales Performance Analytics](./features/sales-performance.md)

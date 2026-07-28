@@ -69,3 +69,4 @@ Fashion Retail ERP/POS.
 - [Cashier Shifts and Settlement](./docs/features/cashier-shifts.md)
 - [Exchange Management](./docs/features/exchanges.md)
 - [Return Management](./docs/features/returns.md)
+- [Sales Performance Analytics](./docs/features/sales-performance.md)
