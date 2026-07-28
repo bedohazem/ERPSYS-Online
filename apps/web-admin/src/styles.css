@@ -3479,3 +3479,137 @@ body {
     text-align: center;
   }
 }
+
+/* ======================================================
+   Inventory Reorder Rule Management
+====================================================== */
+
+.reorder-rule-summary-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.reorder-rule-selector-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 20px;
+}
+
+.reorder-rule-search-row {
+  display: grid;
+  grid-template-columns:
+    minmax(210px, 0.8fr)
+    minmax(280px, 1.2fr)
+    auto;
+  align-items: end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.reorder-rule-selected-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 18px;
+  padding: 16px 18px;
+  border: 1px solid #bfdbfe;
+  border-radius: 14px;
+  background: #eff6ff;
+}
+
+.reorder-rule-selected-item > div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.reorder-rule-selected-item small,
+.reorder-rule-selected-item span {
+  color: #64748b;
+}
+
+.reorder-rule-selected-item > div:last-child {
+  min-width: 130px;
+  text-align: center;
+}
+
+.reorder-rule-selected-item > div:last-child strong {
+  color: #1d4ed8;
+  font-size: 23px;
+}
+
+.reorder-rule-empty-item {
+  margin: 18px 0 0;
+  padding: 15px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 13px;
+  background: #f8fafc;
+}
+
+.reorder-rule-values-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.reorder-rule-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.reorder-rule-readonly {
+  margin-top: 18px;
+}
+
+.reorder-rule-table-header {
+  margin-top: 26px;
+  margin-bottom: 16px;
+}
+
+.shortage-status-inactive {
+  border: 1px solid #cbd5e1;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+@media (max-width: 1050px) {
+  .reorder-rule-summary-grid,
+  .reorder-rule-values-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .reorder-rule-search-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .reorder-rule-search-row button {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 700px) {
+  .reorder-rule-summary-grid,
+  .reorder-rule-selector-grid,
+  .reorder-rule-search-row,
+  .reorder-rule-values-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .reorder-rule-selected-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reorder-rule-selected-item > div:last-child {
+    text-align: right;
+  }
+
+  .reorder-rule-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reorder-rule-actions button {
+    width: 100%;
+  }
+}

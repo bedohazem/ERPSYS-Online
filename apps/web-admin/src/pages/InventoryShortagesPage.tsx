@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { requestJson } from '../lib/http'
+import InventoryReorderRulesPanel from '../components/InventoryReorderRulesPanel'
 
 type ApiResponse<T> = {
   data: T
@@ -483,6 +484,13 @@ function InventoryShortagesPage() {
           <p className="muted">جاري تحليل حدود إعادة الطلب وأرصدة المخزون...</p>
         ) : null}
       </section>
+
+      <InventoryReorderRulesPanel
+        branchId={branchId}
+        preferredStockLocationId={stockLocationId}
+        stockLocations={availableLocations}
+        onSaved={() => loadReport(1)}
+      />
 
       {summary ? (
         <section className="mini-cards-grid shortage-summary-grid">
