@@ -9,6 +9,14 @@ const uuidPattern =
 
 const allowedShiftStatuses = new Set(['open', 'closed'])
 
+const allowedInventoryShortageStatuses = new Set([
+  'alerts',
+  'critical',
+  'low',
+  'healthy',
+  'all',
+])
+
 function normalizeParam(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value
 }
@@ -2067,6 +2075,849 @@ reportsRouter.get(
 
           topProducts,
           slowMovingProducts,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
+// GET /api/reports/inventory-shortages
+//
+// تقرير نواقص المخزون حسب حدود إعادة الطلب.
+//
+// Query:
+// - branchId?
+// - stockLocationId?
+// - status?
+// - search?
+// - page?
+// - pageSize?
+//
+// status:
+// - alerts    critical + low
+// - critical
+// - low
+// - healthy
+// - all
+// ======================================================
+reportsRouter.get(
+  '/api/reports/inventory-shortages',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const branchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (branchId && !uuidPattern.test(branchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      const stockLocationId =
+        typeof req.query.stockLocationId === 'string'
+          ? req.query.stockLocationId.trim().toLowerCase()
+          : ''
+
+      if (stockLocationId && !uuidPattern.test(stockLocationId)) {
+        return res.status(400).json({
+          error: 'stockLocationId is invalid',
+        })
+      }
+
+      const stockStatus =
+        typeof req.query.status === 'string'
+          ? req.query.status.trim().toLowerCase()
+          : 'alerts'
+
+      if (!allowedInventoryShortageStatuses.has(stockStatus)) {
+        return res.status(400).json({
+          error: 'status must be alerts, critical, low, healthy or all',
+        })
+      }
+
+      const search =
+        typeof req.query.search === 'string' ? req.query.search.trim() : ''
+
+      if (search.length > 100) {
+        return res.status(400).json({
+          error: 'search cannot exceed 100 characters',
+        })
+      }
+
+      const requestedPage = Number(req.query.page ?? 1)
+
+      const page = Number.isFinite(requestedPage)
+        ? Math.min(Math.max(Math.trunc(requestedPage), 1), 100000)
+        : 1
+
+      const pageSize = parseReportLimit(req.query.pageSize)
+
+      const offset = (page - 1) * pageSize
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+            SELECT id
+
+            FROM branches
+
+            WHERE company_id = $1
+              AND id = $2
+
+            LIMIT 1;
+            `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      if (stockLocationId) {
+        const locationResult = await db.query(
+          `
+            SELECT id
+
+            FROM stock_locations
+
+            WHERE company_id = $1
+              AND id = $2
+              AND is_active = TRUE
+
+              AND (
+                $3::uuid IS NULL
+                OR branch_id =
+                   $3::uuid
+              )
+
+            LIMIT 1;
+            `,
+          [auth.companyId, stockLocationId, branchId || null],
+        )
+
+        if ((locationResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Stock location was not found in the accessible scope',
+          })
+        }
+      }
+
+      const shortageScopeSql = `
+        SELECT
+          rule.id,
+          rule.company_id,
+          rule.stock_location_id,
+          rule.variant_id,
+
+          rule.reorder_point,
+          rule.safety_stock,
+          rule.reorder_quantity,
+          rule.updated_at,
+
+          location.branch_id,
+
+          branch.code
+            AS branch_code,
+
+          branch.name
+            AS branch_name,
+
+          location.code
+            AS stock_location_code,
+
+          location.name
+            AS stock_location_name,
+
+          location.location_type,
+
+          variant.product_id,
+          variant.sku,
+          variant.primary_barcode,
+
+          product.name
+            AS product_name,
+
+          size.name
+            AS size_name,
+
+          color.name
+            AS color_name,
+
+          category.name
+            AS category_name,
+
+          brand.name
+            AS brand_name,
+
+          COALESCE(
+            balance.quantity,
+            0
+          )
+            AS current_quantity,
+
+          CASE
+            WHEN COALESCE(
+              balance.quantity,
+              0
+            ) <= rule.safety_stock
+            THEN 'critical'
+
+            WHEN COALESCE(
+              balance.quantity,
+              0
+            ) <= rule.reorder_point
+            THEN 'low'
+
+            ELSE 'healthy'
+          END
+            AS stock_status,
+
+          GREATEST(
+            rule.reorder_point -
+            COALESCE(
+              balance.quantity,
+              0
+            ),
+            0
+          )
+            AS shortage_quantity,
+
+          CASE
+            WHEN COALESCE(
+              balance.quantity,
+              0
+            ) <= rule.reorder_point
+            THEN GREATEST(
+              rule.reorder_quantity,
+
+              rule.reorder_point -
+              COALESCE(
+                balance.quantity,
+                0
+              )
+            )
+
+            ELSE 0
+          END
+            AS suggested_order_quantity
+
+        FROM inventory_reorder_rules
+             rule
+
+        JOIN stock_locations
+             location
+          ON location.company_id =
+             rule.company_id
+
+          AND location.id =
+              rule.stock_location_id
+
+          AND location.is_active =
+              TRUE
+
+        LEFT JOIN branches branch
+          ON branch.company_id =
+             location.company_id
+
+          AND branch.id =
+              location.branch_id
+
+        JOIN product_variants
+             variant
+          ON variant.company_id =
+             rule.company_id
+
+          AND variant.id =
+              rule.variant_id
+
+          AND variant.status =
+              'active'
+
+        JOIN products product
+          ON product.company_id =
+             variant.company_id
+
+          AND product.id =
+              variant.product_id
+
+          AND product.status =
+              'active'
+
+        LEFT JOIN fashion_sizes size
+          ON size.company_id =
+             variant.company_id
+
+          AND size.id =
+              variant.size_id
+
+        LEFT JOIN fashion_colors color
+          ON color.company_id =
+             variant.company_id
+
+          AND color.id =
+              variant.color_id
+
+        LEFT JOIN product_categories
+                  category
+          ON category.company_id =
+             product.company_id
+
+          AND category.id =
+              product.category_id
+
+        LEFT JOIN brands brand
+          ON brand.company_id =
+             product.company_id
+
+          AND brand.id =
+              product.brand_id
+
+        LEFT JOIN stock_balances
+                  balance
+          ON balance.company_id =
+             rule.company_id
+
+          AND balance
+                .stock_location_id =
+              rule.stock_location_id
+
+          AND balance.variant_id =
+              rule.variant_id
+
+        WHERE rule.company_id = $1
+          AND rule.is_active = TRUE
+
+          AND (
+            $2::uuid IS NULL
+            OR location.branch_id =
+               $2::uuid
+          )
+
+          AND (
+            $3::uuid IS NULL
+            OR rule.stock_location_id =
+               $3::uuid
+          )
+      `
+
+      const baseValues = [
+        auth.companyId,
+        branchId || null,
+        stockLocationId || null,
+      ]
+
+      const searchPattern = search ? `%${search}%` : null
+
+      const filterValues = [...baseValues, stockStatus, searchPattern]
+
+      const pageValues = [...filterValues, pageSize, offset]
+
+      const [
+        summaryResult,
+        countResult,
+        itemsResult,
+        branchOptionsResult,
+        locationOptionsResult,
+      ] = await Promise.all([
+        db.query(
+          `
+          WITH classified_rules AS (
+            ${shortageScopeSql}
+          )
+
+          SELECT
+            COUNT(*)::int
+              AS total_active_rules,
+
+            COUNT(
+              DISTINCT stock_location_id
+            )::int
+              AS stock_location_count,
+
+            COUNT(
+              DISTINCT variant_id
+            )::int
+              AS variant_count,
+
+            COUNT(*) FILTER (
+              WHERE stock_status =
+                    'critical'
+            )::int
+              AS critical_count,
+
+            COUNT(*) FILTER (
+              WHERE stock_status =
+                    'low'
+            )::int
+              AS low_count,
+
+            COUNT(*) FILTER (
+              WHERE stock_status =
+                    'healthy'
+            )::int
+              AS healthy_count,
+
+            COUNT(*) FILTER (
+              WHERE current_quantity <= 0
+            )::int
+              AS out_of_stock_count,
+
+            COALESCE(
+              SUM(shortage_quantity)
+                FILTER (
+                  WHERE stock_status
+                        IN (
+                          'critical',
+                          'low'
+                        )
+                ),
+              0
+            )
+              AS total_shortage_quantity,
+
+            COALESCE(
+              SUM(
+                suggested_order_quantity
+              ) FILTER (
+                WHERE stock_status
+                      IN (
+                        'critical',
+                        'low'
+                      )
+              ),
+              0
+            )
+              AS total_suggested_order_quantity
+
+          FROM classified_rules;
+          `,
+          baseValues,
+        ),
+
+        db.query(
+          `
+          WITH classified_rules AS (
+            ${shortageScopeSql}
+          ),
+
+          filtered_rules AS (
+            SELECT *
+
+            FROM classified_rules
+
+            WHERE (
+              $4::text = 'all'
+
+              OR (
+                $4::text = 'alerts'
+                AND stock_status
+                    IN (
+                      'critical',
+                      'low'
+                    )
+              )
+
+              OR stock_status =
+                 $4::text
+            )
+
+            AND (
+              $5::text IS NULL
+
+              OR product_name
+                 ILIKE $5::text
+
+              OR sku
+                 ILIKE $5::text
+
+              OR COALESCE(
+                   primary_barcode,
+                   ''
+                 )
+                 ILIKE $5::text
+
+              OR stock_location_name
+                 ILIKE $5::text
+
+              OR stock_location_code
+                 ILIKE $5::text
+
+              OR COALESCE(
+                   branch_name,
+                   ''
+                 )
+                 ILIKE $5::text
+
+              OR COALESCE(
+                   category_name,
+                   ''
+                 )
+                 ILIKE $5::text
+
+              OR COALESCE(
+                   brand_name,
+                   ''
+                 )
+                 ILIKE $5::text
+            )
+          )
+
+          SELECT
+            COUNT(*)::int
+              AS total_count
+
+          FROM filtered_rules;
+          `,
+          filterValues,
+        ),
+
+        db.query(
+          `
+          WITH classified_rules AS (
+            ${shortageScopeSql}
+          ),
+
+          filtered_rules AS (
+            SELECT *
+
+            FROM classified_rules
+
+            WHERE (
+              $4::text = 'all'
+
+              OR (
+                $4::text = 'alerts'
+                AND stock_status
+                    IN (
+                      'critical',
+                      'low'
+                    )
+              )
+
+              OR stock_status =
+                 $4::text
+            )
+
+            AND (
+              $5::text IS NULL
+
+              OR product_name
+                 ILIKE $5::text
+
+              OR sku
+                 ILIKE $5::text
+
+              OR COALESCE(
+                   primary_barcode,
+                   ''
+                 )
+                 ILIKE $5::text
+
+              OR stock_location_name
+                 ILIKE $5::text
+
+              OR stock_location_code
+                 ILIKE $5::text
+
+              OR COALESCE(
+                   branch_name,
+                   ''
+                 )
+                 ILIKE $5::text
+
+              OR COALESCE(
+                   category_name,
+                   ''
+                 )
+                 ILIKE $5::text
+
+              OR COALESCE(
+                   brand_name,
+                   ''
+                 )
+                 ILIKE $5::text
+            )
+          )
+
+          SELECT *
+
+          FROM filtered_rules
+
+          ORDER BY
+            CASE stock_status
+              WHEN 'critical' THEN 1
+              WHEN 'low' THEN 2
+              ELSE 3
+            END ASC,
+
+            shortage_quantity DESC,
+            current_quantity ASC,
+            product_name ASC,
+            sku ASC,
+            stock_location_name ASC
+
+          LIMIT $6
+          OFFSET $7;
+          `,
+          pageValues,
+        ),
+
+        db.query(
+          `
+          SELECT
+            id,
+            code,
+            name,
+            is_active
+
+          FROM branches
+
+          WHERE company_id = $1
+
+            AND (
+              $2::uuid IS NULL
+              OR id = $2::uuid
+            )
+
+          ORDER BY
+            is_active DESC,
+            name ASC,
+            code ASC;
+          `,
+          [auth.companyId, auth.branchId],
+        ),
+
+        db.query(
+          `
+          SELECT
+            location.id,
+            location.branch_id,
+            location.code,
+            location.name,
+            location.location_type,
+
+            branch.code
+              AS branch_code,
+
+            branch.name
+              AS branch_name
+
+          FROM stock_locations
+               location
+
+          LEFT JOIN branches branch
+            ON branch.company_id =
+               location.company_id
+
+            AND branch.id =
+                location.branch_id
+
+          WHERE location.company_id = $1
+            AND location.is_active = TRUE
+
+            AND (
+              $2::uuid IS NULL
+              OR location.branch_id =
+                 $2::uuid
+            )
+
+          ORDER BY
+            branch.name
+              ASC NULLS FIRST,
+
+            location.name ASC,
+            location.code ASC;
+          `,
+          [auth.companyId, branchId || null],
+        ),
+      ])
+
+      const summaryRow = summaryResult.rows[0] as
+        | Record<string, unknown>
+        | undefined
+
+      const countRow = countResult.rows[0] as
+        | Record<string, unknown>
+        | undefined
+
+      const totalItems = Number(countRow?.total_count ?? 0)
+
+      const totalPages = totalItems > 0 ? Math.ceil(totalItems / pageSize) : 0
+
+      const items = (itemsResult.rows as Array<Record<string, unknown>>).map(
+        (row) => ({
+          ruleId: String(row.id),
+
+          branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+          branchCode:
+            typeof row.branch_code === 'string' ? row.branch_code : null,
+
+          branchName:
+            typeof row.branch_name === 'string' ? row.branch_name : null,
+
+          stockLocationId: String(row.stock_location_id),
+
+          stockLocationCode: String(row.stock_location_code),
+
+          stockLocationName: String(row.stock_location_name),
+
+          stockLocationType: String(row.location_type),
+
+          variantId: String(row.variant_id),
+
+          productId: String(row.product_id),
+
+          productName: String(row.product_name),
+
+          sku: String(row.sku),
+
+          primaryBarcode:
+            typeof row.primary_barcode === 'string'
+              ? row.primary_barcode
+              : null,
+
+          sizeName: typeof row.size_name === 'string' ? row.size_name : null,
+
+          colorName: typeof row.color_name === 'string' ? row.color_name : null,
+
+          categoryName:
+            typeof row.category_name === 'string' ? row.category_name : null,
+
+          brandName: typeof row.brand_name === 'string' ? row.brand_name : null,
+
+          reorderPoint: String(row.reorder_point ?? '0'),
+
+          safetyStock: String(row.safety_stock ?? '0'),
+
+          reorderQuantity: String(row.reorder_quantity ?? '0'),
+
+          currentQuantity: String(row.current_quantity ?? '0'),
+
+          shortageQuantity: String(row.shortage_quantity ?? '0'),
+
+          suggestedOrderQuantity: String(row.suggested_order_quantity ?? '0'),
+
+          stockStatus: String(row.stock_status),
+
+          updatedAt: serializeReportTimestamp(row.updated_at),
+        }),
+      )
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+
+            branchId: branchId || null,
+
+            stockLocationId: stockLocationId || null,
+
+            status: stockStatus,
+
+            search: search || null,
+
+            page,
+            pageSize,
+          },
+
+          scope: {
+            branchSelectionLocked: Boolean(auth.branchId),
+          },
+
+          definitions: {
+            alertStatuses: ['critical', 'low'],
+
+            criticalRule: 'currentQuantity <= safetyStock',
+
+            lowRule: 'safetyStock < currentQuantity <= reorderPoint',
+
+            healthyRule: 'currentQuantity > reorderPoint',
+
+            shortageFormula: 'max(reorderPoint - currentQuantity, 0)',
+
+            suggestedOrderFormula: 'max(reorderQuantity, shortageQuantity)',
+
+            inventorySource: 'Current PostgreSQL stock balance',
+
+            activeSourcesOnly: true,
+          },
+
+          branchOptions: branchOptionsResult.rows.map((row) => ({
+            id: String(row.id),
+
+            code: String(row.code),
+
+            name: String(row.name),
+
+            isActive: Boolean(row.is_active),
+          })),
+
+          stockLocationOptions: locationOptionsResult.rows.map((row) => ({
+            id: String(row.id),
+
+            branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+            branchCode:
+              typeof row.branch_code === 'string' ? row.branch_code : null,
+
+            branchName:
+              typeof row.branch_name === 'string' ? row.branch_name : null,
+
+            code: String(row.code),
+
+            name: String(row.name),
+
+            locationType: String(row.location_type),
+          })),
+
+          summary: {
+            totalActiveRules: Number(summaryRow?.total_active_rules ?? 0),
+
+            stockLocationCount: Number(summaryRow?.stock_location_count ?? 0),
+
+            variantCount: Number(summaryRow?.variant_count ?? 0),
+
+            criticalCount: Number(summaryRow?.critical_count ?? 0),
+
+            lowCount: Number(summaryRow?.low_count ?? 0),
+
+            healthyCount: Number(summaryRow?.healthy_count ?? 0),
+
+            outOfStockCount: Number(summaryRow?.out_of_stock_count ?? 0),
+
+            totalShortageQuantity: String(
+              summaryRow?.total_shortage_quantity ?? '0',
+            ),
+
+            totalSuggestedOrderQuantity: String(
+              summaryRow?.total_suggested_order_quantity ?? '0',
+            ),
+          },
+
+          items,
+
+          pagination: {
+            page,
+            pageSize,
+            totalItems,
+            totalPages,
+
+            hasPreviousPage: page > 1,
+
+            hasNextPage: totalPages > 0 && page < totalPages,
+          },
         },
       })
     } catch (error) {
