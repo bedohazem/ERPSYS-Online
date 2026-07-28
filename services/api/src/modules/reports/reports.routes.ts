@@ -23,6 +23,72 @@ function parseReportLimit(value: unknown) {
   return Math.min(Math.max(Math.trunc(numericValue), 1), 100)
 }
 
+function parseProductReportLimit(value: unknown) {
+  const numericValue = Number(value ?? 20)
+
+  if (!Number.isFinite(numericValue)) {
+    return 20
+  }
+
+  return Math.min(Math.max(Math.trunc(numericValue), 1), 100)
+}
+
+function serializeReportTimestamp(value: unknown) {
+  if (value instanceof Date) {
+    return value.toISOString()
+  }
+
+  return typeof value === 'string' ? value : null
+}
+
+function mapProductPerformanceRow(row: Record<string, unknown>) {
+  return {
+    variantId: String(row.variant_id),
+
+    productId: String(row.product_id),
+
+    productName: String(row.product_name),
+
+    sku: String(row.sku),
+
+    primaryBarcode:
+      typeof row.primary_barcode === 'string' ? row.primary_barcode : null,
+
+    sizeName: typeof row.size_name === 'string' ? row.size_name : null,
+
+    colorName: typeof row.color_name === 'string' ? row.color_name : null,
+
+    categoryName:
+      typeof row.category_name === 'string' ? row.category_name : null,
+
+    brandName: typeof row.brand_name === 'string' ? row.brand_name : null,
+
+    productStatus:
+      typeof row.product_status === 'string' ? row.product_status : null,
+
+    variantStatus:
+      typeof row.variant_status === 'string' ? row.variant_status : null,
+
+    salesCount: Number(row.sales_count ?? 0),
+
+    soldQuantity: String(row.sold_quantity ?? '0'),
+
+    grossRevenue: String(row.gross_revenue ?? '0'),
+
+    averageUnitRevenue: String(row.average_unit_revenue ?? '0'),
+
+    currentStock: String(row.current_stock ?? '0'),
+
+    lastSaleAt: serializeReportTimestamp(row.last_sale_at),
+
+    daysSinceLastSale:
+      row.days_since_last_sale === null ||
+      row.days_since_last_sale === undefined
+        ? null
+        : Number(row.days_since_last_sale),
+  }
+}
+
 function isValidReportDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return false
@@ -1094,6 +1160,878 @@ reportsRouter.get(
           byDay,
           byBranch,
           byCashier,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
+// GET /api/reports/product-performance
+//
+// تقرير الأصناف الأكثر مبيعًا
+// والأصناف بطيئة الحركة.
+//
+// Query:
+// - dateFrom
+// - dateTo
+// - branchId?
+// - limit?
+// ======================================================
+reportsRouter.get(
+  '/api/reports/product-performance',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const dateFrom =
+        typeof req.query.dateFrom === 'string' ? req.query.dateFrom.trim() : ''
+
+      const dateTo =
+        typeof req.query.dateTo === 'string' ? req.query.dateTo.trim() : ''
+
+      if (!dateFrom || !isValidReportDate(dateFrom)) {
+        return res.status(400).json({
+          error: 'dateFrom must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (!dateTo || !isValidReportDate(dateTo)) {
+        return res.status(400).json({
+          error: 'dateTo must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (dateFrom > dateTo) {
+        return res.status(400).json({
+          error: 'dateFrom cannot be after dateTo',
+        })
+      }
+
+      const startTimestamp = new Date(`${dateFrom}T00:00:00.000Z`).getTime()
+
+      const endTimestamp = new Date(`${dateTo}T00:00:00.000Z`).getTime()
+
+      const reportDays =
+        Math.floor((endTimestamp - startTimestamp) / (24 * 60 * 60 * 1000)) + 1
+
+      if (reportDays > 366) {
+        return res.status(400).json({
+          error: 'Report period cannot exceed 366 days',
+        })
+      }
+
+      const branchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (branchId && !uuidPattern.test(branchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      const limit = parseProductReportLimit(req.query.limit)
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+            SELECT id
+
+            FROM branches
+
+            WHERE company_id = $1
+              AND id = $2
+
+            LIMIT 1;
+            `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      const queryValues = [
+        auth.companyId,
+        branchId || null,
+        dateFrom,
+        dateTo,
+        limit,
+      ]
+
+      const [summaryResult, topProductsResult, slowProductsResult] =
+        await Promise.all([
+          db.query(
+            `
+          WITH sale_totals AS (
+            SELECT
+              COUNT(
+                DISTINCT s.id
+              )::int
+                AS sales_count,
+
+              COUNT(
+                DISTINCT
+                si.variant_id
+              )::int
+                AS sold_variant_count,
+
+              COALESCE(
+                SUM(si.quantity),
+                0
+              )
+                AS sold_quantity,
+
+              COALESCE(
+                SUM(si.line_total),
+                0
+              )
+                AS gross_revenue
+
+            FROM sales s
+
+            JOIN sale_items si
+              ON si.company_id =
+                 s.company_id
+
+              AND si.sale_id =
+                  s.id
+
+            WHERE s.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR s.branch_id =
+                   $2::uuid
+              )
+
+              AND s.occurred_at >=
+                  $3::date
+
+              AND s.occurred_at <
+                  (
+                    $4::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND s.status IN (
+                'completed',
+                'pending_review',
+                'refunded'
+              )
+          ),
+
+          period_variants AS (
+            SELECT DISTINCT
+              si.variant_id
+
+            FROM sales s
+
+            JOIN sale_items si
+              ON si.company_id =
+                 s.company_id
+
+              AND si.sale_id =
+                  s.id
+
+            WHERE s.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR s.branch_id =
+                   $2::uuid
+              )
+
+              AND s.occurred_at >=
+                  $3::date
+
+              AND s.occurred_at <
+                  (
+                    $4::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND s.status IN (
+                'completed',
+                'pending_review',
+                'refunded'
+              )
+          ),
+
+          current_stock AS (
+            SELECT
+              sb.variant_id,
+
+              SUM(sb.quantity)
+                AS current_stock
+
+            FROM stock_balances sb
+
+            JOIN product_variants pv
+              ON pv.company_id =
+                 sb.company_id
+
+              AND pv.id =
+                  sb.variant_id
+
+              AND pv.status =
+                  'active'
+
+            JOIN products p
+              ON p.company_id =
+                 pv.company_id
+
+              AND p.id =
+                  pv.product_id
+
+              AND p.status =
+                  'active'
+
+            WHERE sb.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR sb.branch_id =
+                   $2::uuid
+              )
+
+            GROUP BY
+              sb.variant_id
+          )
+
+          SELECT
+            st.sales_count,
+            st.sold_variant_count,
+            st.sold_quantity,
+            st.gross_revenue,
+
+            COALESCE(
+              (
+                SELECT
+                  COUNT(*)::int
+
+                FROM current_stock cs
+
+                WHERE
+                  cs.current_stock > 0
+              ),
+              0
+            )
+              AS in_stock_variant_count,
+
+            COALESCE(
+              (
+                SELECT
+                  SUM(
+                    cs.current_stock
+                  )
+
+                FROM current_stock cs
+
+                WHERE
+                  cs.current_stock > 0
+              ),
+              0
+            )
+              AS current_stock_quantity,
+
+            COALESCE(
+              (
+                SELECT
+                  COUNT(*)::int
+
+                FROM current_stock cs
+
+                LEFT JOIN
+                  period_variants period
+                  ON period.variant_id =
+                     cs.variant_id
+
+                WHERE
+                  cs.current_stock > 0
+
+                  AND period.variant_id
+                      IS NULL
+              ),
+              0
+            )
+              AS no_sale_stock_variant_count
+
+          FROM sale_totals st;
+          `,
+            queryValues,
+          ),
+
+          db.query(
+            `
+          WITH period_sales AS (
+            SELECT
+              si.variant_id,
+
+              COUNT(
+                DISTINCT s.id
+              )::int
+                AS sales_count,
+
+              SUM(si.quantity)
+                AS sold_quantity,
+
+              SUM(si.line_total)
+                AS gross_revenue,
+
+              MAX(s.occurred_at)
+                AS last_sale_at
+
+            FROM sales s
+
+            JOIN sale_items si
+              ON si.company_id =
+                 s.company_id
+
+              AND si.sale_id =
+                  s.id
+
+            WHERE s.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR s.branch_id =
+                   $2::uuid
+              )
+
+              AND s.occurred_at >=
+                  $3::date
+
+              AND s.occurred_at <
+                  (
+                    $4::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND s.status IN (
+                'completed',
+                'pending_review',
+                'refunded'
+              )
+
+            GROUP BY
+              si.variant_id
+          ),
+
+          current_stock AS (
+            SELECT
+              sb.variant_id,
+
+              SUM(sb.quantity)
+                AS current_stock
+
+            FROM stock_balances sb
+
+            WHERE sb.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR sb.branch_id =
+                   $2::uuid
+              )
+
+            GROUP BY
+              sb.variant_id
+          )
+
+          SELECT
+            pv.id
+              AS variant_id,
+
+            pv.product_id,
+
+            p.name
+              AS product_name,
+
+            pv.sku,
+            pv.primary_barcode,
+
+            size.name
+              AS size_name,
+
+            color.name
+              AS color_name,
+
+            category.name
+              AS category_name,
+
+            brand.name
+              AS brand_name,
+
+            p.status
+              AS product_status,
+
+            pv.status
+              AS variant_status,
+
+            ps.sales_count,
+            ps.sold_quantity,
+            ps.gross_revenue,
+
+            ROUND(
+              ps.gross_revenue /
+              NULLIF(
+                ps.sold_quantity,
+                0
+              ),
+              2
+            )
+              AS average_unit_revenue,
+
+            COALESCE(
+              stock.current_stock,
+              0
+            )
+              AS current_stock,
+
+            ps.last_sale_at,
+
+            NULL::int
+              AS days_since_last_sale
+
+          FROM period_sales ps
+
+          JOIN product_variants pv
+            ON pv.company_id = $1
+            AND pv.id =
+                ps.variant_id
+
+          JOIN products p
+            ON p.company_id =
+               pv.company_id
+
+            AND p.id =
+                pv.product_id
+
+          LEFT JOIN fashion_sizes size
+            ON size.company_id =
+               pv.company_id
+
+            AND size.id =
+                pv.size_id
+
+          LEFT JOIN fashion_colors color
+            ON color.company_id =
+               pv.company_id
+
+            AND color.id =
+                pv.color_id
+
+          LEFT JOIN product_categories
+                    category
+            ON category.company_id =
+               p.company_id
+
+            AND category.id =
+                p.category_id
+
+          LEFT JOIN brands brand
+            ON brand.company_id =
+               p.company_id
+
+            AND brand.id =
+                p.brand_id
+
+          LEFT JOIN current_stock stock
+            ON stock.variant_id =
+               pv.id
+
+          ORDER BY
+            ps.sold_quantity DESC,
+            ps.gross_revenue DESC,
+            p.name ASC,
+            pv.sku ASC
+
+          LIMIT $5;
+          `,
+            queryValues,
+          ),
+
+          db.query(
+            `
+          WITH period_sales AS (
+            SELECT
+              si.variant_id,
+
+              COUNT(
+                DISTINCT s.id
+              )::int
+                AS sales_count,
+
+              SUM(si.quantity)
+                AS sold_quantity,
+
+              SUM(si.line_total)
+                AS gross_revenue
+
+            FROM sales s
+
+            JOIN sale_items si
+              ON si.company_id =
+                 s.company_id
+
+              AND si.sale_id =
+                  s.id
+
+            WHERE s.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR s.branch_id =
+                   $2::uuid
+              )
+
+              AND s.occurred_at >=
+                  $3::date
+
+              AND s.occurred_at <
+                  (
+                    $4::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND s.status IN (
+                'completed',
+                'pending_review',
+                'refunded'
+              )
+
+            GROUP BY
+              si.variant_id
+          ),
+
+          last_sales AS (
+            SELECT
+              si.variant_id,
+
+              MAX(s.occurred_at)
+                AS last_sale_at
+
+            FROM sales s
+
+            JOIN sale_items si
+              ON si.company_id =
+                 s.company_id
+
+              AND si.sale_id =
+                  s.id
+
+            WHERE s.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR s.branch_id =
+                   $2::uuid
+              )
+
+              AND s.occurred_at <
+                  (
+                    $4::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND s.status IN (
+                'completed',
+                'pending_review',
+                'refunded'
+              )
+
+            GROUP BY
+              si.variant_id
+          ),
+
+          current_stock AS (
+            SELECT
+              sb.variant_id,
+
+              SUM(sb.quantity)
+                AS current_stock
+
+            FROM stock_balances sb
+
+            JOIN product_variants pv
+              ON pv.company_id =
+                 sb.company_id
+
+              AND pv.id =
+                  sb.variant_id
+
+              AND pv.status =
+                  'active'
+
+            JOIN products p
+              ON p.company_id =
+                 pv.company_id
+
+              AND p.id =
+                  pv.product_id
+
+              AND p.status =
+                  'active'
+
+            WHERE sb.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR sb.branch_id =
+                   $2::uuid
+              )
+
+            GROUP BY
+              sb.variant_id
+
+            HAVING
+              SUM(sb.quantity) > 0
+          )
+
+          SELECT
+            pv.id
+              AS variant_id,
+
+            pv.product_id,
+
+            p.name
+              AS product_name,
+
+            pv.sku,
+            pv.primary_barcode,
+
+            size.name
+              AS size_name,
+
+            color.name
+              AS color_name,
+
+            category.name
+              AS category_name,
+
+            brand.name
+              AS brand_name,
+
+            p.status
+              AS product_status,
+
+            pv.status
+              AS variant_status,
+
+            COALESCE(
+              ps.sales_count,
+              0
+            )
+              AS sales_count,
+
+            COALESCE(
+              ps.sold_quantity,
+              0
+            )
+              AS sold_quantity,
+
+            COALESCE(
+              ps.gross_revenue,
+              0
+            )
+              AS gross_revenue,
+
+            CASE
+              WHEN COALESCE(
+                ps.sold_quantity,
+                0
+              ) > 0
+              THEN ROUND(
+                ps.gross_revenue /
+                ps.sold_quantity,
+                2
+              )
+              ELSE 0
+            END
+              AS average_unit_revenue,
+
+            stock.current_stock,
+            last_sale.last_sale_at,
+
+            CASE
+              WHEN
+                last_sale.last_sale_at
+                IS NULL
+              THEN NULL
+
+              ELSE GREATEST(
+                FLOOR(
+                  EXTRACT(
+                    EPOCH FROM (
+                      (
+                        $4::date +
+                        INTERVAL '1 day'
+                      )::timestamptz
+                      -
+                      last_sale
+                        .last_sale_at
+                    )
+                  ) /
+                  86400
+                )::int,
+                0
+              )
+            END
+              AS days_since_last_sale
+
+          FROM current_stock stock
+
+          JOIN product_variants pv
+            ON pv.company_id = $1
+            AND pv.id =
+                stock.variant_id
+
+          JOIN products p
+            ON p.company_id =
+               pv.company_id
+
+            AND p.id =
+                pv.product_id
+
+          LEFT JOIN fashion_sizes size
+            ON size.company_id =
+               pv.company_id
+
+            AND size.id =
+                pv.size_id
+
+          LEFT JOIN fashion_colors color
+            ON color.company_id =
+               pv.company_id
+
+            AND color.id =
+                pv.color_id
+
+          LEFT JOIN product_categories
+                    category
+            ON category.company_id =
+               p.company_id
+
+            AND category.id =
+                p.category_id
+
+          LEFT JOIN brands brand
+            ON brand.company_id =
+               p.company_id
+
+            AND brand.id =
+                p.brand_id
+
+          LEFT JOIN period_sales ps
+            ON ps.variant_id =
+               pv.id
+
+          LEFT JOIN last_sales last_sale
+            ON last_sale.variant_id =
+               pv.id
+
+          ORDER BY
+            COALESCE(
+              ps.sold_quantity,
+              0
+            ) ASC,
+
+            last_sale.last_sale_at
+              ASC NULLS FIRST,
+
+            stock.current_stock DESC,
+            p.name ASC,
+            pv.sku ASC
+
+          LIMIT $5;
+          `,
+            queryValues,
+          ),
+        ])
+
+      const summaryRow = summaryResult.rows[0] as
+        | Record<string, unknown>
+        | undefined
+
+      const topProducts = (
+        topProductsResult.rows as Array<Record<string, unknown>>
+      ).map(mapProductPerformanceRow)
+
+      const slowMovingProducts = (
+        slowProductsResult.rows as Array<Record<string, unknown>>
+      ).map((row) => {
+        const product = mapProductPerformanceRow(row)
+
+        return {
+          ...product,
+
+          movementClass:
+            Number(product.soldQuantity) === 0
+              ? 'no_sales_in_period'
+              : 'low_sales_in_period',
+        }
+      })
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+
+            branchId: branchId || null,
+
+            dateFrom,
+            dateTo,
+            days: reportDays,
+
+            limit,
+          },
+
+          definitions: {
+            includedSaleStatuses: ['completed', 'pending_review', 'refunded'],
+
+            topProductsOrder: 'soldQuantity DESC, grossRevenue DESC',
+
+            slowMovingOrder:
+              'soldQuantity ASC, lastSaleAt ASC, currentStock DESC',
+
+            stockBasis: 'Current PostgreSQL stock balance',
+
+            salesBasis: 'Gross sale item quantities before returns',
+          },
+
+          summary: {
+            salesCount: Number(summaryRow?.sales_count ?? 0),
+
+            soldVariantCount: Number(summaryRow?.sold_variant_count ?? 0),
+
+            soldQuantity: String(summaryRow?.sold_quantity ?? '0'),
+
+            grossRevenue: String(summaryRow?.gross_revenue ?? '0'),
+
+            inStockVariantCount: Number(
+              summaryRow?.in_stock_variant_count ?? 0,
+            ),
+
+            currentStockQuantity: String(
+              summaryRow?.current_stock_quantity ?? '0',
+            ),
+
+            noSaleStockVariantCount: Number(
+              summaryRow?.no_sale_stock_variant_count ?? 0,
+            ),
+          },
+
+          topProducts,
+          slowMovingProducts,
         },
       })
     } catch (error) {
