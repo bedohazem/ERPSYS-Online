@@ -277,6 +277,7 @@ function InventoryReorderRulesPanel({
 
   function selectRule(rule: InventoryReorderRule) {
     lookupRequestIdRef.current += 1
+    setLookingUpItem(false)
 
     setSelectedRuleId(rule.id)
     setSelectedLocationId(rule.stockLocationId)
@@ -305,6 +306,7 @@ function InventoryReorderRulesPanel({
 
   function resetForm() {
     lookupRequestIdRef.current += 1
+    setLookingUpItem(false)
 
     const preferredLocationExists = stockLocations.some(
       (location) => location.id === preferredStockLocationId,
@@ -330,6 +332,7 @@ function InventoryReorderRulesPanel({
 
   function handleLocationChange(locationId: string) {
     lookupRequestIdRef.current += 1
+    setLookingUpItem(false)
 
     setSelectedLocationId(locationId)
     setSelectedRuleId('')
@@ -633,6 +636,7 @@ function InventoryReorderRulesPanel({
     }
 
     lookupRequestIdRef.current += 1
+    setLookingUpItem(false)
 
     const preferredLocationIsAllowed = stockLocations.some(
       (location) => location.id === preferredStockLocationId,
@@ -705,7 +709,7 @@ function InventoryReorderRulesPanel({
           اختيار قاعدة موجودة
           <select
             value={selectedRuleId}
-            disabled={loadingRules}
+            disabled={loadingRules || lookingUpItem || savingRule}
             onChange={(event) => {
               const ruleId = event.target.value
 
@@ -743,7 +747,7 @@ function InventoryReorderRulesPanel({
           مكان التخزين
           <select
             value={selectedLocationId}
-            disabled={!canAdjustInventory || savingRule}
+            disabled={!canAdjustInventory || savingRule || lookingUpItem}
             onChange={(event) => handleLocationChange(event.target.value)}
           >
             <option value="">اختر مكان التخزين</option>
