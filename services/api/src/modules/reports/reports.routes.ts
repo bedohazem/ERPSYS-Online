@@ -2014,6 +2014,8 @@ reportsRouter.get(
 
             branchId: branchId || null,
 
+            branchSelectionLocked: Boolean(auth.branchId),
+
             dateFrom,
             dateTo,
             days: reportDays,

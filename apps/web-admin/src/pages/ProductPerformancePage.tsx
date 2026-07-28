@@ -54,6 +54,8 @@ type ProductPerformanceReport = {
 
     branchId: string | null
 
+    branchSelectionLocked: boolean
+
     dateFrom: string
     dateTo: string
     days: number
@@ -268,7 +270,7 @@ function ProductPerformancePage() {
 
   const summary = report?.summary
 
-  const branchFilterLocked = branchOptions.length <= 1
+  const branchFilterLocked = report?.filters.branchSelectionLocked ?? true
 
   return (
     <>
