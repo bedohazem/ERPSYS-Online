@@ -2981,3 +2981,131 @@ body {
   font-size: 11px;
   white-space: nowrap;
 }
+
+/* ======================================================
+   Sales Performance Report
+====================================================== */
+
+.report-filter-grid {
+  margin-top: 20px;
+}
+
+.report-filter-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.report-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.report-summary-grid .mini-card {
+  min-width: 0;
+}
+
+.report-summary-grid small {
+  display: block;
+  margin-top: 7px;
+}
+
+.report-value-positive {
+  color: #15803d !important;
+}
+
+.report-value-negative {
+  color: #b91c1c !important;
+}
+
+.report-chart {
+  display: grid;
+  gap: 13px;
+  margin-top: 20px;
+}
+
+.report-bar-row {
+  display: grid;
+  grid-template-columns:
+    minmax(120px, 0.65fr)
+    minmax(240px, 2fr)
+    minmax(180px, 0.8fr);
+  align-items: center;
+  gap: 16px;
+}
+
+.report-bar-label {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.report-bar-track {
+  height: 18px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8eef7;
+  direction: ltr;
+}
+
+.report-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0f3d91, #2f80ed);
+  transition: width 220ms ease;
+}
+
+.report-bar-values {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: right;
+}
+
+.report-bar-values strong {
+  color: #0f3d91;
+}
+
+.report-bar-values span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+@media (max-width: 1000px) {
+  .report-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .report-bar-row {
+    grid-template-columns:
+      minmax(100px, 0.7fr)
+      minmax(180px, 1.5fr);
+  }
+
+  .report-bar-values {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 650px) {
+  .report-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .report-filter-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .report-bar-row {
+    grid-template-columns: 1fr;
+  }
+
+  .report-bar-values {
+    grid-column: auto;
+  }
+}

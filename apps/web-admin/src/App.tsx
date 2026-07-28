@@ -20,6 +20,7 @@ import UsersPage from './pages/UsersPage'
 // شاشة عرض الأدوار والصلاحيات.
 import RolesPage from './pages/RolesPage'
 import CashierShiftsPage from './pages/CashierShiftsPage'
+import SalesPerformancePage from './pages/SalesPerformancePage'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from './lib/http'
 
@@ -42,6 +43,8 @@ type PageName =
   | 'new-exchange'
   | 'exchanges'
   | 'cashier-shifts'
+  | 'sales-performance'
+
 // ======================================================
 // صفحات لوحة الإدارة.
 //
@@ -180,6 +183,12 @@ const pageDefinitions: Array<{
     name: 'cashier-shifts',
     label: 'تسوية الورديات',
     icon: '⌁',
+    permission: 'reports.view',
+  },
+  {
+    name: 'sales-performance',
+    label: 'تقارير المبيعات',
+    icon: '▥',
     permission: 'reports.view',
   },
   {
@@ -906,6 +915,8 @@ function App() {
           ) : null}
 
           {activePage === 'cashier-shifts' ? <CashierShiftsPage /> : null}
+
+          {activePage === 'sales-performance' ? <SalesPerformancePage /> : null}
 
           {activePage === 'users' ? <UsersPage /> : null}
 
