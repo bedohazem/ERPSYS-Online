@@ -242,6 +242,9 @@ export function applyAuthenticatedTenant(
       requestPath === '/api/pos-devices' ||
       requestPath.startsWith('/api/pos-devices/')
 
+    const isReportRequest =
+      requestPath === '/api/reports' || requestPath.startsWith('/api/reports/')
+
     // ====================================================
     // Query الموثقة
     //
@@ -257,11 +260,12 @@ export function applyAuthenticatedTenant(
     }
 
     if (auth.branchId) {
-      // المستخدم المرتبط بفرع لا يستطيع تغيير الفرع.
+      // مستخدم الفرع لا يستطيع
+      // طلب تقرير فرع آخر.
       authenticatedQuery.branchId = auth.branchId
-    } else {
-      // المستخدم العام على مستوى الشركة يرى كل الفروع حاليًا.
-      // اختيار فرع محدد سيُضاف لاحقًا بصلاحية مستقلة.
+    } else if (!isReportRequest) {
+      // مدير الشركة يستطيع اختيار
+      // فرع داخل Routes التقارير فقط.
       delete authenticatedQuery.branchId
     }
 

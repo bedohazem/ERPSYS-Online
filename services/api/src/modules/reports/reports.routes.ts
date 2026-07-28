@@ -223,6 +223,886 @@ reportsRouter.get('/api/reports/daily-summary', async (req, res, next) => {
 })
 
 // ======================================================
+// GET /api/reports/sales-performance
+//
+// تقرير أداء المبيعات خلال فترة.
+//
+// Query:
+// - dateFrom: YYYY-MM-DD
+// - dateTo: YYYY-MM-DD
+// - branchId?
+// - cashierId?
+//
+// يعيد:
+// - ملخص الفترة.
+// - تجميع يومي.
+// - تجميع حسب الفرع.
+// - تجميع حسب الكاشير.
+// ======================================================
+reportsRouter.get(
+  '/api/reports/sales-performance',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const dateFrom =
+        typeof req.query.dateFrom === 'string' ? req.query.dateFrom.trim() : ''
+
+      const dateTo =
+        typeof req.query.dateTo === 'string' ? req.query.dateTo.trim() : ''
+
+      if (!dateFrom || !isValidReportDate(dateFrom)) {
+        return res.status(400).json({
+          error: 'dateFrom must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (!dateTo || !isValidReportDate(dateTo)) {
+        return res.status(400).json({
+          error: 'dateTo must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (dateFrom > dateTo) {
+        return res.status(400).json({
+          error: 'dateFrom cannot be after dateTo',
+        })
+      }
+
+      const startTimestamp = new Date(`${dateFrom}T00:00:00.000Z`).getTime()
+
+      const endTimestamp = new Date(`${dateTo}T00:00:00.000Z`).getTime()
+
+      const reportDays =
+        Math.floor((endTimestamp - startTimestamp) / (24 * 60 * 60 * 1000)) + 1
+
+      if (reportDays > 366) {
+        return res.status(400).json({
+          error: 'Report period cannot exceed 366 days',
+        })
+      }
+
+      const branchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (branchId && !uuidPattern.test(branchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      const cashierId =
+        typeof req.query.cashierId === 'string'
+          ? req.query.cashierId.trim().toLowerCase()
+          : ''
+
+      if (cashierId && !uuidPattern.test(cashierId)) {
+        return res.status(400).json({
+          error: 'cashierId is invalid',
+        })
+      }
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+            SELECT id
+
+            FROM branches
+
+            WHERE company_id = $1
+              AND id = $2
+
+            LIMIT 1;
+            `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      if (cashierId) {
+        const cashierResult = await db.query(
+          `
+            SELECT id
+
+            FROM users
+
+            WHERE company_id = $1
+              AND id = $2
+
+            LIMIT 1;
+            `,
+          [auth.companyId, cashierId],
+        )
+
+        if ((cashierResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Cashier was not found in the authenticated company',
+          })
+        }
+      }
+
+      const result = await db.query(
+        `
+          WITH sale_events AS (
+            SELECT
+              s.occurred_at::date
+                AS event_date,
+
+              s.branch_id,
+              s.cashier_id,
+
+              CASE
+                WHEN s.status IN (
+                  'completed',
+                  'pending_review',
+                  'refunded'
+                )
+                THEN 1
+                ELSE 0
+              END::int
+                AS sales_count,
+
+              CASE
+                WHEN s.status =
+                     'voided'
+                THEN 1
+                ELSE 0
+              END::int
+                AS voided_sales_count,
+
+              CASE
+                WHEN s.status =
+                     'pending_review'
+                THEN 1
+                ELSE 0
+              END::int
+                AS pending_review_sales_count,
+
+              CASE
+                WHEN s.status IN (
+                  'completed',
+                  'pending_review',
+                  'refunded'
+                )
+                THEN s.total
+                ELSE 0
+              END
+                AS gross_sales,
+
+              CASE
+                WHEN s.status IN (
+                  'completed',
+                  'pending_review',
+                  'refunded'
+                )
+                THEN
+                  COALESCE(
+                    sale_items
+                      .sold_quantity,
+                    0
+                  )
+                ELSE 0
+              END
+                AS sold_quantity,
+
+              0::int
+                AS returns_count,
+
+              0::numeric
+                AS return_refunds,
+
+              0::numeric
+                AS returned_quantity,
+
+              0::int
+                AS exchanges_count,
+
+              0::numeric
+                AS exchange_returned_total,
+
+              0::numeric
+                AS exchange_issued_total,
+
+              0::numeric
+                AS exchange_net,
+
+              0::numeric
+                AS exchange_returned_quantity,
+
+              0::numeric
+                AS exchange_issued_quantity
+
+            FROM sales s
+
+            LEFT JOIN LATERAL (
+              SELECT
+                COALESCE(
+                  SUM(si.quantity),
+                  0
+                )
+                  AS sold_quantity
+
+              FROM sale_items si
+
+              WHERE si.company_id =
+                    s.company_id
+
+                AND si.sale_id =
+                    s.id
+            ) sale_items
+              ON TRUE
+
+            WHERE s.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR s.branch_id =
+                   $2::uuid
+              )
+
+              AND (
+                $3::uuid IS NULL
+                OR s.cashier_id =
+                   $3::uuid
+              )
+
+              AND s.occurred_at >=
+                  $4::date
+
+              AND s.occurred_at <
+                  (
+                    $5::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND s.status IN (
+                'completed',
+                'pending_review',
+                'refunded',
+                'voided'
+              )
+          ),
+
+          return_events AS (
+            SELECT
+              r.created_at::date
+                AS event_date,
+
+              r.branch_id,
+
+              r.created_by
+                AS cashier_id,
+
+              0::int
+                AS sales_count,
+
+              0::int
+                AS voided_sales_count,
+
+              0::int
+                AS pending_review_sales_count,
+
+              0::numeric
+                AS gross_sales,
+
+              0::numeric
+                AS sold_quantity,
+
+              1::int
+                AS returns_count,
+
+              r.refund_total
+                AS return_refunds,
+
+              COALESCE(
+                return_items
+                  .returned_quantity,
+                0
+              )
+                AS returned_quantity,
+
+              0::int
+                AS exchanges_count,
+
+              0::numeric
+                AS exchange_returned_total,
+
+              0::numeric
+                AS exchange_issued_total,
+
+              0::numeric
+                AS exchange_net,
+
+              0::numeric
+                AS exchange_returned_quantity,
+
+              0::numeric
+                AS exchange_issued_quantity
+
+            FROM returns r
+
+            LEFT JOIN LATERAL (
+              SELECT
+                COALESCE(
+                  SUM(ri.quantity),
+                  0
+                )
+                  AS returned_quantity
+
+              FROM return_items ri
+
+              WHERE ri.company_id =
+                    r.company_id
+
+                AND ri.return_id =
+                    r.id
+            ) return_items
+              ON TRUE
+
+            WHERE r.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR r.branch_id =
+                   $2::uuid
+              )
+
+              AND (
+                $3::uuid IS NULL
+                OR r.created_by =
+                   $3::uuid
+              )
+
+              AND r.created_at >=
+                  $4::date
+
+              AND r.created_at <
+                  (
+                    $5::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND r.status IN (
+                'completed',
+                'pending_review'
+              )
+          ),
+
+          exchange_events AS (
+            SELECT
+              e.created_at::date
+                AS event_date,
+
+              e.branch_id,
+
+              e.created_by
+                AS cashier_id,
+
+              0::int
+                AS sales_count,
+
+              0::int
+                AS voided_sales_count,
+
+              0::int
+                AS pending_review_sales_count,
+
+              0::numeric
+                AS gross_sales,
+
+              0::numeric
+                AS sold_quantity,
+
+              0::int
+                AS returns_count,
+
+              0::numeric
+                AS return_refunds,
+
+              0::numeric
+                AS returned_quantity,
+
+              1::int
+                AS exchanges_count,
+
+              e.returned_total
+                AS exchange_returned_total,
+
+              e.issued_total
+                AS exchange_issued_total,
+
+              (
+                e.issued_total -
+                e.returned_total
+              )
+                AS exchange_net,
+
+              COALESCE(
+                returned_items
+                  .returned_quantity,
+                0
+              )
+                AS exchange_returned_quantity,
+
+              COALESCE(
+                issued_items
+                  .issued_quantity,
+                0
+              )
+                AS exchange_issued_quantity
+
+            FROM exchanges e
+
+            LEFT JOIN LATERAL (
+              SELECT
+                COALESCE(
+                  SUM(
+                    eri.quantity
+                  ),
+                  0
+                )
+                  AS returned_quantity
+
+              FROM exchange_return_items
+                   eri
+
+              WHERE eri.company_id =
+                    e.company_id
+
+                AND eri.exchange_id =
+                    e.id
+            ) returned_items
+              ON TRUE
+
+            LEFT JOIN LATERAL (
+              SELECT
+                COALESCE(
+                  SUM(
+                    eii.quantity
+                  ),
+                  0
+                )
+                  AS issued_quantity
+
+              FROM exchange_issue_items
+                   eii
+
+              WHERE eii.company_id =
+                    e.company_id
+
+                AND eii.exchange_id =
+                    e.id
+            ) issued_items
+              ON TRUE
+
+            WHERE e.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR e.branch_id =
+                   $2::uuid
+              )
+
+              AND (
+                $3::uuid IS NULL
+                OR e.created_by =
+                   $3::uuid
+              )
+
+              AND e.created_at >=
+                  $4::date
+
+              AND e.created_at <
+                  (
+                    $5::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND e.status IN (
+                'completed',
+                'pending_review'
+              )
+          ),
+
+          report_events AS (
+            SELECT *
+            FROM sale_events
+
+            UNION ALL
+
+            SELECT *
+            FROM return_events
+
+            UNION ALL
+
+            SELECT *
+            FROM exchange_events
+          ),
+
+          grouped AS (
+            SELECT
+              event_date,
+              branch_id,
+              cashier_id,
+
+              GROUPING(
+                event_date
+              )::int
+                AS grouped_date,
+
+              GROUPING(
+                branch_id
+              )::int
+                AS grouped_branch,
+
+              GROUPING(
+                cashier_id
+              )::int
+                AS grouped_cashier,
+
+              COALESCE(
+                SUM(sales_count),
+                0
+              )::int
+                AS sales_count,
+
+              COALESCE(
+                SUM(
+                  voided_sales_count
+                ),
+                0
+              )::int
+                AS voided_sales_count,
+
+              COALESCE(
+                SUM(
+                  pending_review_sales_count
+                ),
+                0
+              )::int
+                AS pending_review_sales_count,
+
+              COALESCE(
+                SUM(gross_sales),
+                0
+              )
+                AS gross_sales,
+
+              COALESCE(
+                SUM(sold_quantity),
+                0
+              )
+                AS sold_quantity,
+
+              COALESCE(
+                SUM(returns_count),
+                0
+              )::int
+                AS returns_count,
+
+              COALESCE(
+                SUM(return_refunds),
+                0
+              )
+                AS return_refunds,
+
+              COALESCE(
+                SUM(
+                  returned_quantity
+                ),
+                0
+              )
+                AS returned_quantity,
+
+              COALESCE(
+                SUM(
+                  exchanges_count
+                ),
+                0
+              )::int
+                AS exchanges_count,
+
+              COALESCE(
+                SUM(
+                  exchange_returned_total
+                ),
+                0
+              )
+                AS exchange_returned_total,
+
+              COALESCE(
+                SUM(
+                  exchange_issued_total
+                ),
+                0
+              )
+                AS exchange_issued_total,
+
+              COALESCE(
+                SUM(exchange_net),
+                0
+              )
+                AS exchange_net,
+
+              COALESCE(
+                SUM(
+                  exchange_returned_quantity
+                ),
+                0
+              )
+                AS exchange_returned_quantity,
+
+              COALESCE(
+                SUM(
+                  exchange_issued_quantity
+                ),
+                0
+              )
+                AS exchange_issued_quantity
+
+            FROM report_events
+
+            GROUP BY GROUPING SETS (
+              (),
+              (event_date),
+              (branch_id),
+              (cashier_id)
+            )
+          )
+
+          SELECT
+            CASE
+              WHEN grouped_date = 1
+               AND grouped_branch = 1
+               AND grouped_cashier = 1
+              THEN 'summary'
+
+              WHEN grouped_date = 0
+              THEN 'day'
+
+              WHEN grouped_branch = 0
+              THEN 'branch'
+
+              ELSE 'cashier'
+            END
+              AS group_type,
+
+            CASE
+              WHEN grouped_date = 0
+              THEN TO_CHAR(
+                event_date,
+                'YYYY-MM-DD'
+              )
+              ELSE NULL
+            END
+              AS period_date,
+
+            g.branch_id,
+            b.code
+              AS branch_code,
+            b.name
+              AS branch_name,
+
+            g.cashier_id,
+
+            cashier.full_name
+              AS cashier_name,
+
+            cashier.username
+              AS cashier_username,
+
+            g.sales_count,
+            g.voided_sales_count,
+            g.pending_review_sales_count,
+
+            g.gross_sales,
+            g.sold_quantity,
+
+            g.returns_count,
+            g.return_refunds,
+            g.returned_quantity,
+
+            g.exchanges_count,
+            g.exchange_returned_total,
+            g.exchange_issued_total,
+            g.exchange_net,
+
+            g.exchange_returned_quantity,
+            g.exchange_issued_quantity,
+
+            (
+              g.gross_sales -
+              g.return_refunds +
+              g.exchange_net
+            )
+              AS net_revenue,
+
+            CASE
+              WHEN g.sales_count > 0
+              THEN ROUND(
+                g.gross_sales /
+                g.sales_count,
+                2
+              )
+              ELSE 0
+            END
+              AS average_sale_value
+
+          FROM grouped g
+
+          LEFT JOIN branches b
+            ON b.company_id = $1
+            AND b.id =
+                g.branch_id
+
+          LEFT JOIN users cashier
+            ON cashier.company_id =
+               $1
+
+            AND cashier.id =
+                g.cashier_id;
+          `,
+        [auth.companyId, branchId || null, cashierId || null, dateFrom, dateTo],
+      )
+
+      function mapMetrics(row: Record<string, unknown> | undefined) {
+        return {
+          salesCount: Number(row?.sales_count ?? 0),
+
+          voidedSalesCount: Number(row?.voided_sales_count ?? 0),
+
+          pendingReviewSalesCount: Number(row?.pending_review_sales_count ?? 0),
+
+          grossSales: String(row?.gross_sales ?? '0'),
+
+          soldQuantity: String(row?.sold_quantity ?? '0'),
+
+          returnsCount: Number(row?.returns_count ?? 0),
+
+          returnRefunds: String(row?.return_refunds ?? '0'),
+
+          returnedQuantity: String(row?.returned_quantity ?? '0'),
+
+          exchangesCount: Number(row?.exchanges_count ?? 0),
+
+          exchangeReturnedTotal: String(row?.exchange_returned_total ?? '0'),
+
+          exchangeIssuedTotal: String(row?.exchange_issued_total ?? '0'),
+
+          exchangeNet: String(row?.exchange_net ?? '0'),
+
+          exchangeReturnedQuantity: String(
+            row?.exchange_returned_quantity ?? '0',
+          ),
+
+          exchangeIssuedQuantity: String(row?.exchange_issued_quantity ?? '0'),
+
+          netRevenue: String(row?.net_revenue ?? '0'),
+
+          averageSaleValue: String(row?.average_sale_value ?? '0'),
+        }
+      }
+
+      const rows = result.rows as Array<Record<string, unknown>>
+
+      const summaryRow = rows.find((row) => row.group_type === 'summary')
+
+      const byDay = rows
+        .filter((row) => row.group_type === 'day')
+        .map((row) => ({
+          date: String(row.period_date ?? ''),
+
+          ...mapMetrics(row),
+        }))
+        .sort((first, second) => first.date.localeCompare(second.date))
+
+      const byBranch = rows
+        .filter((row) => row.group_type === 'branch')
+        .map((row) => ({
+          branchId: String(row.branch_id ?? ''),
+
+          branchCode:
+            typeof row.branch_code === 'string' ? row.branch_code : null,
+
+          branchName:
+            typeof row.branch_name === 'string'
+              ? row.branch_name
+              : 'Unknown branch',
+
+          ...mapMetrics(row),
+        }))
+        .sort((first, second) =>
+          first.branchName.localeCompare(second.branchName),
+        )
+
+      const byCashier = rows
+        .filter((row) => row.group_type === 'cashier')
+        .map((row) => ({
+          cashierId: typeof row.cashier_id === 'string' ? row.cashier_id : null,
+
+          cashierName:
+            typeof row.cashier_name === 'string'
+              ? row.cashier_name
+              : 'Unknown or deleted user',
+
+          cashierUsername:
+            typeof row.cashier_username === 'string'
+              ? row.cashier_username
+              : null,
+
+          ...mapMetrics(row),
+        }))
+        .sort((first, second) =>
+          first.cashierName.localeCompare(second.cashierName),
+        )
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+
+            branchId: branchId || null,
+
+            cashierId: cashierId || null,
+
+            dateFrom,
+            dateTo,
+
+            days: reportDays,
+          },
+
+          definitions: {
+            activeSaleStatuses: ['completed', 'pending_review', 'refunded'],
+
+            activeReturnStatuses: ['completed', 'pending_review'],
+
+            activeExchangeStatuses: ['completed', 'pending_review'],
+
+            netRevenueFormula: 'grossSales - returnRefunds + exchangeNet',
+          },
+
+          summary: mapMetrics(summaryRow),
+
+          byDay,
+          byBranch,
+          byCashier,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
 // GET /api/reports/cashier-shifts
 //
 // يعرض سجل الورديات وSnapshot التسوية المحفوظة.
