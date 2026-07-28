@@ -223,6 +223,10 @@ function SalesPerformancePage() {
     setLoading(true)
     setError('')
 
+    // منع عرض أرقام التقرير السابق
+    // أثناء تطبيق فترة أو فلاتر جديدة.
+    setReport(null)
+
     try {
       // الطلب غير المفلتر يوفر خيارات
       // الفروع والكاشير المتاحة للفترة.
@@ -255,9 +259,33 @@ function SalesPerformancePage() {
     }
   }
 
-  function clearFilters() {
+  async function clearFilters() {
     setBranchId('')
     setCashierId('')
+
+    setLoading(true)
+    setError('')
+    setReport(null)
+
+    try {
+      const response = await requestJson<ApiResponse<SalesPerformanceReport>>(
+        buildReportUrl('', ''),
+      )
+
+      setBranchOptions(response.data.byBranch)
+
+      setCashierOptions(response.data.byCashier)
+
+      setReport(response.data)
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر إعادة تحميل تقرير المبيعات.',
+      )
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -358,7 +386,7 @@ function SalesPerformancePage() {
             type="button"
             className="table-button"
             disabled={loading || (!branchId && !cashierId)}
-            onClick={clearFilters}
+            onClick={() => void clearFilters()}
           >
             مسح فلتر الفرع والكاشير
           </button>
