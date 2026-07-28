@@ -22,6 +22,7 @@ import RolesPage from './pages/RolesPage'
 import CashierShiftsPage from './pages/CashierShiftsPage'
 import SalesPerformancePage from './pages/SalesPerformancePage'
 import ProductPerformancePage from './pages/ProductPerformancePage'
+import InventoryShortagesPage from './pages/InventoryShortagesPage'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from './lib/http'
 
@@ -46,6 +47,7 @@ type PageName =
   | 'cashier-shifts'
   | 'sales-performance'
   | 'product-performance'
+  | 'inventory-shortages'
 
 // ======================================================
 // صفحات لوحة الإدارة.
@@ -198,6 +200,12 @@ const pageDefinitions: Array<{
     label: 'أداء الأصناف',
     icon: '▤',
     permission: 'reports.view',
+  },
+  {
+    name: 'inventory-shortages',
+    label: 'نواقص المخزون',
+    icon: '⚠',
+    permission: 'inventory.view',
   },
   {
     name: 'customers',
@@ -925,6 +933,10 @@ function App() {
           {activePage === 'cashier-shifts' ? <CashierShiftsPage /> : null}
 
           {activePage === 'sales-performance' ? <SalesPerformancePage /> : null}
+
+          {activePage === 'inventory-shortages' ? (
+            <InventoryShortagesPage />
+          ) : null}
 
           {activePage === 'product-performance' ? (
             <ProductPerformancePage />

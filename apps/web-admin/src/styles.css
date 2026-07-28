@@ -3307,3 +3307,175 @@ body {
     grid-column: 1 / -1;
   }
 }
+
+/* ======================================================
+   Inventory Shortages Report
+====================================================== */
+
+.shortage-filter-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.shortage-search-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.shortage-search-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.shortage-search-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.shortage-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.shortage-card-critical {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.shortage-card-critical strong {
+  color: #b91c1c;
+}
+
+.shortage-card-low {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.shortage-card-low strong {
+  color: #c2410c;
+}
+
+.shortage-card-order {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.shortage-card-order strong {
+  color: #1d4ed8;
+}
+
+.shortage-table-header {
+  margin-bottom: 18px;
+}
+
+.shortage-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 70px;
+  min-height: 29px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.shortage-status-critical {
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.shortage-status-low {
+  border: 1px solid #fed7aa;
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.shortage-status-healthy {
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.shortage-item-name {
+  display: flex;
+  min-width: 190px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shortage-item-name strong {
+  color: #0f172a;
+}
+
+.shortage-item-name span {
+  color: #334155;
+  font-weight: 700;
+}
+
+.shortage-item-name small {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.shortage-number-critical {
+  color: #b91c1c;
+  font-size: 15px;
+}
+
+.shortage-number-low {
+  color: #c2410c;
+  font-size: 15px;
+}
+
+.shortage-number-healthy {
+  color: #15803d;
+  font-size: 15px;
+}
+
+.shortage-order-quantity {
+  color: #1d4ed8;
+  font-size: 15px;
+}
+
+.shortage-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 20px;
+}
+
+@media (max-width: 1100px) {
+  .shortage-filter-grid,
+  .shortage-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .shortage-filter-grid,
+  .shortage-summary-grid,
+  .shortage-search-row {
+    grid-template-columns: 1fr;
+  }
+
+  .shortage-search-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .shortage-search-actions button {
+    width: 100%;
+  }
+
+  .shortage-pagination {
+    align-items: stretch;
+    flex-direction: column;
+    text-align: center;
+  }
+}
