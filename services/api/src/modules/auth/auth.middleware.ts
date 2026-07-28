@@ -702,6 +702,29 @@ export function requireBusinessPermission(
     return requirePermission('pos.sync.manage')(req, res, next)
   }
 
+  // ======================================================
+  // تقرير نواقص المخزون.
+  //
+  // هذا المسار فقط يسمح لصاحب inventory.view بالقراءة
+  // دون توسيع الصلاحية إلى بقية /api/reports.
+  // ======================================================
+  if (req.method === 'GET' && path === '/api/reports/inventory-shortages') {
+    const auth = getAuthContext(res)
+
+    const canReadInventoryShortages =
+      auth.roles.includes('admin') ||
+      auth.permissions.includes('inventory.view') ||
+      auth.permissions.includes('reports.view')
+
+    if (!canReadInventoryShortages) {
+      return res.status(403).json({
+        error: 'Permission required: inventory.view or reports.view',
+      })
+    }
+
+    return next()
+  }
+
   const rules = [
     {
       prefix: '/api/demo',

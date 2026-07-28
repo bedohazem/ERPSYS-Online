@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { requestJson } from '../lib/http'
 
@@ -189,6 +189,7 @@ function InventoryShortagesPage() {
   const [loading, setLoading] = useState(false)
 
   const [error, setError] = useState('')
+  const reportRequestIdRef = useRef(0)
 
   function buildReportUrl(
     requestedPage: number,
@@ -221,14 +222,21 @@ function InventoryShortagesPage() {
     selectedBranchId = branchId,
     selectedLocationId = stockLocationId,
   ) {
+    const requestId = reportRequestIdRef.current + 1
+
+    reportRequestIdRef.current = requestId
+
     setLoading(true)
     setError('')
-    setReport(null)
 
     try {
       const response = await requestJson<ApiResponse<InventoryShortageReport>>(
         buildReportUrl(requestedPage, selectedBranchId, selectedLocationId),
       )
+
+      if (requestId !== reportRequestIdRef.current) {
+        return
+      }
 
       setReport(response.data)
 
@@ -236,13 +244,19 @@ function InventoryShortagesPage() {
 
       setStockLocationId(response.data.filters.stockLocationId ?? '')
     } catch (currentError) {
+      if (requestId !== reportRequestIdRef.current) {
+        return
+      }
+
       setError(
         currentError instanceof Error
           ? currentError.message
           : 'تعذر تحميل تقرير نواقص المخزون.',
       )
     } finally {
-      setLoading(false)
+      if (requestId === reportRequestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -255,6 +269,10 @@ function InventoryShortagesPage() {
   }
 
   async function clearFilters() {
+    const requestId = reportRequestIdRef.current + 1
+
+    reportRequestIdRef.current = requestId
+
     setBranchId('')
     setStockLocationId('')
     setStatus('alerts')
@@ -263,7 +281,6 @@ function InventoryShortagesPage() {
 
     setLoading(true)
     setError('')
-    setReport(null)
 
     try {
       const response = await requestJson<ApiResponse<InventoryShortageReport>>(
@@ -276,17 +293,29 @@ function InventoryShortagesPage() {
           }).toString(),
       )
 
+      if (requestId !== reportRequestIdRef.current) {
+        return
+      }
+
       setReport(response.data)
 
       setBranchId(response.data.filters.branchId ?? '')
+
+      setStockLocationId(response.data.filters.stockLocationId ?? '')
     } catch (currentError) {
+      if (requestId !== reportRequestIdRef.current) {
+        return
+      }
+
       setError(
         currentError instanceof Error
           ? currentError.message
           : 'تعذر إعادة تحميل تقرير النواقص.',
       )
     } finally {
-      setLoading(false)
+      if (requestId === reportRequestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -296,7 +325,9 @@ function InventoryShortagesPage() {
 
   const branchSelectionLocked = report?.scope.branchSelectionLocked ?? true
 
-  const availableLocations = report?.stockLocationOptions ?? []
+  const availableLocations = (report?.stockLocationOptions ?? []).filter(
+    (location) => !branchId || location.branchId === branchId,
+  )
 
   const summary = report?.summary
 
