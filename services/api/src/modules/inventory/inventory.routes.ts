@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { db } from '../../db/pool'
-
+import { getAuthContext } from '../auth/auth.middleware'
 export const inventoryRouter = Router()
 
 // ======================================================
@@ -349,6 +349,665 @@ inventoryRouter.get('/api/inventory/stock-balances', async (req, res, next) => {
     res.json({ data: result.rows })
   } catch (error) {
     next(error)
+  }
+})
+
+// ======================================================
+// GET /api/inventory/reorder-rules
+//
+// قراءة حدود إعادة الطلب مع الرصيد الحالي.
+//
+// Query:
+// - stockLocationId?
+// - variantId?
+// - limit?
+//
+// مستخدم الفرع يرى أماكن فرعه فقط.
+// ======================================================
+inventoryRouter.get('/api/inventory/reorder-rules', async (req, res, next) => {
+  try {
+    const auth = getAuthContext(res)
+
+    const stockLocationId =
+      typeof req.query.stockLocationId === 'string'
+        ? req.query.stockLocationId.trim().toLowerCase()
+        : ''
+
+    if (stockLocationId && !isInventoryUuid(stockLocationId)) {
+      return res.status(400).json({
+        error: 'stockLocationId is invalid',
+      })
+    }
+
+    const variantId =
+      typeof req.query.variantId === 'string'
+        ? req.query.variantId.trim().toLowerCase()
+        : ''
+
+    if (variantId && !isInventoryUuid(variantId)) {
+      return res.status(400).json({
+        error: 'variantId is invalid',
+      })
+    }
+
+    const requestedLimit = Number(req.query.limit ?? 200)
+
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 500)
+      : 200
+
+    const result = await db.query(
+      `
+        WITH rule_rows AS (
+          SELECT
+            rule.id,
+            rule.company_id,
+            rule.stock_location_id,
+            rule.variant_id,
+
+            rule.reorder_point,
+            rule.safety_stock,
+            rule.reorder_quantity,
+            rule.is_active,
+
+            rule.created_by,
+            rule.updated_by,
+            rule.created_at,
+            rule.updated_at,
+
+            sl.branch_id,
+            branch.code AS branch_code,
+            branch.name AS branch_name,
+
+            sl.code AS stock_location_code,
+            sl.name AS stock_location_name,
+            sl.location_type,
+            sl.is_active AS stock_location_is_active,
+
+            pv.product_id,
+            pv.sku,
+            pv.primary_barcode,
+            pv.status AS variant_status,
+
+            product.name AS product_name,
+            product.status AS product_status,
+
+            size.name AS size_name,
+            color.name AS color_name,
+
+            category.name AS category_name,
+            brand.name AS brand_name,
+
+            COALESCE(
+              balance.quantity,
+              0
+            ) AS current_quantity
+
+          FROM inventory_reorder_rules rule
+
+          JOIN stock_locations sl
+            ON sl.company_id = rule.company_id
+            AND sl.id = rule.stock_location_id
+
+          LEFT JOIN branches branch
+            ON branch.company_id = sl.company_id
+            AND branch.id = sl.branch_id
+
+          JOIN product_variants pv
+            ON pv.company_id = rule.company_id
+            AND pv.id = rule.variant_id
+
+          JOIN products product
+            ON product.company_id = pv.company_id
+            AND product.id = pv.product_id
+
+          LEFT JOIN fashion_sizes size
+            ON size.company_id = pv.company_id
+            AND size.id = pv.size_id
+
+          LEFT JOIN fashion_colors color
+            ON color.company_id = pv.company_id
+            AND color.id = pv.color_id
+
+          LEFT JOIN product_categories category
+            ON category.company_id = product.company_id
+            AND category.id = product.category_id
+
+          LEFT JOIN brands brand
+            ON brand.company_id = product.company_id
+            AND brand.id = product.brand_id
+
+          LEFT JOIN stock_balances balance
+            ON balance.company_id = rule.company_id
+            AND balance.stock_location_id =
+                rule.stock_location_id
+            AND balance.variant_id =
+                rule.variant_id
+
+          WHERE rule.company_id = $1
+
+            AND (
+              $2::uuid IS NULL
+              OR sl.branch_id = $2::uuid
+            )
+
+            AND (
+              $3::uuid IS NULL
+              OR rule.stock_location_id = $3::uuid
+            )
+
+            AND (
+              $4::uuid IS NULL
+              OR rule.variant_id = $4::uuid
+            )
+        )
+
+        SELECT
+          rule_rows.*,
+
+          CASE
+            WHEN is_active = FALSE
+            THEN 'inactive'
+
+            WHEN current_quantity <= safety_stock
+            THEN 'critical'
+
+            WHEN current_quantity <= reorder_point
+            THEN 'low'
+
+            ELSE 'healthy'
+          END AS stock_status,
+
+          GREATEST(
+            reorder_point - current_quantity,
+            0
+          ) AS shortage_quantity,
+
+          CASE
+            WHEN is_active = TRUE
+             AND current_quantity <= reorder_point
+            THEN GREATEST(
+              reorder_quantity,
+              reorder_point - current_quantity
+            )
+
+            ELSE 0
+          END AS suggested_order_quantity
+
+        FROM rule_rows
+
+        ORDER BY
+          is_active DESC,
+
+          CASE
+            WHEN is_active = FALSE THEN 4
+            WHEN current_quantity <= safety_stock THEN 1
+            WHEN current_quantity <= reorder_point THEN 2
+            ELSE 3
+          END ASC,
+
+          GREATEST(
+            reorder_point - current_quantity,
+            0
+          ) DESC,
+
+          product_name ASC,
+          sku ASC,
+          stock_location_name ASC
+
+        LIMIT $5;
+        `,
+      [
+        auth.companyId,
+        auth.branchId,
+        stockLocationId || null,
+        variantId || null,
+        limit,
+      ],
+    )
+
+    return res.json({
+      data: result.rows.map((row) => ({
+        id: String(row.id),
+
+        companyId: String(row.company_id),
+
+        branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+        branchCode:
+          typeof row.branch_code === 'string' ? row.branch_code : null,
+
+        branchName:
+          typeof row.branch_name === 'string' ? row.branch_name : null,
+
+        stockLocationId: String(row.stock_location_id),
+
+        stockLocationCode: String(row.stock_location_code),
+
+        stockLocationName: String(row.stock_location_name),
+
+        stockLocationType: String(row.location_type),
+
+        stockLocationIsActive: Boolean(row.stock_location_is_active),
+
+        variantId: String(row.variant_id),
+
+        productId: String(row.product_id),
+
+        productName: String(row.product_name),
+
+        sku: String(row.sku),
+
+        primaryBarcode:
+          typeof row.primary_barcode === 'string' ? row.primary_barcode : null,
+
+        sizeName: typeof row.size_name === 'string' ? row.size_name : null,
+
+        colorName: typeof row.color_name === 'string' ? row.color_name : null,
+
+        categoryName:
+          typeof row.category_name === 'string' ? row.category_name : null,
+
+        brandName: typeof row.brand_name === 'string' ? row.brand_name : null,
+
+        productStatus: String(row.product_status),
+
+        variantStatus: String(row.variant_status),
+
+        reorderPoint: String(row.reorder_point),
+
+        safetyStock: String(row.safety_stock),
+
+        reorderQuantity: String(row.reorder_quantity),
+
+        currentQuantity: String(row.current_quantity),
+
+        shortageQuantity: String(row.shortage_quantity),
+
+        suggestedOrderQuantity: String(row.suggested_order_quantity),
+
+        stockStatus: String(row.stock_status),
+
+        isActive: Boolean(row.is_active),
+
+        createdBy: typeof row.created_by === 'string' ? row.created_by : null,
+
+        updatedBy: typeof row.updated_by === 'string' ? row.updated_by : null,
+
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      })),
+
+      meta: {
+        limit,
+        branchSelectionLocked: Boolean(auth.branchId),
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// ======================================================
+// PUT /api/inventory/reorder-rules
+//
+// إنشاء أو تحديث حد إعادة الطلب لنفس:
+// company + stock location + variant
+//
+// يحتاج inventory.adjust.
+// ======================================================
+inventoryRouter.put('/api/inventory/reorder-rules', async (req, res, next) => {
+  const client = await db.connect()
+
+  try {
+    const auth = getAuthContext(res)
+
+    const {
+      stockLocationId,
+      variantId,
+      reorderPoint,
+      safetyStock,
+      reorderQuantity,
+      isActive,
+    } = req.body
+
+    if (
+      typeof stockLocationId !== 'string' ||
+      !isInventoryUuid(stockLocationId.trim())
+    ) {
+      return res.status(400).json({
+        error: 'stockLocationId is invalid',
+      })
+    }
+
+    if (typeof variantId !== 'string' || !isInventoryUuid(variantId.trim())) {
+      return res.status(400).json({
+        error: 'variantId is invalid',
+      })
+    }
+
+    const numericReorderPoint = Number(reorderPoint)
+
+    const numericSafetyStock = Number(safetyStock ?? 0)
+
+    const numericReorderQuantity = Number(reorderQuantity ?? 0)
+
+    if (!Number.isFinite(numericReorderPoint) || numericReorderPoint < 0) {
+      return res.status(400).json({
+        error: 'reorderPoint must be zero or greater',
+      })
+    }
+
+    if (!Number.isFinite(numericSafetyStock) || numericSafetyStock < 0) {
+      return res.status(400).json({
+        error: 'safetyStock must be zero or greater',
+      })
+    }
+
+    if (
+      !Number.isFinite(numericReorderQuantity) ||
+      numericReorderQuantity < 0
+    ) {
+      return res.status(400).json({
+        error: 'reorderQuantity must be zero or greater',
+      })
+    }
+
+    if (numericSafetyStock > numericReorderPoint) {
+      return res.status(400).json({
+        error: 'safetyStock cannot exceed reorderPoint',
+      })
+    }
+
+    if (isActive !== undefined && typeof isActive !== 'boolean') {
+      return res.status(400).json({
+        error: 'isActive must be boolean',
+      })
+    }
+
+    const activeValue = typeof isActive === 'boolean' ? isActive : true
+
+    if (activeValue && numericReorderPoint <= 0) {
+      return res.status(400).json({
+        error: 'Active reorder rule must have a reorderPoint greater than zero',
+      })
+    }
+
+    await client.query('BEGIN')
+
+    const contextResult = await client.query(
+      `
+          SELECT
+            sl.id AS stock_location_id,
+            sl.branch_id,
+            sl.code AS stock_location_code,
+            sl.name AS stock_location_name,
+            sl.location_type,
+            sl.is_active AS stock_location_is_active,
+
+            pv.id AS variant_id,
+            pv.product_id,
+            pv.sku,
+            pv.primary_barcode,
+            pv.status AS variant_status,
+
+            product.name AS product_name,
+            product.status AS product_status,
+
+            size.name AS size_name,
+            color.name AS color_name
+
+          FROM stock_locations sl
+
+          JOIN product_variants pv
+            ON pv.company_id = sl.company_id
+            AND pv.id = $3
+
+          JOIN products product
+            ON product.company_id = pv.company_id
+            AND product.id = pv.product_id
+
+          LEFT JOIN fashion_sizes size
+            ON size.company_id = pv.company_id
+            AND size.id = pv.size_id
+
+          LEFT JOIN fashion_colors color
+            ON color.company_id = pv.company_id
+            AND color.id = pv.color_id
+
+          WHERE sl.company_id = $1
+            AND sl.id = $2
+
+            AND (
+              $4::uuid IS NULL
+              OR sl.branch_id = $4::uuid
+            )
+
+          LIMIT 1;
+          `,
+      [auth.companyId, stockLocationId.trim(), variantId.trim(), auth.branchId],
+    )
+
+    if ((contextResult.rowCount ?? 0) === 0) {
+      throw new InventoryApiError(
+        404,
+        'الصنف أو مكان التخزين غير موجود أو غير مسموح.',
+      )
+    }
+
+    const trustedContext = contextResult.rows[0]
+
+    if (
+      activeValue &&
+      (!trustedContext.stock_location_is_active ||
+        trustedContext.product_status !== 'active' ||
+        trustedContext.variant_status !== 'active')
+    ) {
+      throw new InventoryApiError(
+        409,
+        'لا يمكن تفعيل حد إعادة الطلب لصنف أو مكان تخزين غير نشط.',
+      )
+    }
+
+    const oldRuleResult = await client.query(
+      `
+          SELECT *
+
+          FROM inventory_reorder_rules
+
+          WHERE company_id = $1
+            AND stock_location_id = $2
+            AND variant_id = $3
+
+          FOR UPDATE;
+          `,
+      [auth.companyId, stockLocationId.trim(), variantId.trim()],
+    )
+
+    const oldRule = oldRuleResult.rows[0] ?? null
+
+    const ruleResult = await client.query(
+      `
+          INSERT INTO inventory_reorder_rules (
+            company_id,
+            stock_location_id,
+            variant_id,
+
+            reorder_point,
+            safety_stock,
+            reorder_quantity,
+
+            is_active,
+
+            created_by,
+            updated_by
+          )
+          VALUES (
+            $1, $2, $3,
+            $4, $5, $6,
+            $7,
+            $8, $8
+          )
+
+          ON CONFLICT (
+            company_id,
+            stock_location_id,
+            variant_id
+          )
+          DO UPDATE SET
+            reorder_point =
+              EXCLUDED.reorder_point,
+
+            safety_stock =
+              EXCLUDED.safety_stock,
+
+            reorder_quantity =
+              EXCLUDED.reorder_quantity,
+
+            is_active =
+              EXCLUDED.is_active,
+
+            updated_by =
+              EXCLUDED.updated_by,
+
+            updated_at = NOW()
+
+          RETURNING *;
+          `,
+      [
+        auth.companyId,
+        stockLocationId.trim(),
+        variantId.trim(),
+
+        numericReorderPoint,
+        numericSafetyStock,
+        numericReorderQuantity,
+
+        activeValue,
+
+        auth.userId,
+      ],
+    )
+
+    const savedRule = ruleResult.rows[0]
+
+    await client.query(
+      `
+        INSERT INTO audit_logs (
+          company_id,
+          branch_id,
+          user_id,
+
+          action,
+          entity_type,
+          entity_id,
+
+          old_data,
+          new_data,
+
+          ip_address,
+          user_agent
+        )
+        VALUES (
+          $1, $2, $3,
+          $4,
+          'inventory_reorder_rule',
+          $5,
+          $6::jsonb,
+          $7::jsonb,
+          $8,
+          $9
+        );
+        `,
+      [
+        auth.companyId,
+        trustedContext.branch_id,
+        auth.userId,
+
+        oldRule
+          ? 'inventory.reorder_rule.updated'
+          : 'inventory.reorder_rule.created',
+
+        savedRule.id,
+
+        oldRule ? JSON.stringify(oldRule) : null,
+
+        JSON.stringify(savedRule),
+
+        req.ip || null,
+        req.get('user-agent') || null,
+      ],
+    )
+
+    await client.query('COMMIT')
+
+    return res.status(oldRule ? 200 : 201).json({
+      data: {
+        rule: {
+          id: String(savedRule.id),
+
+          companyId: String(savedRule.company_id),
+
+          stockLocationId: String(savedRule.stock_location_id),
+
+          variantId: String(savedRule.variant_id),
+
+          reorderPoint: String(savedRule.reorder_point),
+
+          safetyStock: String(savedRule.safety_stock),
+
+          reorderQuantity: String(savedRule.reorder_quantity),
+
+          isActive: Boolean(savedRule.is_active),
+
+          createdBy: savedRule.created_by,
+
+          updatedBy: savedRule.updated_by,
+
+          createdAt: savedRule.created_at,
+
+          updatedAt: savedRule.updated_at,
+        },
+
+        item: {
+          branchId: trustedContext.branch_id,
+
+          stockLocationId: trustedContext.stock_location_id,
+
+          stockLocationCode: trustedContext.stock_location_code,
+
+          stockLocationName: trustedContext.stock_location_name,
+
+          stockLocationType: trustedContext.location_type,
+
+          variantId: trustedContext.variant_id,
+
+          productId: trustedContext.product_id,
+
+          productName: trustedContext.product_name,
+
+          sku: trustedContext.sku,
+
+          primaryBarcode: trustedContext.primary_barcode,
+
+          sizeName: trustedContext.size_name,
+
+          colorName: trustedContext.color_name,
+        },
+      },
+    })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+
+    if (error instanceof InventoryApiError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+      })
+    }
+
+    return next(error)
+  } finally {
+    client.release()
   }
 })
 
