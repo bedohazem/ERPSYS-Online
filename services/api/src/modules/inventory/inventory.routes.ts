@@ -30,34 +30,32 @@ function isInventoryUuid(value: string) {
 // ======================================================
 inventoryRouter.get('/api/inventory/lookup-item', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
-    const stockLocationId = req.query.stockLocationId
-    const code = req.query.code
+    const auth = getAuthContext(res)
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
+    const stockLocationId =
+      typeof req.query.stockLocationId === 'string'
+        ? req.query.stockLocationId.trim().toLowerCase()
+        : ''
 
-    if (
-      typeof stockLocationId !== 'string' ||
-      !isInventoryUuid(stockLocationId.trim())
-    ) {
+    const code = typeof req.query.code === 'string' ? req.query.code.trim() : ''
+
+    if (!stockLocationId || !isInventoryUuid(stockLocationId)) {
       return res.status(400).json({
         error: 'stockLocationId is invalid',
       })
     }
 
-    if (typeof code !== 'string' || !code.trim()) {
+    if (!code) {
       return res.status(400).json({
         error: 'code query parameter is required',
       })
     }
 
-    const selectedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+    if (code.length > 120) {
+      return res.status(400).json({
+        error: 'code cannot exceed 120 characters',
+      })
+    }
 
     const result = await db.query(
       `
@@ -67,34 +65,45 @@ inventoryRouter.get('/api/inventory/lookup-item', async (req, res, next) => {
           p.name AS product_name,
           pv.sku,
           pv.primary_barcode,
+
           fs.name AS size_name,
           fc.name AS color_name,
+
           pv.cost_price,
           pv.selling_price,
-          COALESCE(sb.quantity, 0) AS current_quantity,
+
+          COALESCE(
+            sb.quantity,
+            0
+          ) AS current_quantity,
+
           sl.id AS stock_location_id,
           sl.name AS stock_location_name,
           sl.code AS stock_location_code
+
         FROM product_variants pv
 
         JOIN products p
-          ON p.id = pv.product_id
-          AND p.company_id = pv.company_id
+          ON p.company_id = pv.company_id
+          AND p.id = pv.product_id
+          AND p.status = 'active'
 
         JOIN stock_locations sl
-          ON sl.id = $2
-          AND sl.company_id = pv.company_id
+          ON sl.company_id = pv.company_id
+          AND sl.id = $2
           AND sl.is_active = TRUE
 
         LEFT JOIN fashion_sizes fs
-          ON fs.id = pv.size_id
+          ON fs.company_id = pv.company_id
+          AND fs.id = pv.size_id
 
         LEFT JOIN fashion_colors fc
-          ON fc.id = pv.color_id
+          ON fc.company_id = pv.company_id
+          AND fc.id = pv.color_id
 
         LEFT JOIN variant_barcodes vb
-          ON vb.variant_id = pv.id
-          AND vb.company_id = pv.company_id
+          ON vb.company_id = pv.company_id
+          AND vb.variant_id = pv.id
 
         LEFT JOIN stock_balances sb
           ON sb.company_id = pv.company_id
@@ -104,7 +113,8 @@ inventoryRouter.get('/api/inventory/lookup-item', async (req, res, next) => {
         WHERE pv.company_id = $1
           AND pv.status = 'active'
 
-          -- مستخدم الفرع لا يستطيع اختيار مخزن فرع آخر.
+          -- مستخدم الفرع لا يستطيع الوصول إلى
+          -- مخزن فرع آخر أو مخزن مركزي.
           AND (
             $4::uuid IS NULL
             OR sl.branch_id = $4::uuid
@@ -117,8 +127,8 @@ inventoryRouter.get('/api/inventory/lookup-item', async (req, res, next) => {
           )
 
         LIMIT 1;
-        `,
-      [companyId.trim(), stockLocationId.trim(), code.trim(), selectedBranchId],
+      `,
+      [auth.companyId, stockLocationId, code, auth.branchId],
     )
 
     if ((result.rowCount ?? 0) === 0) {

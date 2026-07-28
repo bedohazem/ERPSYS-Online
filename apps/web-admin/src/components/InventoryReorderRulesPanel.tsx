@@ -426,7 +426,28 @@ function InventoryReorderRulesPanel({
       )
 
       if (existingRule) {
-        selectRule(existingRule)
+        setSelectedRuleId(existingRule.id)
+        setSelectedLocationId(existingRule.stockLocationId)
+
+        setItemCode(existingRule.primaryBarcode || existingRule.sku)
+
+        setSelectedItem({
+          variantId: existingRule.variantId,
+          productId: existingRule.productId,
+          productName: existingRule.productName,
+          sku: existingRule.sku,
+          primaryBarcode: existingRule.primaryBarcode,
+          sizeName: existingRule.sizeName,
+          colorName: existingRule.colorName,
+          currentQuantity: existingRule.currentQuantity,
+        })
+
+        setReorderPoint(existingRule.reorderPoint)
+        setSafetyStock(existingRule.safetyStock)
+        setReorderQuantity(existingRule.reorderQuantity)
+        setRuleIsActive(existingRule.isActive)
+
+        setRuleError('')
 
         setRuleSuccess('تم العثور على قاعدة موجودة لهذا الصنف والمخزن.')
 
