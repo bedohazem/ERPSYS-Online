@@ -127,7 +127,20 @@
   - Authenticated branch restriction
   - Web Admin summary, chart and detailed tables
   - 🧪 Final integrated acceptance test pending
-- Stock shortages
+- ✅ Inventory reorder rules and shortage alerts — implementation completed
+  - Reorder point per product variant and stock location
+  - Safety stock and fixed reorder quantity
+  - Critical, low and healthy stock classification
+  - Suggested purchase quantities
+  - PostgreSQL current-stock integration
+  - Company, branch and stock-location isolation
+  - Secure SKU and barcode lookup
+  - Transactional audit logging
+  - Web Admin shortage report
+  - Web Admin reorder-rule management
+  - Search, filters and pagination
+  - Cancellation-safe asynchronous lookup
+  - 🧪 Final integrated acceptance test pending
 - Profits
 - Returns
 - Transfers
@@ -157,3 +170,4 @@
 - [Return Management](./features/returns.md)
 - [Sales Performance Analytics](./features/sales-performance.md)
 - [Product Performance Analytics](./features/product-performance.md)
+- [Inventory Reorder Rules and Shortage Alerts](./features/inventory-reorder-and-shortages.md)

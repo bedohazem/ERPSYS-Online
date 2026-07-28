@@ -71,3 +71,4 @@ Fashion Retail ERP/POS.
 - [Return Management](./docs/features/returns.md)
 - [Sales Performance Analytics](./docs/features/sales-performance.md)
 - [Product Performance Analytics](./docs/features/product-performance.md)
+- [Inventory Reorder Rules and Shortage Alerts](./docs/features/inventory-reorder-and-shortages.md)
