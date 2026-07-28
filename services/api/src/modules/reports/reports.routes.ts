@@ -1259,6 +1259,31 @@ reportsRouter.get(
         }
       }
 
+      const branchOptionsResult = await db.query(
+        `
+        SELECT
+          id,
+          code,
+          name,
+          is_active
+
+        FROM branches
+
+        WHERE company_id = $1
+
+          AND (
+            $2::uuid IS NULL
+            OR id = $2::uuid
+          )
+
+        ORDER BY
+          is_active DESC,
+          name ASC,
+          code ASC;
+        `,
+        [auth.companyId, auth.branchId || null],
+      )
+
       const baseQueryValues = [
         auth.companyId,
         branchId || null,
@@ -2008,6 +2033,13 @@ reportsRouter.get(
 
             salesBasis: 'Gross sale item quantities before returns',
           },
+
+          branchOptions: branchOptionsResult.rows.map((row) => ({
+            id: String(row.id),
+            code: String(row.code),
+            name: String(row.name),
+            isActive: Boolean(row.is_active),
+          })),
 
           summary: {
             salesCount: Number(summaryRow?.sales_count ?? 0),

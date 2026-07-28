@@ -21,6 +21,7 @@ import UsersPage from './pages/UsersPage'
 import RolesPage from './pages/RolesPage'
 import CashierShiftsPage from './pages/CashierShiftsPage'
 import SalesPerformancePage from './pages/SalesPerformancePage'
+import ProductPerformancePage from './pages/ProductPerformancePage'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from './lib/http'
 
@@ -44,6 +45,7 @@ type PageName =
   | 'exchanges'
   | 'cashier-shifts'
   | 'sales-performance'
+  | 'product-performance'
 
 // ======================================================
 // صفحات لوحة الإدارة.
@@ -189,6 +191,12 @@ const pageDefinitions: Array<{
     name: 'sales-performance',
     label: 'تقارير المبيعات',
     icon: '▥',
+    permission: 'reports.view',
+  },
+  {
+    name: 'product-performance',
+    label: 'أداء الأصناف',
+    icon: '▤',
     permission: 'reports.view',
   },
   {
@@ -917,6 +925,10 @@ function App() {
           {activePage === 'cashier-shifts' ? <CashierShiftsPage /> : null}
 
           {activePage === 'sales-performance' ? <SalesPerformancePage /> : null}
+
+          {activePage === 'product-performance' ? (
+            <ProductPerformancePage />
+          ) : null}
 
           {activePage === 'users' ? <UsersPage /> : null}
 
