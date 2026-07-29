@@ -1253,11 +1253,76 @@ inventoryStockCountsRouter.post(
         [auth.companyId, stockCountId, stockCount.stock_location_id],
       )
 
-      // اختفاء أي صف رصيد بعد فتح الجرد يعتبر تعارضًا.
+      // اختفاء أي صف رصيد كان موجودًا في الـSnapshot يعتبر تعارضًا.
       if ((balancesResult.rowCount ?? 0) !== (itemsResult.rowCount ?? 0)) {
         throw new InventoryStockCountError(
           409,
           'بعض أرصدة الأصناف تغيرت أو لم تعد موجودة منذ فتح الجرد.',
+        )
+      }
+
+      // الجرد لا يجب أن يعتمد لو ظهر صنف نشط جديد في نفس المكان
+      // بعد فتح الجلسة؛ لأنه لم يكن موجودًا داخل الـSnapshot الأصلي.
+      //
+      // نقفل الأرصدة الجديدة أيضًا حتى لا تتغير أثناء فحص الاعتماد.
+      const unexpectedBalancesResult = await client.query(
+        `
+    SELECT
+      balance.id,
+      balance.variant_id,
+      balance.quantity
+
+    FROM stock_balances balance
+
+    JOIN product_variants variant
+      ON variant.company_id =
+         balance.company_id
+
+      AND variant.id =
+          balance.variant_id
+
+      AND variant.status = 'active'
+
+    JOIN products product
+      ON product.company_id =
+         variant.company_id
+
+      AND product.id =
+          variant.product_id
+
+      AND product.status = 'active'
+
+    LEFT JOIN inventory_stock_count_items item
+      ON item.company_id =
+         balance.company_id
+
+      AND item.stock_count_id = $2
+
+      AND item.variant_id =
+          balance.variant_id
+
+    WHERE balance.company_id = $1
+      AND balance.stock_location_id = $3
+
+      -- صفوف الرصيد بصفر لا تمثل مخزونًا جديدًا فعليًا.
+      AND balance.quantity <> 0
+
+      -- عدم وجود الصنف في Snapshot يعني أنه ظهر بعد فتح الجرد.
+      AND item.id IS NULL
+
+    ORDER BY balance.variant_id
+
+    FOR UPDATE OF balance;
+  `,
+        [auth.companyId, stockCountId, stockCount.stock_location_id],
+      )
+
+      if ((unexpectedBalancesResult.rowCount ?? 0) > 0) {
+        throw new InventoryStockCountError(
+          409,
+          `ظهر رصيد جديد لعدد ${
+            unexpectedBalancesResult.rowCount ?? 0
+          } صنف منذ فتح الجرد. ألغِ الجلسة وافتح جردًا جديدًا.`,
         )
       }
 

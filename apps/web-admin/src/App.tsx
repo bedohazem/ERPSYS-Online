@@ -24,6 +24,7 @@ import CashierShiftsPage from './pages/CashierShiftsPage'
 import SalesPerformancePage from './pages/SalesPerformancePage'
 import ProductPerformancePage from './pages/ProductPerformancePage'
 import InventoryShortagesPage from './pages/InventoryShortagesPage'
+import InventoryConditionsPage from './pages/InventoryConditionsPage'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from './lib/http'
 
@@ -35,6 +36,7 @@ type PageName =
   | 'returns'
   | 'inventory'
   | 'stock-counts'
+  | 'inventory-conditions'
   | 'transfers'
   | 'purchases'
   | 'purchase-orders'
@@ -139,6 +141,12 @@ const pageDefinitions: Array<{
     name: 'stock-counts',
     label: 'جرد المخزون',
     icon: '✓',
+    permission: 'inventory.view',
+  },
+  {
+    name: 'inventory-conditions',
+    label: 'التالف وتحت الفحص',
+    icon: '⚠',
     permission: 'inventory.view',
   },
   {
@@ -916,6 +924,12 @@ function App() {
 
           {activePage === 'stock-counts' ? (
             <StockCountsPage companyId={companyId} branchId={branchId} />
+          ) : null}
+
+          {activePage === 'inventory-conditions' ? (
+            <InventoryConditionsPage
+              onOpenTransfers={() => navigateToPage('transfers')}
+            />
           ) : null}
 
           {activePage === 'transfers' ? (

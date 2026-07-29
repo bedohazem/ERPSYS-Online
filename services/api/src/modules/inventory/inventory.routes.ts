@@ -308,57 +308,298 @@ inventoryRouter.get(
   },
 )
 
+// ======================================================
+// GET /api/inventory/stock-balances
+//
+// يعرض أرصدة المخزون مع دعم:
+// - نوع مكان التخزين.
+// - مكان محدد.
+// - البحث بالاسم أو SKU أو الباركود.
+// - إخفاء الأرصدة الصفرية.
+// - ملخص مخزون التالف وتحت الفحص.
+//
+// الشركة والفرع يؤخذان من Session فقط.
+// ======================================================
 inventoryRouter.get('/api/inventory/stock-balances', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const auth = getAuthContext(res)
 
-    const selectedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+    const requestedLocationType =
+      typeof req.query.locationType === 'string'
+        ? req.query.locationType.trim().toLowerCase()
+        : ''
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res
-        .status(400)
-        .json({ error: 'companyId query parameter is required' })
+    const allowedLocationTypes = new Set([
+      'main_warehouse',
+      'branch_warehouse',
+      'sales_floor',
+      'returns',
+      'damaged',
+      'inspection',
+
+      // قيمة افتراضية تعني التالف وتحت الفحص معًا.
+      'condition',
+    ])
+
+    if (
+      requestedLocationType &&
+      !allowedLocationTypes.has(requestedLocationType)
+    ) {
+      return res.status(400).json({
+        error: 'locationType is invalid',
+      })
     }
+
+    const stockLocationId =
+      typeof req.query.stockLocationId === 'string'
+        ? req.query.stockLocationId.trim().toLowerCase()
+        : ''
+
+    if (stockLocationId && !isInventoryUuid(stockLocationId)) {
+      return res.status(400).json({
+        error: 'stockLocationId is invalid',
+      })
+    }
+
+    const search =
+      typeof req.query.search === 'string' ? req.query.search.trim() : ''
+
+    if (search.length > 120) {
+      return res.status(400).json({
+        error: 'search cannot exceed 120 characters',
+      })
+    }
+
+    const positiveOnly = req.query.positiveOnly === 'true'
+
+    const requestedLimit = Number(req.query.limit ?? 200)
+
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 500)
+      : 200
 
     const result = await db.query(
       `
-      SELECT
-        sb.id,
-        sb.company_id,
-        sb.branch_id,
-        sb.stock_location_id,
-        sl.name AS stock_location_name,
-        sl.code AS stock_location_code,
-        sl.location_type,
-        sb.variant_id,
-        pv.sku,
-        pv.primary_barcode,
-        p.name AS product_name,
-        fs.name AS size_name,
-        fc.name AS color_name,
-        sb.quantity,
-        sb.updated_at
-      FROM stock_balances sb
-      JOIN stock_locations sl ON sl.id = sb.stock_location_id
-      JOIN product_variants pv ON pv.id = sb.variant_id
-      JOIN products p ON p.id = pv.product_id
-      LEFT JOIN fashion_sizes fs ON fs.id = pv.size_id
-      LEFT JOIN fashion_colors fc ON fc.id = pv.color_id
-      WHERE sb.company_id = $1
-        AND (
-          $2::uuid IS NULL
-          OR sl.branch_id = $2::uuid
+        WITH filtered_balances AS (
+          SELECT
+            balance.id,
+            balance.company_id,
+            balance.branch_id,
+
+            branch.name AS branch_name,
+
+            balance.stock_location_id,
+
+            location.name AS stock_location_name,
+            location.code AS stock_location_code,
+            location.location_type,
+
+            balance.variant_id,
+
+            variant.sku,
+            variant.primary_barcode,
+
+            product.name AS product_name,
+
+            size.name AS size_name,
+            color.name AS color_name,
+
+            balance.quantity,
+            balance.updated_at
+
+          FROM stock_balances balance
+
+          JOIN stock_locations location
+            ON location.company_id =
+               balance.company_id
+
+            AND location.id =
+                balance.stock_location_id
+
+          JOIN product_variants variant
+            ON variant.company_id =
+               balance.company_id
+
+            AND variant.id =
+                balance.variant_id
+
+          JOIN products product
+            ON product.company_id =
+               variant.company_id
+
+            AND product.id =
+                variant.product_id
+
+          LEFT JOIN branches branch
+            ON branch.company_id =
+               location.company_id
+
+            AND branch.id =
+                location.branch_id
+
+          LEFT JOIN fashion_sizes size
+            ON size.company_id =
+               variant.company_id
+
+            AND size.id =
+                variant.size_id
+
+          LEFT JOIN fashion_colors color
+            ON color.company_id =
+               variant.company_id
+
+            AND color.id =
+                variant.color_id
+
+          WHERE balance.company_id = $1
+
+            -- مستخدم الفرع لا يرى أرصدة فرع آخر.
+            AND (
+              $2::uuid IS NULL
+              OR location.branch_id = $2
+            )
+
+            AND (
+              $3::text IS NULL
+
+              OR (
+                $3 = 'condition'
+                AND location.location_type
+                    IN ('damaged', 'inspection')
+              )
+
+              OR location.location_type = $3
+            )
+
+            AND (
+              $4::uuid IS NULL
+              OR location.id = $4
+            )
+
+            AND (
+              $5::boolean = FALSE
+              OR balance.quantity > 0
+            )
+
+            AND (
+              $6::text IS NULL
+
+              OR product.name ILIKE
+                 '%' || $6 || '%'
+
+              OR variant.sku ILIKE
+                 '%' || $6 || '%'
+
+              OR variant.primary_barcode ILIKE
+                 '%' || $6 || '%'
+
+              OR EXISTS (
+                SELECT 1
+
+                FROM variant_barcodes barcode
+
+                WHERE barcode.company_id =
+                      variant.company_id
+
+                  AND barcode.variant_id =
+                      variant.id
+
+                  AND barcode.barcode ILIKE
+                      '%' || $6 || '%'
+              )
+            )
         )
-      ORDER BY p.name ASC, pv.sku ASC, sl.name ASC;
+
+        SELECT
+          filtered_balances.*,
+
+          COUNT(*) OVER()::integer
+            AS filtered_count,
+
+          COALESCE(
+            SUM(quantity) OVER(),
+            0
+          ) AS filtered_quantity,
+
+          COALESCE(
+            SUM(quantity)
+              FILTER (
+                WHERE location_type = 'damaged'
+              )
+              OVER(),
+            0
+          ) AS damaged_quantity,
+
+          COALESCE(
+            SUM(quantity)
+              FILTER (
+                WHERE location_type = 'inspection'
+              )
+              OVER(),
+            0
+          ) AS inspection_quantity
+
+        FROM filtered_balances
+
+        ORDER BY
+          CASE
+            WHEN location_type = 'inspection' THEN 1
+            WHEN location_type = 'damaged' THEN 2
+            ELSE 3
+          END,
+
+          product_name ASC,
+          sku ASC,
+          stock_location_name ASC
+
+        LIMIT $7;
       `,
-      [companyId, selectedBranchId],
+      [
+        auth.companyId,
+        auth.branchId,
+        requestedLocationType || null,
+        stockLocationId || null,
+        positiveOnly,
+        search || null,
+        limit,
+      ],
     )
 
-    res.json({ data: result.rows })
+    const firstRow = result.rows[0]
+
+    const data = result.rows.map((row) => {
+      const {
+        filtered_count: _filteredCount,
+        filtered_quantity: _filteredQuantity,
+        damaged_quantity: _damagedQuantity,
+        inspection_quantity: _inspectionQuantity,
+        ...balance
+      } = row
+
+      return balance
+    })
+
+    return res.json({
+      data,
+
+      meta: {
+        limit,
+
+        filteredCount: firstRow ? Number(firstRow.filtered_count) : 0,
+
+        filteredQuantity: firstRow ? String(firstRow.filtered_quantity) : '0',
+
+        damagedQuantity: firstRow ? String(firstRow.damaged_quantity) : '0',
+
+        inspectionQuantity: firstRow
+          ? String(firstRow.inspection_quantity)
+          : '0',
+
+        branchSelectionLocked: Boolean(auth.branchId),
+      },
+    })
   } catch (error) {
-    next(error)
+    return next(error)
   }
 })
 
