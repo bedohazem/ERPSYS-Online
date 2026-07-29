@@ -31,6 +31,7 @@ import { customersRouter } from './modules/customers/customers.routes'
 import { returnsRouter } from './modules/returns/returns.routes'
 import { exchangesRouter } from './modules/exchanges/exchanges.routes'
 import { reportsRouter } from './modules/reports/reports.routes'
+import { inventoryAdjustmentsRouter } from './modules/inventory/inventory-adjustments.routes'
 // إدارة المستخدمين والأدوار والصلاحيات.
 import { accessRouter } from './modules/access/access.routes'
 
@@ -85,6 +86,7 @@ app.use(companiesRouter)
 app.use(branchesRouter)
 app.use(catalogRouter)
 app.use(inventoryRouter)
+app.use(inventoryAdjustmentsRouter)
 app.use(suppliersRouter)
 app.use(purchasesRouter)
 app.use(purchaseOrdersRouter)
