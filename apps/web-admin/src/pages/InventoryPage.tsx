@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
+import InventoryAdjustmentPanel from '../components/InventoryAdjustmentPanel'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from '../lib/http'
 
@@ -171,6 +172,7 @@ function translateInventoryReference(referenceType: string | null) {
     purchase: 'شراء',
     transfer: 'تحويل',
     adjustment: 'تسوية',
+    inventory_adjustment: 'تسوية مخزون',
     stock_count: 'جرد مخزون',
     damage: 'تالف',
   }
@@ -603,6 +605,15 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
                 : 'تسجيل الرصيد الافتتاحي'}
             </button>
           </div>
+
+          {canAdjustInventory ? (
+            <InventoryAdjustmentPanel
+              companyId={companyId}
+              stockLocations={stockLocations}
+              loadingLocations={loadingLocations}
+              onSaved={loadInventory}
+            />
+          ) : null}
 
           {openingItem ? (
             <article className="inventory-selected-item">
