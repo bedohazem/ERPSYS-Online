@@ -82,11 +82,6 @@ type ApiResponse<T> = {
   data: T
 }
 
-type TransfersPageProps = {
-  companyId: string
-  branchId: string
-}
-
 function createTransferNumber() {
   return `TRF-WEB-${Date.now()}`
 }
@@ -142,7 +137,7 @@ function getTransferStatusClass(status: string) {
   return `transfer-status transfer-status-${status.replace(/_/g, '-')}`
 }
 
-function TransfersPage({ companyId, branchId }: TransfersPageProps) {
+function TransfersPage() {
   const { user } = useAuth()
 
   const [locations, setLocations] = useState<TransferLocation[]>([])
@@ -246,12 +241,8 @@ function TransfersPage({ companyId, branchId }: TransfersPageProps) {
     setError('')
 
     try {
-      const url =
-        `/api/transfers/locations` +
-        `?companyId=${encodeURIComponent(companyId.trim())}` +
-        (branchId.trim()
-          ? `&branchId=${encodeURIComponent(branchId.trim())}`
-          : '')
+      // الشركة والفرع يتم فرضهما من Session داخل الـBackend.
+      const url = '/api/transfers/locations'
 
       const response = await requestJson<ApiResponse<TransferLocation[]>>(url)
 
@@ -302,14 +293,15 @@ function TransfersPage({ companyId, branchId }: TransfersPageProps) {
     setError('')
 
     try {
-      const url =
-        `/api/transfers` +
-        `?companyId=${encodeURIComponent(companyId.trim())}` +
-        (branchId.trim()
-          ? `&branchId=${encodeURIComponent(branchId.trim())}`
-          : '') +
-        (statusFilter ? `&status=${encodeURIComponent(statusFilter)}` : '') +
-        '&limit=100'
+      const query = new URLSearchParams({
+        limit: '100',
+      })
+
+      if (statusFilter) {
+        query.set('status', statusFilter)
+      }
+
+      const url = `/api/transfers?${query.toString()}`
 
       const response = await requestJson<ApiResponse<TransferSummary[]>>(url)
 
@@ -332,12 +324,7 @@ function TransfersPage({ companyId, branchId }: TransfersPageProps) {
     setError('')
 
     try {
-      const url =
-        `/api/transfers/${encodeURIComponent(transferId)}` +
-        `?companyId=${encodeURIComponent(companyId.trim())}` +
-        (branchId.trim()
-          ? `&branchId=${encodeURIComponent(branchId.trim())}`
-          : '')
+      const url = `/api/transfers/${encodeURIComponent(transferId)}`
 
       const response = await requestJson<ApiResponse<TransferDetails>>(url)
 
@@ -378,8 +365,7 @@ function TransfersPage({ companyId, branchId }: TransfersPageProps) {
 
       const url =
         `/api/transfers/lookup-item` +
-        `?companyId=${encodeURIComponent(companyId.trim())}` +
-        `&fromLocationId=${encodeURIComponent(fromLocationId)}` +
+        `?fromLocationId=${encodeURIComponent(fromLocationId)}` +
         `&code=${encodeURIComponent(code.trim())}`
 
       const response = await requestJson<ApiResponse<TransferLookupItem>>(url)
@@ -523,13 +509,13 @@ function TransfersPage({ companyId, branchId }: TransfersPageProps) {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            companyId: companyId.trim(),
-            branchId: branchId.trim() || null,
+            // الواجهة ترسل بيانات العملية فقط.
             transferNumber,
             idempotencyKey: transferIdempotencyKey,
             fromLocationId,
             toLocationId,
             note: transferNote.trim() || null,
+
             items: cartItems.map((item) => ({
               variantId: item.variantId,
               quantity: item.quantity,
@@ -611,20 +597,20 @@ function TransfersPage({ companyId, branchId }: TransfersPageProps) {
     setFromLocationId('')
     setToLocationId('')
 
-    if (!canCreateTransfer || !companyId.trim()) {
+    if (!canCreateTransfer) {
       return
     }
 
     void loadLocations()
-  }, [canCreateTransfer, companyId, branchId])
+  }, [canCreateTransfer])
 
   useEffect(() => {
-    if (!canAccessTransfers || !companyId.trim()) {
+    if (!canAccessTransfers) {
       return
     }
 
     void loadTransfers()
-  }, [canAccessTransfers, companyId, branchId, statusFilter])
+  }, [canAccessTransfers, statusFilter])
 
   useEffect(() => {
     setCartItems([])
@@ -638,18 +624,22 @@ function TransfersPage({ companyId, branchId }: TransfersPageProps) {
 
   const selectedSummary = selectedTransfer?.transfer
 
+  // الفرع المستخدم في إظهار الأزرار مصدره Session الحالية.
+  // الـBackend يعيد التحقق مرة أخرى ولا يعتمد على هذا الفحص وحده.
+  const sessionBranchId = user?.branchId || ''
+
   const userCanShipSelected =
     Boolean(selectedSummary) &&
     canShipTransfer &&
     (selectedSummary?.status === 'pending' ||
       selectedSummary?.status === 'approved') &&
-    (!branchId.trim() || selectedSummary?.from_branch_id === branchId.trim())
+    (!sessionBranchId || selectedSummary?.from_branch_id === sessionBranchId)
 
   const userCanReceiveSelected =
     Boolean(selectedSummary) &&
     canReceiveTransfer &&
     selectedSummary?.status === 'in_transit' &&
-    (!branchId.trim() || selectedSummary?.to_branch_id === branchId.trim())
+    (!sessionBranchId || selectedSummary?.to_branch_id === sessionBranchId)
 
   return (
     <>

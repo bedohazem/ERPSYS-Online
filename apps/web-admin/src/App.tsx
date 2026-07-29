@@ -1139,9 +1139,7 @@ function App() {
             />
           ) : null}
 
-          {activePage === 'transfers' ? (
-            <TransfersPage companyId={companyId} branchId={branchId} />
-          ) : null}
+          {activePage === 'transfers' ? <TransfersPage /> : null}
 
           {activePage === 'purchases' ? (
             <PurchasesPage companyId={companyId} branchId={branchId} />

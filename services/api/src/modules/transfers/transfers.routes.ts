@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { db } from '../../db/pool'
-
+// الشركة والفرع والمستخدم يتم تحميلهم من Session الموثقة.
+import { getAuthContext } from '../auth/auth.middleware'
 export const transfersRouter = Router()
 
 class TransferApiError extends Error {
@@ -93,18 +94,23 @@ async function loadTransferDetails(
 
     LEFT JOIN branches from_branch
       ON from_branch.id = t.from_branch_id
+      AND from_branch.company_id = t.company_id
 
     LEFT JOIN branches to_branch
       ON to_branch.id = t.to_branch_id
+      AND to_branch.company_id = t.company_id
 
     LEFT JOIN users requested_user
       ON requested_user.id = t.requested_by
+      AND requested_user.company_id = t.company_id
 
     LEFT JOIN users approved_user
       ON approved_user.id = t.approved_by
+      AND approved_user.company_id = t.company_id
 
     LEFT JOIN users received_user
       ON received_user.id = t.received_by
+      AND received_user.company_id = t.company_id
 
     WHERE t.company_id = $1
       AND t.id = $2
@@ -146,9 +152,11 @@ async function loadTransferDetails(
 
     LEFT JOIN fashion_sizes fs
       ON fs.id = pv.size_id
+      AND fs.company_id = pv.company_id
 
     LEFT JOIN fashion_colors fc
       ON fc.id = pv.color_id
+      AND fc.company_id = pv.company_id
 
     WHERE ti.company_id = $1
       AND ti.transfer_id = $2
@@ -198,17 +206,11 @@ async function loadTransferByIdempotency(
 // ======================================================
 transfersRouter.get('/api/transfers/locations', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const auth = getAuthContext(res)
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
-
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+    // لا نثق في أي companyId أو branchId قادم من الواجهة.
+    const companyId = auth.companyId
+    const authenticatedBranchId = auth.branchId
 
     const result = await db.query(
       `
@@ -245,7 +247,7 @@ transfersRouter.get('/api/transfers/locations', async (req, res, next) => {
           b.name ASC NULLS FIRST,
           sl.name ASC;
         `,
-      [companyId.trim(), authenticatedBranchId],
+      [companyId, authenticatedBranchId],
     )
 
     return res.json({
@@ -264,16 +266,13 @@ transfersRouter.get('/api/transfers/locations', async (req, res, next) => {
 // ======================================================
 transfersRouter.get('/api/transfers/lookup-item', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const auth = getAuthContext(res)
+
+    const companyId = auth.companyId
+    const authenticatedBranchId = auth.branchId
+
     const fromLocationId = req.query.fromLocationId
     const code = req.query.code
-
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
 
     if (
       typeof fromLocationId !== 'string' ||
@@ -289,9 +288,6 @@ transfersRouter.get('/api/transfers/lookup-item', async (req, res, next) => {
         error: 'code query parameter is required',
       })
     }
-
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
 
     const result = await db.query(
       `
@@ -355,12 +351,7 @@ transfersRouter.get('/api/transfers/lookup-item', async (req, res, next) => {
 
         LIMIT 1;
         `,
-      [
-        companyId.trim(),
-        fromLocationId.trim(),
-        code.trim(),
-        authenticatedBranchId,
-      ],
+      [companyId, fromLocationId.trim(), code.trim(), authenticatedBranchId],
     )
 
     if ((result.rowCount ?? 0) === 0) {
@@ -382,18 +373,12 @@ transfersRouter.get('/api/transfers/lookup-item', async (req, res, next) => {
 // ======================================================
 transfersRouter.get('/api/transfers', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const auth = getAuthContext(res)
+
+    const companyId = auth.companyId
+    const authenticatedBranchId = auth.branchId
+
     const status = req.query.status
-
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
-
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
 
     const selectedStatus =
       typeof status === 'string' && status.trim() ? status.trim() : null
@@ -446,18 +431,26 @@ transfersRouter.get('/api/transfers', async (req, res, next) => {
         JOIN stock_locations from_location
           ON from_location.id =
             t.from_location_id
+          AND from_location.company_id =
+            t.company_id
 
         JOIN stock_locations to_location
           ON to_location.id =
             t.to_location_id
+          AND to_location.company_id =
+            t.company_id
 
         LEFT JOIN branches from_branch
           ON from_branch.id =
             t.from_branch_id
+          AND from_branch.company_id =
+            t.company_id
 
         LEFT JOIN branches to_branch
           ON to_branch.id =
             t.to_branch_id
+          AND to_branch.company_id =
+            t.company_id
 
         LEFT JOIN transfer_items ti
           ON ti.transfer_id = t.id
@@ -489,7 +482,7 @@ transfersRouter.get('/api/transfers', async (req, res, next) => {
         LIMIT $4;
         `,
       [
-        companyId.trim(),
+        companyId,
         authenticatedBranchId,
         selectedStatus,
         parseTransferLimit(req.query.limit),
@@ -509,10 +502,9 @@ transfersRouter.get('/api/transfers', async (req, res, next) => {
 // ======================================================
 transfersRouter.get('/api/transfers/:transferId', async (req, res, next) => {
   try {
-    const transferId = String(req.params.transferId || '').trim()
+    const auth = getAuthContext(res)
 
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const transferId = String(req.params.transferId || '').trim()
 
     if (!isTransferUuid(transferId)) {
       return res.status(400).json({
@@ -520,19 +512,11 @@ transfersRouter.get('/api/transfers/:transferId', async (req, res, next) => {
       })
     }
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
-
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
-
+    // لا نستخدم أي Tenant IDs قادمة من Query String.
     const details = await loadTransferDetails(
-      companyId.trim(),
+      auth.companyId,
       transferId,
-      authenticatedBranchId,
+      auth.branchId,
     )
 
     if (!details) {
@@ -556,26 +540,23 @@ transfersRouter.get('/api/transfers/:transferId', async (req, res, next) => {
 // لا يخصم أو يضيف مخزون في هذه المرحلة.
 // ======================================================
 transfersRouter.post('/api/transfers', async (req, res, next) => {
+  const auth = getAuthContext(res)
   const client = await db.connect()
 
   try {
     const {
-      companyId,
-      branchId,
       transferNumber,
       idempotencyKey,
       fromLocationId,
       toLocationId,
       note,
-      createdBy,
       items,
     } = req.body
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId is required',
-      })
-    }
+    // القيم الحساسة تأتي من Session فقط.
+    const companyId = auth.companyId
+    const authenticatedBranchId = auth.branchId
+    const createdBy = auth.userId
 
     if (typeof transferNumber !== 'string' || !transferNumber.trim()) {
       return res.status(400).json({
@@ -619,11 +600,8 @@ transfersRouter.post('/api/transfers', async (req, res, next) => {
       })
     }
 
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
-
     const existingTransfer = await loadTransferByIdempotency(
-      companyId.trim(),
+      companyId,
       idempotencyKey.trim(),
       authenticatedBranchId,
     )
@@ -694,7 +672,7 @@ transfersRouter.post('/api/transfers', async (req, res, next) => {
             AND is_active = TRUE
           FOR SHARE;
           `,
-      [companyId.trim(), [fromLocationId.trim(), toLocationId.trim()]],
+      [companyId, [fromLocationId.trim(), toLocationId.trim()]],
     )
 
     if ((locationsResult.rowCount ?? 0) !== 2) {
@@ -734,7 +712,7 @@ transfersRouter.post('/api/transfers', async (req, res, next) => {
             AND id = ANY($2::uuid[])
             AND status = 'active';
           `,
-      [companyId.trim(), Array.from(variantIds)],
+      [companyId, Array.from(variantIds)],
     )
 
     if ((activeVariantsResult.rowCount ?? 0) !== normalizedItems.length) {
@@ -773,14 +751,14 @@ transfersRouter.post('/api/transfers', async (req, res, next) => {
           RETURNING *;
           `,
       [
-        companyId.trim(),
+        companyId,
         transferNumber.trim(),
         idempotencyKey.trim(),
         fromLocation.branch_id,
         toLocation.branch_id,
         fromLocationId.trim(),
         toLocationId.trim(),
-        createdBy || null,
+        createdBy,
         typeof note === 'string' && note.trim() ? note.trim() : null,
       ],
     )
@@ -803,7 +781,7 @@ transfersRouter.post('/api/transfers', async (req, res, next) => {
             RETURNING *;
             `,
         [
-          companyId.trim(),
+          companyId,
           createdTransfer.id,
           item.variantId,
           item.quantity,
@@ -817,7 +795,7 @@ transfersRouter.post('/api/transfers', async (req, res, next) => {
     await client.query('COMMIT')
 
     const details = await loadTransferDetails(
-      companyId.trim(),
+      companyId,
       createdTransfer.id,
       authenticatedBranchId,
     )
@@ -832,24 +810,17 @@ transfersRouter.post('/api/transfers', async (req, res, next) => {
     await client.query('ROLLBACK').catch(() => {})
 
     if (isPostgresUniqueViolation(error)) {
-      const companyId =
-        typeof req.body?.companyId === 'string' ? req.body.companyId.trim() : ''
-
-      const branchId =
-        typeof req.body?.branchId === 'string' && req.body.branchId.trim()
-          ? req.body.branchId.trim()
-          : null
-
       const idempotencyKey =
         typeof req.body?.idempotencyKey === 'string'
           ? req.body.idempotencyKey.trim()
           : ''
 
-      if (companyId && idempotencyKey) {
+      if (idempotencyKey) {
+        // معالجة التكرار تستخدم نفس Session ولا تثق في الـBody.
         const existingTransfer = await loadTransferByIdempotency(
-          companyId,
+          auth.companyId,
           idempotencyKey,
-          branchId,
+          auth.branchId,
         )
 
         if (existingTransfer) {
@@ -862,12 +833,6 @@ transfersRouter.post('/api/transfers', async (req, res, next) => {
 
       return res.status(409).json({
         error: 'Transfer number already exists',
-      })
-    }
-
-    if (error instanceof TransferApiError) {
-      return res.status(error.statusCode).json({
-        error: error.message,
       })
     }
 
@@ -886,12 +851,11 @@ transfersRouter.post('/api/transfers', async (req, res, next) => {
 transfersRouter.post(
   '/api/transfers/:transferId/ship',
   async (req, res, next) => {
+    const auth = getAuthContext(res)
     const client = await db.connect()
 
     try {
       const transferId = String(req.params.transferId || '').trim()
-
-      const { companyId, branchId, createdBy } = req.body
 
       if (!isTransferUuid(transferId)) {
         return res.status(400).json({
@@ -899,14 +863,10 @@ transfersRouter.post(
         })
       }
 
-      if (typeof companyId !== 'string' || !companyId.trim()) {
-        return res.status(400).json({
-          error: 'companyId is required',
-        })
-      }
-
-      const authenticatedBranchId =
-        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+      // منفذ الشحن والشركة والفرع يأتون من Session.
+      const companyId = auth.companyId
+      const authenticatedBranchId = auth.branchId
+      const createdBy = auth.userId
 
       await client.query('BEGIN')
 
@@ -940,7 +900,7 @@ transfersRouter.post(
 
           FOR UPDATE OF t;
           `,
-        [companyId.trim(), transferId, authenticatedBranchId],
+        [companyId, transferId, authenticatedBranchId],
       )
 
       if ((transferResult.rowCount ?? 0) === 0) {
@@ -956,7 +916,7 @@ transfersRouter.post(
         await client.query('COMMIT')
 
         const details = await loadTransferDetails(
-          companyId.trim(),
+          companyId,
           transferId,
           authenticatedBranchId,
         )
@@ -982,7 +942,7 @@ transfersRouter.post(
           AND transfer_id = $2
         ORDER BY variant_id ASC;
         `,
-        [companyId.trim(), transferId],
+        [companyId, transferId],
       )
 
       if ((itemsResult.rowCount ?? 0) === 0) {
@@ -1010,7 +970,7 @@ transfersRouter.post(
               AND variant_id = $3
             FOR UPDATE;
             `,
-          [companyId.trim(), transfer.from_location_id, item.variant_id],
+          [companyId, transfer.from_location_id, item.variant_id],
         )
 
         if ((balanceResult.rowCount ?? 0) === 0) {
@@ -1040,7 +1000,7 @@ transfersRouter.post(
           `,
           [
             quantityAfter,
-            companyId.trim(),
+            companyId,
             transfer.from_location_id,
             item.variant_id,
           ],
@@ -1073,7 +1033,7 @@ transfersRouter.post(
           );
           `,
           [
-            companyId.trim(),
+            companyId,
             transfer.from_branch_id,
             transfer.from_location_id,
             item.variant_id,
@@ -1082,7 +1042,7 @@ transfersRouter.post(
             quantityAfter,
             transfer.id,
             `Transfer ${transfer.transfer_number} shipped`,
-            createdBy || null,
+            createdBy,
           ],
         )
 
@@ -1094,7 +1054,7 @@ transfersRouter.post(
             AND transfer_id = $3
             AND id = $4;
           `,
-          [transferQuantity, companyId.trim(), transferId, item.id],
+          [transferQuantity, companyId, transferId, item.id],
         )
       }
 
@@ -1110,13 +1070,13 @@ transfersRouter.post(
             AND id = $3
           RETURNING *;
           `,
-        [createdBy || null, companyId.trim(), transferId],
+        [createdBy, companyId, transferId],
       )
 
       await client.query('COMMIT')
 
       const details = await loadTransferDetails(
-        companyId.trim(),
+        companyId,
         transferId,
         authenticatedBranchId,
       )
@@ -1151,12 +1111,11 @@ transfersRouter.post(
 transfersRouter.post(
   '/api/transfers/:transferId/receive',
   async (req, res, next) => {
+    const auth = getAuthContext(res)
     const client = await db.connect()
 
     try {
       const transferId = String(req.params.transferId || '').trim()
-
-      const { companyId, branchId, createdBy } = req.body
 
       if (!isTransferUuid(transferId)) {
         return res.status(400).json({
@@ -1164,14 +1123,10 @@ transfersRouter.post(
         })
       }
 
-      if (typeof companyId !== 'string' || !companyId.trim()) {
-        return res.status(400).json({
-          error: 'companyId is required',
-        })
-      }
-
-      const authenticatedBranchId =
-        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+      // منفذ الاستلام والشركة والفرع يأتون من Session.
+      const companyId = auth.companyId
+      const authenticatedBranchId = auth.branchId
+      const createdBy = auth.userId
 
       await client.query('BEGIN')
 
@@ -1204,7 +1159,7 @@ transfersRouter.post(
 
           FOR UPDATE OF t;
           `,
-        [companyId.trim(), transferId, authenticatedBranchId],
+        [companyId, transferId, authenticatedBranchId],
       )
 
       if ((transferResult.rowCount ?? 0) === 0) {
@@ -1220,7 +1175,7 @@ transfersRouter.post(
         await client.query('COMMIT')
 
         const details = await loadTransferDetails(
-          companyId.trim(),
+          companyId,
           transferId,
           authenticatedBranchId,
         )
@@ -1246,7 +1201,7 @@ transfersRouter.post(
           AND transfer_id = $2
         ORDER BY variant_id ASC;
         `,
-        [companyId.trim(), transferId],
+        [companyId, transferId],
       )
 
       for (const item of itemsResult.rows) {
@@ -1278,7 +1233,7 @@ transfersRouter.post(
           DO NOTHING;
           `,
           [
-            companyId.trim(),
+            companyId,
             transfer.to_branch_id,
             transfer.to_location_id,
             item.variant_id,
@@ -1294,7 +1249,7 @@ transfersRouter.post(
               AND variant_id = $3
             FOR UPDATE;
             `,
-          [companyId.trim(), transfer.to_location_id, item.variant_id],
+          [companyId, transfer.to_location_id, item.variant_id],
         )
 
         const quantityBefore = Number(balanceResult.rows[0].quantity)
@@ -1315,7 +1270,7 @@ transfersRouter.post(
           [
             quantityAfter,
             transfer.to_branch_id,
-            companyId.trim(),
+            companyId,
             transfer.to_location_id,
             item.variant_id,
           ],
@@ -1348,7 +1303,7 @@ transfersRouter.post(
           );
           `,
           [
-            companyId.trim(),
+            companyId,
             transfer.to_branch_id,
             transfer.to_location_id,
             item.variant_id,
@@ -1357,7 +1312,7 @@ transfersRouter.post(
             quantityAfter,
             transfer.id,
             `Transfer ${transfer.transfer_number} received`,
-            createdBy || null,
+            createdBy,
           ],
         )
 
@@ -1369,7 +1324,7 @@ transfersRouter.post(
             AND transfer_id = $3
             AND id = $4;
           `,
-          [receivedQuantity, companyId.trim(), transferId, item.id],
+          [receivedQuantity, companyId, transferId, item.id],
         )
       }
 
@@ -1385,13 +1340,13 @@ transfersRouter.post(
             AND id = $3
           RETURNING *;
           `,
-        [createdBy || null, companyId.trim(), transferId],
+        [createdBy, companyId, transferId],
       )
 
       await client.query('COMMIT')
 
       const details = await loadTransferDetails(
-        companyId.trim(),
+        companyId,
         transferId,
         authenticatedBranchId,
       )
