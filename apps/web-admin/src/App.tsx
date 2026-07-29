@@ -6,6 +6,7 @@ import ProductsPage from './pages/ProductsPage'
 import SalesPage from './pages/SalesPage'
 import ReturnsPage from './pages/ReturnsPage'
 import InventoryPage from './pages/InventoryPage'
+import StockCountsPage from './pages/StockCountsPage'
 import TransfersPage from './pages/TransfersPage'
 import PurchasesPage from './pages/PurchasesPage'
 import PurchaseOrdersPage from './pages/PurchaseOrdersPage'
@@ -33,6 +34,7 @@ type PageName =
   | 'sales'
   | 'returns'
   | 'inventory'
+  | 'stock-counts'
   | 'transfers'
   | 'purchases'
   | 'purchase-orders'
@@ -131,6 +133,12 @@ const pageDefinitions: Array<{
     name: 'inventory',
     label: 'المخزون',
     icon: '▥',
+    permission: 'inventory.view',
+  },
+  {
+    name: 'stock-counts',
+    label: 'جرد المخزون',
+    icon: '✓',
     permission: 'inventory.view',
   },
   {
@@ -904,6 +912,10 @@ function App() {
 
           {activePage === 'inventory' ? (
             <InventoryPage companyId={companyId} branchId={branchId} />
+          ) : null}
+
+          {activePage === 'stock-counts' ? (
+            <StockCountsPage companyId={companyId} branchId={branchId} />
           ) : null}
 
           {activePage === 'transfers' ? (

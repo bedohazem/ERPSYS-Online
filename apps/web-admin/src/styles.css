@@ -3613,3 +3613,138 @@ body {
     width: 100%;
   }
 }
+
+/* ======================================================
+   صفحة جرد المخزون
+   ====================================================== */
+
+.stock-count-page > .panel:first-child {
+  margin-top: 0;
+}
+
+.stock-count-opening-grid {
+  grid-template-columns: minmax(240px, 1fr) minmax(280px, 1.5fr) auto;
+  align-items: end;
+  margin-top: 18px;
+}
+
+.stock-count-open-button {
+  min-height: 44px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.stock-count-filter-grid {
+  grid-template-columns: repeat(2, minmax(220px, 320px));
+  margin: 18px 0;
+}
+
+.stock-count-row-selected {
+  background: #eff6ff;
+}
+
+.stock-count-cell-note {
+  display: block;
+  margin-top: 5px;
+  color: #64748b;
+}
+
+.stock-count-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 74px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.stock-count-status-draft {
+  background: #fff7d6;
+  color: #8a5a00;
+}
+
+.stock-count-status-completed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.stock-count-status-cancelled {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.stock-count-title-row,
+.stock-count-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.stock-count-actions {
+  justify-content: flex-end;
+}
+
+.stock-count-notes {
+  margin: 18px 0 0;
+  padding: 12px 14px;
+  border: 1px solid #dbe7f5;
+  border-radius: 12px;
+  background: #f8fbff;
+  color: #334155;
+}
+
+.stock-count-summary-grid {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.stock-count-search {
+  width: min(360px, 100%);
+}
+
+.stock-count-quantity-input {
+  min-width: 110px;
+  max-width: 150px;
+  direction: ltr;
+  text-align: center;
+}
+
+.stock-count-difference-positive {
+  color: #15803d;
+}
+
+.stock-count-difference-negative {
+  color: #b91c1c;
+}
+
+.stock-count-empty {
+  padding: 22px 0 4px;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .stock-count-opening-grid,
+  .stock-count-filter-grid,
+  .stock-count-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stock-count-title-row,
+  .stock-count-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .stock-count-actions {
+    width: 100%;
+  }
+
+  .stock-count-actions button {
+    width: 100%;
+  }
+
+  .stock-count-search {
+    width: 100%;
+  }
+}
