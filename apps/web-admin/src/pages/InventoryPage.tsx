@@ -78,6 +78,26 @@ type OpeningBalanceResponse = {
   }
 }
 
+type InventoryAdjustmentResponse = {
+  adjustment: {
+    counted_quantity: string
+    adjustment_quantity: string
+  }
+
+  item: {
+    product_name: string
+    sku: string
+  }
+}
+
+type InventoryAdjustmentApiResponse = {
+  data: InventoryAdjustmentResponse
+
+  meta: {
+    duplicate: boolean
+  }
+}
+
 type ApiResponse<T> = {
   data: T
 }
@@ -205,6 +225,22 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
 
   const [openingNote, setOpeningNote] = useState('')
 
+  // بيانات نموذج تسوية المخزون.
+  const [adjustmentStockLocationId, setAdjustmentStockLocationId] = useState('')
+
+  const [adjustmentCode, setAdjustmentCode] = useState('')
+
+  const [adjustmentItem, setAdjustmentItem] =
+    useState<InventoryLookupItem | null>(null)
+
+  const [adjustmentCountedQuantity, setAdjustmentCountedQuantity] = useState('')
+
+  const [adjustmentReason, setAdjustmentReason] = useState('')
+
+  const [loadingAdjustmentLookup, setLoadingAdjustmentLookup] = useState(false)
+
+  const [savingAdjustment, setSavingAdjustment] = useState(false)
+
   const [loadingLocations, setLoadingLocations] = useState(false)
 
   const [loadingOpeningLookup, setLoadingOpeningLookup] = useState(false)
@@ -215,6 +251,12 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
 
   const openingLookupRequestRef = useRef(false)
   const openingSaveRequestRef = useRef(false)
+
+  const adjustmentLookupRequestRef = useRef(false)
+  const adjustmentSaveRequestRef = useRef(false)
+
+  // يحتفظ بنفس المفتاح عند إعادة محاولة نفس الطلب.
+  const adjustmentIdempotencyKeyRef = useRef<string | null>(null)
 
   // ======================================================
   // مؤشرات مختصرة محسوبة من البيانات المحملة حاليًا.
@@ -279,9 +321,17 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
 
         return stillExists ? currentLocationId : (response.data[0]?.id ?? '')
       })
+      setAdjustmentStockLocationId((currentLocationId) => {
+        const stillExists = response.data.some(
+          (location) => location.id === currentLocationId,
+        )
+
+        return stillExists ? currentLocationId : (response.data[0]?.id ?? '')
+      })
     } catch (currentError) {
       setStockLocations([])
       setOpeningStockLocationId('')
+      setAdjustmentStockLocationId('')
 
       setError(
         currentError instanceof Error
@@ -396,6 +446,172 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
     }
   }
 
+  function resetAdjustmentRequest() {
+    // أي تغيير في بيانات العملية يعني أنها عملية جديدة.
+    adjustmentIdempotencyKeyRef.current = null
+    setSuccess('')
+  }
+
+  async function lookupAdjustmentItem() {
+    if (adjustmentLookupRequestRef.current) {
+      return
+    }
+
+    adjustmentLookupRequestRef.current = true
+    setLoadingAdjustmentLookup(true)
+    setError('')
+    setSuccess('')
+    setAdjustmentItem(null)
+
+    try {
+      if (!adjustmentStockLocationId) {
+        throw new Error('اختر مكان التخزين أولًا.')
+      }
+
+      if (!adjustmentCode.trim()) {
+        throw new Error('اكتب الباركود أو SKU.')
+      }
+
+      const lookupUrl =
+        `/api/inventory/lookup-item` +
+        `?companyId=${encodeURIComponent(companyId.trim())}` +
+        `&stockLocationId=${encodeURIComponent(adjustmentStockLocationId)}` +
+        `&code=${encodeURIComponent(adjustmentCode.trim())}`
+
+      const response =
+        await requestJson<ApiResponse<InventoryLookupItem>>(lookupUrl)
+
+      setAdjustmentItem(response.data)
+
+      // نبدأ بالرصيد الحالي حتى يكتب المستخدم الكمية الفعلية.
+      setAdjustmentCountedQuantity(response.data.current_quantity)
+
+      adjustmentIdempotencyKeyRef.current = null
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر العثور على الصنف.',
+      )
+    } finally {
+      adjustmentLookupRequestRef.current = false
+      setLoadingAdjustmentLookup(false)
+    }
+  }
+
+  async function saveInventoryAdjustment() {
+    if (adjustmentSaveRequestRef.current) {
+      return
+    }
+
+    adjustmentSaveRequestRef.current = true
+    setSavingAdjustment(true)
+    setError('')
+    setSuccess('')
+
+    try {
+      if (!adjustmentItem) {
+        throw new Error('ابحث عن الصنف أولًا.')
+      }
+
+      if (!adjustmentCountedQuantity.trim()) {
+        throw new Error('اكتب الكمية الفعلية.')
+      }
+
+      const countedQuantity = Number(adjustmentCountedQuantity)
+
+      if (!Number.isFinite(countedQuantity) || countedQuantity < 0) {
+        throw new Error('الكمية الفعلية غير صالحة.')
+      }
+
+      const normalizedQuantity = Number(countedQuantity.toFixed(3))
+
+      if (Math.abs(countedQuantity - normalizedQuantity) > 0.0000001) {
+        throw new Error('الكمية تسمح بثلاث خانات عشرية فقط.')
+      }
+
+      const currentQuantity = Number(adjustmentItem.current_quantity)
+
+      if (normalizedQuantity === currentQuantity) {
+        throw new Error('الكمية الفعلية مساوية للرصيد الحالي.')
+      }
+
+      const normalizedReason = adjustmentReason.trim()
+
+      if (normalizedReason.length < 3 || normalizedReason.length > 500) {
+        throw new Error('سبب التسوية يجب أن يكون بين 3 و500 حرف.')
+      }
+
+      const difference = normalizedQuantity - currentQuantity
+
+      const confirmed = window.confirm(
+        `سيتم تغيير رصيد ${adjustmentItem.product_name} ` +
+          `من ${currentQuantity} إلى ${normalizedQuantity}. ` +
+          `فرق التسوية: ${difference > 0 ? '+' : ''}${difference}.`,
+      )
+
+      if (!confirmed) {
+        return
+      }
+
+      // نفس المفتاح يُستخدم لو انقطع الاتصال وأُعيد الطلب.
+      const idempotencyKey =
+        adjustmentIdempotencyKeyRef.current ?? crypto.randomUUID()
+
+      adjustmentIdempotencyKeyRef.current = idempotencyKey
+
+      const response = await requestJson<InventoryAdjustmentApiResponse>(
+        '/api/inventory/adjustments',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            stockLocationId: adjustmentStockLocationId,
+
+            variantId: adjustmentItem.variant_id,
+
+            countedQuantity: normalizedQuantity,
+
+            reason: normalizedReason,
+
+            idempotencyKey,
+          }),
+        },
+      )
+
+      const savedDifference = Number(
+        response.data.adjustment.adjustment_quantity,
+      )
+
+      setSuccess(
+        response.meta.duplicate
+          ? 'تم تأكيد التسوية السابقة بدون تكرار حركة المخزون.'
+          : `تمت تسوية ${response.data.item.product_name} ` +
+              `بفارق ${savedDifference > 0 ? '+' : ''}${savedDifference}.`,
+      )
+
+      setAdjustmentCode('')
+      setAdjustmentItem(null)
+      setAdjustmentCountedQuantity('')
+      setAdjustmentReason('')
+
+      adjustmentIdempotencyKeyRef.current = null
+
+      await loadInventory()
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر حفظ تسوية المخزون.',
+      )
+    } finally {
+      adjustmentSaveRequestRef.current = false
+      setSavingAdjustment(false)
+    }
+  }
+
   // ======================================================
   // loadInventory
   // تجيب:
@@ -459,6 +675,12 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
     setOpeningItem(null)
     setOpeningCode('')
     setSuccess('')
+    setAdjustmentItem(null)
+    setAdjustmentCode('')
+    setAdjustmentCountedQuantity('')
+    setAdjustmentReason('')
+
+    adjustmentIdempotencyKeyRef.current = null
 
     if (!canAdjustInventory || !companyId.trim()) {
       return
@@ -631,6 +853,169 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
                 <span>الرصيد الحالي</span>
                 <strong>
                   {formatInventoryQuantity(openingItem.current_quantity)}
+                </strong>
+              </div>
+            </article>
+          ) : null}
+        </section>
+      ) : null}
+
+      {canAdjustInventory ? (
+        <section className="panel">
+          <div className="section-header">
+            <div>
+              <h2>تسوية رصيد المخزون</h2>
+
+              <p className="muted">
+                تصحيح الرصيد عند وجود فرق بين الكمية المسجلة والكمية الفعلية.
+              </p>
+            </div>
+          </div>
+
+          <div className="form-grid opening-balance-grid">
+            <label>
+              مكان التخزين
+              <select
+                value={adjustmentStockLocationId}
+                disabled={loadingLocations || savingAdjustment}
+                onChange={(event) => {
+                  setAdjustmentStockLocationId(event.target.value)
+
+                  setAdjustmentCode('')
+                  setAdjustmentItem(null)
+                  setAdjustmentCountedQuantity('')
+
+                  resetAdjustmentRequest()
+                }}
+              >
+                <option value="">
+                  {loadingLocations
+                    ? 'جاري تحميل الأماكن...'
+                    : 'اختر مكان التخزين'}
+                </option>
+
+                {stockLocations.map((location) => (
+                  <option key={location.id} value={location.id}>
+                    {location.name} ({location.code})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              باركود أو SKU
+              <input
+                value={adjustmentCode}
+                disabled={loadingAdjustmentLookup || savingAdjustment}
+                placeholder="امسح الباركود أو اكتب SKU"
+                onChange={(event) => {
+                  setAdjustmentCode(event.target.value)
+                  setAdjustmentItem(null)
+                  setAdjustmentCountedQuantity('')
+
+                  resetAdjustmentRequest()
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+
+                    void lookupAdjustmentItem()
+                  }
+                }}
+              />
+            </label>
+
+            <label>
+              الكمية الفعلية
+              <input
+                type="number"
+                min="0"
+                step="0.001"
+                value={adjustmentCountedQuantity}
+                disabled={!adjustmentItem || savingAdjustment}
+                onChange={(event) => {
+                  setAdjustmentCountedQuantity(event.target.value)
+
+                  resetAdjustmentRequest()
+                }}
+              />
+            </label>
+
+            <label>
+              سبب التسوية
+              <input
+                value={adjustmentReason}
+                maxLength={500}
+                disabled={!adjustmentItem || savingAdjustment}
+                placeholder="مثال: فرق ظهر أثناء الجرد"
+                onChange={(event) => {
+                  setAdjustmentReason(event.target.value)
+
+                  resetAdjustmentRequest()
+                }}
+              />
+            </label>
+          </div>
+
+          <div className="inventory-opening-actions">
+            <button
+              type="button"
+              className="table-button"
+              disabled={
+                !adjustmentStockLocationId ||
+                !adjustmentCode.trim() ||
+                loadingAdjustmentLookup ||
+                savingAdjustment
+              }
+              onClick={() => void lookupAdjustmentItem()}
+            >
+              {loadingAdjustmentLookup ? 'جاري البحث...' : 'بحث عن الصنف'}
+            </button>
+
+            <button
+              type="button"
+              className="primary-button small-button"
+              disabled={
+                !adjustmentItem ||
+                !adjustmentCountedQuantity.trim() ||
+                adjustmentReason.trim().length < 3 ||
+                savingAdjustment
+              }
+              onClick={() => void saveInventoryAdjustment()}
+            >
+              {savingAdjustment ? 'جاري الحفظ...' : 'حفظ التسوية'}
+            </button>
+          </div>
+
+          {adjustmentItem ? (
+            <article className="inventory-selected-item">
+              <div>
+                <span>الصنف</span>
+                <strong>{adjustmentItem.product_name}</strong>
+              </div>
+
+              <div>
+                <span>SKU</span>
+                <strong>{adjustmentItem.sku}</strong>
+              </div>
+
+              <div>
+                <span>الرصيد الحالي</span>
+                <strong>
+                  {formatInventoryQuantity(adjustmentItem.current_quantity)}
+                </strong>
+              </div>
+
+              <div>
+                <span>فرق التسوية</span>
+                <strong>
+                  {adjustmentCountedQuantity.trim() &&
+                  Number.isFinite(Number(adjustmentCountedQuantity))
+                    ? formatInventoryQuantity(
+                        Number(adjustmentCountedQuantity) -
+                          Number(adjustmentItem.current_quantity),
+                      )
+                    : '-'}
                 </strong>
               </div>
             </article>
