@@ -80,7 +80,9 @@ async function loadTransferDetails(
       approved_user.full_name
         AS approved_by_name,
       received_user.full_name
-        AS received_by_name
+        AS received_by_name,
+      cancelled_user.full_name
+        AS cancelled_by_name
 
     FROM transfers t
 
@@ -111,6 +113,10 @@ async function loadTransferDetails(
     LEFT JOIN users received_user
       ON received_user.id = t.received_by
       AND received_user.company_id = t.company_id
+
+    LEFT JOIN users cancelled_user
+      ON cancelled_user.id = t.cancelled_by
+      AND cancelled_user.company_id = t.company_id
 
     WHERE t.company_id = $1
       AND t.id = $2
@@ -415,6 +421,8 @@ transfersRouter.get('/api/transfers', async (req, res, next) => {
           t.requested_at,
           t.approved_at,
           t.received_at,
+          t.cancelled_at,
+          t.cancellation_reason,
           t.note,
           t.created_at,
 
@@ -841,6 +849,216 @@ transfersRouter.post('/api/transfers', async (req, res, next) => {
     client.release()
   }
 })
+
+// ======================================================
+// POST /api/transfers/:transferId/cancel
+//
+// يلغي التحويل قبل الشحن فقط.
+//
+// لا يتم تعديل stock_balances لأن التحويل في حالة
+// pending أو approved لم يخصم المخزون حتى الآن.
+//
+// صلاحية هذا الـEndpoint هي inventory.transfer.create
+// حسب سياسة صلاحيات التحويلات الحالية.
+// ======================================================
+transfersRouter.post(
+  '/api/transfers/:transferId/cancel',
+  async (req, res, next) => {
+    const auth = getAuthContext(res)
+    const client = await db.connect()
+
+    try {
+      const transferId = String(req.params.transferId || '')
+        .trim()
+        .toLowerCase()
+
+      if (!isTransferUuid(transferId)) {
+        return res.status(400).json({
+          error: 'transferId is invalid',
+        })
+      }
+
+      const cancellationReason =
+        typeof req.body?.reason === 'string' ? req.body.reason.trim() : ''
+
+      if (cancellationReason.length < 3 || cancellationReason.length > 300) {
+        return res.status(400).json({
+          error: 'سبب الإلغاء يجب أن يكون بين 3 و300 حرف.',
+        })
+      }
+
+      await client.query('BEGIN')
+
+      // قفل التحويل يمنع شحنه وإلغاءه في نفس اللحظة.
+      const transferResult = await client.query(
+        `
+          SELECT
+            transfer.*
+
+          FROM transfers transfer
+
+          JOIN stock_locations from_location
+            ON from_location.company_id =
+               transfer.company_id
+
+            AND from_location.id =
+                transfer.from_location_id
+
+          WHERE transfer.company_id = $1
+            AND transfer.id = $2
+
+            -- مستخدم الفرع يلغي التحويلات الصادرة
+            -- من فرعه فقط.
+            AND (
+              $3::uuid IS NULL
+              OR transfer.from_branch_id = $3
+            )
+
+          FOR UPDATE OF transfer;
+        `,
+        [auth.companyId, transferId, auth.branchId],
+      )
+
+      if ((transferResult.rowCount ?? 0) === 0) {
+        throw new TransferApiError(
+          404,
+          'التحويل غير موجود أو غير مسموح بإلغائه.',
+        )
+      }
+
+      const transfer = transferResult.rows[0]
+
+      // إعادة نفس طلب الإلغاء آمنة ولا تنشئ Audit جديدًا.
+      if (transfer.status === 'cancelled') {
+        await client.query('COMMIT')
+
+        const details = await loadTransferDetails(
+          auth.companyId,
+          transferId,
+          auth.branchId,
+        )
+
+        return res.status(200).json({
+          duplicated: true,
+          data: details,
+        })
+      }
+
+      // بعد الشحن يكون المخزون خُصم من المصدر،
+      // لذلك لا يجوز استخدام الإلغاء العادي.
+      if (transfer.status === 'in_transit' || transfer.status === 'received') {
+        throw new TransferApiError(409, 'لا يمكن إلغاء التحويل بعد شحنه.')
+      }
+
+      if (!['draft', 'pending', 'approved'].includes(transfer.status)) {
+        throw new TransferApiError(
+          409,
+          `لا يمكن إلغاء التحويل من الحالة: ${transfer.status}`,
+        )
+      }
+
+      const cancelledResult = await client.query(
+        `
+          UPDATE transfers
+
+          SET
+            status = 'cancelled',
+            cancelled_by = $1,
+            cancelled_at = NOW(),
+            cancellation_reason = $2,
+            updated_at = NOW()
+
+          WHERE company_id = $3
+            AND id = $4
+
+          RETURNING *;
+        `,
+        [auth.userId, cancellationReason, auth.companyId, transferId],
+      )
+
+      const cancelledTransfer = cancelledResult.rows[0]
+
+      // نسجل الإلغاء داخل Audit Log في نفس Transaction.
+      await client.query(
+        `
+          INSERT INTO audit_logs (
+            company_id,
+            branch_id,
+            user_id,
+
+            action,
+            entity_type,
+            entity_id,
+
+            old_data,
+            new_data,
+
+            ip_address,
+            user_agent
+          )
+          VALUES (
+            $1, $2, $3,
+            'inventory.transfer.cancelled',
+            'transfer',
+            $4,
+            $5::jsonb,
+            $6::jsonb,
+            $7,
+            $8
+          );
+        `,
+        [
+          auth.companyId,
+          transfer.from_branch_id,
+          auth.userId,
+
+          transferId,
+
+          JSON.stringify({
+            status: transfer.status,
+          }),
+
+          JSON.stringify({
+            status: 'cancelled',
+            reason: cancellationReason,
+          }),
+
+          req.ip || null,
+          req.get('user-agent') || null,
+        ],
+      )
+
+      await client.query('COMMIT')
+
+      const details = await loadTransferDetails(
+        auth.companyId,
+        transferId,
+        auth.branchId,
+      )
+
+      return res.json({
+        duplicated: false,
+
+        data: details || {
+          transfer: cancelledTransfer,
+          items: [],
+        },
+      })
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+
+      if (error instanceof TransferApiError) {
+        return res.status(error.statusCode).json({
+          error: error.message,
+        })
+      }
+
+      return next(error)
+    } finally {
+      client.release()
+    }
+  },
+)
 
 // ======================================================
 // POST /api/transfers/:transferId/ship

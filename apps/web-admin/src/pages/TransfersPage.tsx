@@ -52,6 +52,10 @@ type TransferSummary = {
   requested_at: string
   approved_at: string | null
   received_at: string | null
+
+  cancelled_at: string | null
+  cancellation_reason: string | null
+
   note: string | null
   items_count: number
   requested_quantity: string
@@ -62,6 +66,7 @@ type TransferDetails = {
     requested_by_name: string | null
     approved_by_name: string | null
     received_by_name: string | null
+    cancelled_by_name: string | null
   }
 
   items: Array<{
@@ -164,6 +169,9 @@ function TransfersPage() {
 
   const [transferNote, setTransferNote] = useState('')
 
+  // سبب إلغاء التحويل المحدد حاليًا.
+  const [cancellationReason, setCancellationReason] = useState('')
+
   const [statusFilter, setStatusFilter] = useState('')
 
   const [loadingLocations, setLoadingLocations] = useState(false)
@@ -198,6 +206,9 @@ function TransfersPage() {
     hasPermission('inventory.transfer.receive')
 
   const canCreateTransfer = hasPermission('inventory.transfer.create')
+
+  // نفس صلاحية إنشاء الطلب تسمح بإلغائه قبل الشحن.
+  const canCancelTransfer = hasPermission('inventory.transfer.create')
 
   const canShipTransfer = hasPermission('inventory.transfer.approve')
 
@@ -590,6 +601,67 @@ function TransfersPage() {
     }
   }
 
+  // إلغاء التحويل قبل الشحن فقط.
+  // الشركة والفرع والمستخدم يحددهم الـBackend من Session.
+  async function cancelTransfer() {
+    if (actionRequestRef.current || !selectedTransfer) {
+      return
+    }
+
+    const normalizedReason = cancellationReason.trim()
+
+    if (normalizedReason.length < 3 || normalizedReason.length > 300) {
+      setError('سبب الإلغاء يجب أن يكون بين 3 و300 حرف.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      `هل أنت متأكد من إلغاء التحويل ${selectedTransfer.transfer.transfer_number}؟`,
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    actionRequestRef.current = true
+    setRunningAction(true)
+    setError('')
+    setSuccess('')
+
+    try {
+      const response = await requestJson<ApiResponse<TransferDetails>>(
+        `/api/transfers/${encodeURIComponent(
+          selectedTransfer.transfer.id,
+        )}/cancel`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            reason: normalizedReason,
+          }),
+        },
+      )
+
+      setSelectedTransfer(response.data)
+      setCancellationReason('')
+
+      setSuccess('تم إلغاء التحويل بنجاح.')
+
+      await loadTransfers()
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر إلغاء التحويل.',
+      )
+    } finally {
+      actionRequestRef.current = false
+      setRunningAction(false)
+    }
+  }
+
   useEffect(() => {
     // موظف العرض أو الشحن أو الاستلام لا يحتاج
     // تحميل قائمة إنشاء التحويل.
@@ -627,6 +699,14 @@ function TransfersPage() {
   // الفرع المستخدم في إظهار الأزرار مصدره Session الحالية.
   // الـBackend يعيد التحقق مرة أخرى ولا يعتمد على هذا الفحص وحده.
   const sessionBranchId = user?.branchId || ''
+
+  const userCanCancelSelected =
+    Boolean(selectedSummary) &&
+    canCancelTransfer &&
+    (selectedSummary?.status === 'draft' ||
+      selectedSummary?.status === 'pending' ||
+      selectedSummary?.status === 'approved') &&
+    (!sessionBranchId || selectedSummary?.from_branch_id === sessionBranchId)
 
   const userCanShipSelected =
     Boolean(selectedSummary) &&
@@ -1004,6 +1084,44 @@ function TransfersPage() {
               ) : null}
             </div>
           </div>
+
+          {userCanCancelSelected ? (
+            <div className="form-grid">
+              <label>
+                سبب إلغاء التحويل
+                <input
+                  value={cancellationReason}
+                  maxLength={300}
+                  disabled={runningAction}
+                  placeholder="مثال: تم إنشاء التحويل بالخطأ"
+                  onChange={(event) =>
+                    setCancellationReason(event.target.value)
+                  }
+                />
+              </label>
+
+              <button
+                type="button"
+                className="table-button danger-button"
+                disabled={runningAction || cancellationReason.trim().length < 3}
+                onClick={() => void cancelTransfer()}
+              >
+                {runningAction ? 'جاري الإلغاء...' : 'إلغاء التحويل'}
+              </button>
+            </div>
+          ) : null}
+
+          {selectedTransfer.transfer.status === 'cancelled' ? (
+            <p className="error-message">
+              تم إلغاء التحويل بواسطة{' '}
+              {selectedTransfer.transfer.cancelled_by_name ||
+                'مستخدم غير معروف'}
+              {' — '}
+              {formatDateTime(selectedTransfer.transfer.cancelled_at)}
+              {' — '}
+              السبب: {selectedTransfer.transfer.cancellation_reason || '-'}
+            </p>
+          ) : null}
 
           <section className="mini-cards-grid transfer-summary-grid">
             <article className="mini-card">
