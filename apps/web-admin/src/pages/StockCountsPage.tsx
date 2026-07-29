@@ -231,10 +231,8 @@ function StockCountsPage({ companyId, branchId }: StockCountsPageProps) {
     setLoadingLocations(true)
 
     try {
-      const url =
-        `/api/inventory/stock-locations` +
-        `?companyId=${encodeURIComponent(companyId)}` +
-        (branchId ? `&branchId=${encodeURIComponent(branchId)}` : '')
+      // الشركة والفرع يتم فرضهما من Session داخل الـBackend.
+      const url = '/api/inventory/stock-locations'
 
       const response = await requestJson<ApiResponse<StockLocation[]>>(url)
 

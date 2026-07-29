@@ -680,10 +680,8 @@ function App() {
           ? `&branchId=${encodeURIComponent(selectedBranchId)}`
           : '')
 
-      const stockMovementsUrl =
-        `/api/inventory/stock-movements` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        '&limit=10'
+      // حركات المخزون معزولة حسب Session، لذلك لا نرسل Tenant IDs.
+      const stockMovementsUrl = '/api/inventory/stock-movements?limit=10'
 
       const [dailySummaryResponse, stockMovementsResponse] = await Promise.all([
         requestJson<ApiResponse<DailySummary>>(dailySummaryUrl),

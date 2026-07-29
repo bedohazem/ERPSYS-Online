@@ -298,18 +298,10 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
     setError('')
 
     try {
-      const selectedCompanyId = companyId.trim()
-      const selectedBranchId = branchId.trim()
-
-      const locationsUrl =
-        `/api/inventory/stock-locations` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        (selectedBranchId
-          ? `&branchId=${encodeURIComponent(selectedBranchId)}`
-          : '')
-
-      const response =
-        await requestJson<ApiResponse<StockLocation[]>>(locationsUrl)
+      // الشركة والفرع يحددهما الـBackend من Session.
+      const response = await requestJson<ApiResponse<StockLocation[]>>(
+        '/api/inventory/stock-locations',
+      )
 
       setStockLocations(response.data)
 
@@ -320,6 +312,7 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
 
         return stillExists ? currentLocationId : (response.data[0]?.id ?? '')
       })
+
       setAdjustmentStockLocationId((currentLocationId) => {
         const stillExists = response.data.some(
           (location) => location.id === currentLocationId,
@@ -364,8 +357,7 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
 
       const lookupUrl =
         `/api/inventory/lookup-item` +
-        `?companyId=${encodeURIComponent(companyId.trim())}` +
-        `&stockLocationId=${encodeURIComponent(openingStockLocationId)}` +
+        `?stockLocationId=${encodeURIComponent(openingStockLocationId)}` +
         `&code=${encodeURIComponent(openingCode.trim())}`
 
       const response =
@@ -411,8 +403,6 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            companyId: companyId.trim(),
-            branchId: branchId.trim() || null,
             stockLocationId: openingStockLocationId,
             variantId: openingItem.variant_id,
             quantity: openingQuantity,
@@ -473,8 +463,7 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
 
       const lookupUrl =
         `/api/inventory/lookup-item` +
-        `?companyId=${encodeURIComponent(companyId.trim())}` +
-        `&stockLocationId=${encodeURIComponent(adjustmentStockLocationId)}` +
+        `?stockLocationId=${encodeURIComponent(adjustmentStockLocationId)}` +
         `&code=${encodeURIComponent(adjustmentCode.trim())}`
 
       const response =
@@ -611,38 +600,19 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
     }
   }
 
-  // ======================================================
-  // loadInventory
-  // تجيب:
-  // 1. رصيد المخزون الحالي
-  // 2. آخر حركات المخزون
-  // ======================================================
+  // تحميل الأرصدة والحركات طبقًا لسياق Session فقط.
   async function loadInventory() {
     setLoading(true)
     setError('')
 
     try {
-      const selectedCompanyId = companyId.trim()
+      const balancesUrl = '/api/inventory/stock-balances?limit=500'
 
-      const selectedBranchId = branchId.trim()
-
-      const branchQuery = selectedBranchId
-        ? `&branchId=${encodeURIComponent(selectedBranchId)}`
-        : ''
-
-      const balancesUrl =
-        `/api/inventory/stock-balances` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        branchQuery
-
-      const movementsUrl =
-        `/api/inventory/stock-movements` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        branchQuery +
-        '&limit=50'
+      const movementsUrl = '/api/inventory/stock-movements?limit=50'
 
       const [balancesResponse, movementsResponse] = await Promise.all([
         requestJson<ApiResponse<StockBalance[]>>(balancesUrl),
+
         requestJson<ApiResponse<StockMovement[]>>(movementsUrl),
       ])
 
@@ -658,7 +628,6 @@ function InventoryPage({ companyId, branchId }: InventoryPageProps) {
       setLoading(false)
     }
   }
-
   // ======================================================
   // تحميل رصيد وحركات المخزون تلقائيًا عند فتح الصفحة.
   // ======================================================

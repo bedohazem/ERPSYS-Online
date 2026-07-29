@@ -22,6 +22,50 @@ function isInventoryUuid(value: string) {
   return inventoryUuidPattern.test(value)
 }
 
+// أنواع حركات المخزون المسموح باستخدامها كفلتر.
+// القائمة مطابقة للقيم المعرفة داخل PostgreSQL.
+const allowedInventoryMovementTypes = new Set([
+  'purchase',
+  'sale',
+  'return',
+  'exchange',
+  'transfer_in',
+  'transfer_out',
+  'adjustment',
+  'damage',
+  'stock_count',
+])
+
+// تحويل كمية موجبة مع دعم ثلاث خانات عشرية فقط.
+function parsePositiveInventoryQuantity(value: unknown) {
+  const normalizedValue = typeof value === 'string' ? value.trim() : value
+
+  if (
+    normalizedValue === '' ||
+    (typeof normalizedValue !== 'string' && typeof normalizedValue !== 'number')
+  ) {
+    return null
+  }
+
+  const numericValue = Number(normalizedValue)
+
+  if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    return null
+  }
+
+  const roundedValue = Number(numericValue.toFixed(3))
+
+  if (Math.abs(numericValue - roundedValue) > 0.0000001) {
+    return null
+  }
+
+  if (roundedValue > 99_999_999_999.999) {
+    return null
+  }
+
+  return roundedValue
+}
+
 // يتحقق من التاريخ بصيغة YYYY-MM-DD.
 // null يعني أن الفلتر غير مُرسل، وundefined يعني قيمة غير صالحة.
 function parseInventoryDateFilter(value: unknown) {
@@ -176,163 +220,296 @@ inventoryRouter.get('/api/inventory/lookup-item', async (req, res, next) => {
 
 // ======================================================
 // GET /api/inventory/stock-movements
-// الهدف:
-// عرض سجل حركات المخزون
 //
-// كل تغيير في المخزون لازم يبقى له حركة هنا
-// أمثلة:
-// - opening_balance
-// - sale
-// - return
-// - adjustment
-// - purchase
-// - transfer
+// يعرض حركات المخزون الخاصة بالشركة والفرع الموجودين
+// داخل Session الموثقة فقط.
 //
-// مثال:
-// /api/inventory/stock-movements?companyId=xxx
-//
-// ممكن نفلتر:
-// /api/inventory/stock-movements?companyId=xxx&variantId=yyy
-// /api/inventory/stock-movements?companyId=xxx&stockLocationId=zzz
-// /api/inventory/stock-movements?companyId=xxx&movementType=sale
+// Query المسموح:
+// - variantId?
+// - stockLocationId?
+// - movementType?
+// - limit?
 // ======================================================
 inventoryRouter.get(
   '/api/inventory/stock-movements',
   async (req, res, next) => {
     try {
-      const companyId = req.query.companyId
-      const variantId = req.query.variantId
-      const stockLocationId = req.query.stockLocationId
-      const movementType = req.query.movementType
-      const branchId = req.query.branchId
+      const auth = getAuthContext(res)
 
-      // limit عشان ما نرجعش عدد ضخم من الحركات مرة واحدة
-      const limit = Math.min(Number(req.query.limit || 100), 200)
+      const variantId =
+        typeof req.query.variantId === 'string'
+          ? req.query.variantId.trim().toLowerCase()
+          : ''
 
-      if (typeof companyId !== 'string' || !companyId.trim()) {
-        return res
-          .status(400)
-          .json({ error: 'companyId query parameter is required' })
+      if (variantId && !isInventoryUuid(variantId)) {
+        return res.status(400).json({
+          error: 'variantId is invalid',
+        })
       }
 
-      const selectedVariantId =
-        typeof variantId === 'string' && variantId.trim() ? variantId : null
+      const stockLocationId =
+        typeof req.query.stockLocationId === 'string'
+          ? req.query.stockLocationId.trim().toLowerCase()
+          : ''
 
-      const selectedStockLocationId =
-        typeof stockLocationId === 'string' && stockLocationId.trim()
-          ? stockLocationId
-          : null
+      if (stockLocationId && !isInventoryUuid(stockLocationId)) {
+        return res.status(400).json({
+          error: 'stockLocationId is invalid',
+        })
+      }
 
-      const selectedMovementType =
-        typeof movementType === 'string' && movementType.trim()
-          ? movementType
-          : null
+      const movementType =
+        typeof req.query.movementType === 'string'
+          ? req.query.movementType.trim().toLowerCase()
+          : ''
 
-      const selectedBranchId =
-        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+      if (movementType && !allowedInventoryMovementTypes.has(movementType)) {
+        return res.status(400).json({
+          error: 'movementType is invalid',
+        })
+      }
+
+      const requestedLimit = Number(req.query.limit ?? 100)
+
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200)
+        : 100
 
       const result = await db.query(
         `
-      SELECT
-        sm.id,
-        sm.company_id,
-        sm.branch_id,
-        b.name AS branch_name,
-        sm.stock_location_id,
-        sl.name AS stock_location_name,
-        sl.code AS stock_location_code,
-        sm.variant_id,
-        pv.sku,
-        pv.primary_barcode,
-        p.name AS product_name,
-        fs.name AS size_name,
-        fc.name AS color_name,
-        sm.movement_type,
-        sm.quantity,
-        sm.quantity_before,
-        sm.quantity_after,
-        sm.reference_type,
-        sm.reference_id,
-        sm.note,
-        sm.created_by,
-        u.full_name AS created_by_name,
-        sm.created_at
-      FROM stock_movements sm
-      LEFT JOIN branches b ON b.id = sm.branch_id
-      JOIN stock_locations sl ON sl.id = sm.stock_location_id
-      JOIN product_variants pv ON pv.id = sm.variant_id
-      JOIN products p ON p.id = pv.product_id
-      LEFT JOIN fashion_sizes fs ON fs.id = pv.size_id
-      LEFT JOIN fashion_colors fc ON fc.id = pv.color_id
-      LEFT JOIN users u ON u.id = sm.created_by
-      WHERE sm.company_id = $1
-        AND ($2::uuid IS NULL OR sm.variant_id = $2::uuid)
-        AND ($3::uuid IS NULL OR sm.stock_location_id = $3::uuid)
-        AND ($4::text IS NULL OR sm.movement_type = $4::text)
-        AND ($5::uuid IS NULL OR sm.branch_id = $5::uuid)
-      ORDER BY sm.created_at DESC
-      LIMIT $6;
-      `,
+          SELECT
+            movement.id,
+            movement.company_id,
+            movement.branch_id,
+
+            branch.name AS branch_name,
+
+            movement.stock_location_id,
+
+            location.name AS stock_location_name,
+            location.code AS stock_location_code,
+            location.location_type,
+
+            movement.variant_id,
+
+            variant.sku,
+            variant.primary_barcode,
+
+            product.name AS product_name,
+
+            size.name AS size_name,
+            color.name AS color_name,
+
+            movement.movement_type,
+            movement.quantity,
+            movement.quantity_before,
+            movement.quantity_after,
+
+            movement.reference_type,
+            movement.reference_id,
+
+            movement.note,
+            movement.created_by,
+
+            creator.full_name AS created_by_name,
+
+            movement.created_at
+
+          FROM stock_movements movement
+
+          JOIN stock_locations location
+            ON location.company_id =
+               movement.company_id
+
+            AND location.id =
+                movement.stock_location_id
+
+          JOIN product_variants variant
+            ON variant.company_id =
+               movement.company_id
+
+            AND variant.id =
+                movement.variant_id
+
+          JOIN products product
+            ON product.company_id =
+               variant.company_id
+
+            AND product.id =
+                variant.product_id
+
+          LEFT JOIN branches branch
+            ON branch.company_id =
+               movement.company_id
+
+            AND branch.id =
+                movement.branch_id
+
+          LEFT JOIN fashion_sizes size
+            ON size.company_id =
+               variant.company_id
+
+            AND size.id =
+                variant.size_id
+
+          LEFT JOIN fashion_colors color
+            ON color.company_id =
+               variant.company_id
+
+            AND color.id =
+                variant.color_id
+
+          LEFT JOIN users creator
+            ON creator.company_id =
+               movement.company_id
+
+            AND creator.id =
+                movement.created_by
+
+          WHERE movement.company_id = $1
+
+            AND (
+              $2::uuid IS NULL
+              OR movement.variant_id = $2
+            )
+
+            AND (
+              $3::uuid IS NULL
+              OR movement.stock_location_id = $3
+            )
+
+            AND (
+              $4::text IS NULL
+              OR movement.movement_type = $4
+            )
+
+            -- مستخدم الفرع يرى حركات أماكن فرعه فقط.
+            AND (
+              $5::uuid IS NULL
+              OR location.branch_id = $5
+            )
+
+          ORDER BY
+            movement.created_at DESC,
+            movement.id DESC
+
+          LIMIT $6;
+        `,
         [
-          companyId,
-          selectedVariantId,
-          selectedStockLocationId,
-          selectedMovementType,
-          selectedBranchId,
+          auth.companyId,
+          variantId || null,
+          stockLocationId || null,
+          movementType || null,
+          auth.branchId,
           limit,
         ],
       )
 
-      res.json({ data: result.rows })
+      return res.json({
+        data: result.rows,
+
+        meta: {
+          limit,
+          branchSelectionLocked: Boolean(auth.branchId),
+        },
+      })
     } catch (error) {
-      next(error)
+      return next(error)
     }
   },
 )
 
+// ======================================================
+// GET /api/inventory/stock-locations
+//
+// يعرض أماكن التخزين النشطة حسب الشركة والفرع
+// الموجودين داخل Session فقط.
+//
+// Query:
+// - locationType?
+// ======================================================
 inventoryRouter.get(
   '/api/inventory/stock-locations',
   async (req, res, next) => {
     try {
-      const companyId = req.query.companyId
-      const branchId = req.query.branchId
+      const auth = getAuthContext(res)
 
-      const selectedBranchId =
-        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+      const locationType =
+        typeof req.query.locationType === 'string'
+          ? req.query.locationType.trim().toLowerCase()
+          : ''
 
-      if (typeof companyId !== 'string' || !companyId.trim()) {
-        return res
-          .status(400)
-          .json({ error: 'companyId query parameter is required' })
+      const allowedLocationTypes = new Set([
+        'main_warehouse',
+        'branch_warehouse',
+        'sales_floor',
+        'returns',
+        'damaged',
+        'inspection',
+      ])
+
+      if (locationType && !allowedLocationTypes.has(locationType)) {
+        return res.status(400).json({
+          error: 'locationType is invalid',
+        })
       }
 
       const result = await db.query(
         `
-      SELECT
-        id,
-        company_id,
-        branch_id,
-        code,
-        name,
-        location_type,
-        is_active,
-        created_at,
-        updated_at
-      FROM stock_locations
-      WHERE company_id = $1
-        AND is_active = TRUE
-        AND (
-          $2::uuid IS NULL
-          OR branch_id = $2::uuid
-        )
-      ORDER BY name ASC;
-      `,
-        [companyId, selectedBranchId],
+          SELECT
+            location.id,
+            location.company_id,
+            location.branch_id,
+
+            branch.code AS branch_code,
+            branch.name AS branch_name,
+
+            location.code,
+            location.name,
+            location.location_type,
+            location.is_active,
+
+            location.created_at,
+            location.updated_at
+
+          FROM stock_locations location
+
+          LEFT JOIN branches branch
+            ON branch.company_id =
+               location.company_id
+
+            AND branch.id =
+                location.branch_id
+
+          WHERE location.company_id = $1
+            AND location.is_active = TRUE
+
+            AND (
+              $2::uuid IS NULL
+              OR location.branch_id = $2
+            )
+
+            AND (
+              $3::text IS NULL
+              OR location.location_type = $3
+            )
+
+          ORDER BY
+            branch.name ASC NULLS FIRST,
+            location.name ASC;
+        `,
+        [auth.companyId, auth.branchId, locationType || null],
       )
 
-      res.json({ data: result.rows })
+      return res.json({
+        data: result.rows,
+
+        meta: {
+          branchSelectionLocked: Boolean(auth.branchId),
+        },
+      })
     } catch (error) {
-      next(error)
+      return next(error)
     }
   },
 )
@@ -1797,7 +1974,9 @@ inventoryRouter.put('/api/inventory/reorder-rules', async (req, res, next) => {
 // POST /api/inventory/opening-balance
 //
 // تسجيل رصيد افتتاحي مرة واحدة فقط للصنف والمكان.
-// لا تتم إضافة الكمية على رصيد سابق.
+//
+// الشركة والفرع والمستخدم يأتون من Session.
+// الواجهة ترسل بيانات العملية فقط.
 // ======================================================
 inventoryRouter.post(
   '/api/inventory/opening-balance',
@@ -1805,21 +1984,9 @@ inventoryRouter.post(
     const client = await db.connect()
 
     try {
-      const {
-        companyId,
-        branchId,
-        stockLocationId,
-        variantId,
-        quantity,
-        note,
-        createdBy,
-      } = req.body
+      const auth = getAuthContext(res)
 
-      if (typeof companyId !== 'string' || !companyId.trim()) {
-        return res.status(400).json({
-          error: 'companyId is required',
-        })
-      }
+      const { stockLocationId, variantId, quantity, note } = req.body
 
       if (
         typeof stockLocationId !== 'string' ||
@@ -1836,60 +2003,80 @@ inventoryRouter.post(
         })
       }
 
-      const numericQuantity = Number(quantity)
+      const normalizedQuantity = parsePositiveInventoryQuantity(quantity)
 
-      if (!Number.isFinite(numericQuantity) || numericQuantity <= 0) {
+      if (normalizedQuantity === null) {
         return res.status(400).json({
-          error: 'quantity must be greater than zero',
+          error:
+            'quantity must be greater than zero with at most 3 decimal places',
         })
       }
 
-      const authenticatedBranchId =
-        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
+      const normalizedNote = typeof note === 'string' ? note.trim() : ''
+
+      if (normalizedNote.length > 500) {
+        return res.status(400).json({
+          error: 'note cannot exceed 500 characters',
+        })
+      }
+
+      const normalizedLocationId = stockLocationId.trim().toLowerCase()
+
+      const normalizedVariantId = variantId.trim().toLowerCase()
 
       await client.query('BEGIN')
 
-      // التحقق من الصنف ومكان التخزين معًا.
+      // المكان والصنف يتم تحميلهما باستخدام الشركة
+      // والفرع الموجودين في Session الموثقة.
       const contextResult = await client.query(
         `
-        SELECT
-          sl.id AS stock_location_id,
-          sl.branch_id AS trusted_branch_id,
-          sl.name AS stock_location_name,
-          sl.code AS stock_location_code,
-          pv.id AS variant_id,
-          pv.sku,
-          pv.primary_barcode,
-          p.name AS product_name
-        FROM stock_locations sl
+          SELECT
+            location.id AS stock_location_id,
+            location.branch_id AS trusted_branch_id,
 
-        JOIN product_variants pv
-          ON pv.id = $2
-          AND pv.company_id = sl.company_id
-          AND pv.status = 'active'
+            location.name AS stock_location_name,
+            location.code AS stock_location_code,
 
-        JOIN products p
-          ON p.id = pv.product_id
-          AND p.company_id = pv.company_id
+            variant.id AS variant_id,
+            variant.sku,
+            variant.primary_barcode,
 
-        WHERE sl.company_id = $1
-          AND sl.id = $3
-          AND sl.is_active = TRUE
+            product.name AS product_name
 
-          -- مستخدم الفرع لا يعدل مخزن فرع آخر
-          -- أو المخزن المركزي.
-          AND (
-            $4::uuid IS NULL
-            OR sl.branch_id = $4::uuid
-          )
+          FROM stock_locations location
 
-        LIMIT 1;
+          JOIN product_variants variant
+            ON variant.company_id =
+               location.company_id
+
+            AND variant.id = $2
+            AND variant.status = 'active'
+
+          JOIN products product
+            ON product.company_id =
+               variant.company_id
+
+            AND product.id =
+                variant.product_id
+
+            AND product.status = 'active'
+
+          WHERE location.company_id = $1
+            AND location.id = $3
+            AND location.is_active = TRUE
+
+            AND (
+              $4::uuid IS NULL
+              OR location.branch_id = $4
+            )
+
+          LIMIT 1;
         `,
         [
-          companyId.trim(),
-          variantId.trim(),
-          stockLocationId.trim(),
-          authenticatedBranchId,
+          auth.companyId,
+          normalizedVariantId,
+          normalizedLocationId,
+          auth.branchId,
         ],
       )
 
@@ -1902,29 +2089,31 @@ inventoryRouter.post(
 
       const trustedContext = contextResult.rows[0]
 
+      // إنشاء صف رصيد بصفر ثم قفله يمنع تنفيذ
+      // رصيدين افتتاحيين متزامنين لنفس الصنف.
       await client.query(
         `
-        INSERT INTO stock_balances (
-          company_id,
-          branch_id,
-          stock_location_id,
-          variant_id,
-          quantity
-        )
-        VALUES ($1, $2, $3, $4, 0)
+          INSERT INTO stock_balances (
+            company_id,
+            branch_id,
+            stock_location_id,
+            variant_id,
+            quantity
+          )
+          VALUES ($1, $2, $3, $4, 0)
 
-        ON CONFLICT (
-          company_id,
-          stock_location_id,
-          variant_id
-        )
-        DO NOTHING;
+          ON CONFLICT (
+            company_id,
+            stock_location_id,
+            variant_id
+          )
+          DO NOTHING;
         `,
         [
-          companyId.trim(),
+          auth.companyId,
           trustedContext.trusted_branch_id,
-          stockLocationId.trim(),
-          variantId.trim(),
+          normalizedLocationId,
+          normalizedVariantId,
         ],
       )
 
@@ -1933,13 +2122,16 @@ inventoryRouter.post(
           SELECT
             id,
             quantity
+
           FROM stock_balances
+
           WHERE company_id = $1
             AND stock_location_id = $2
             AND variant_id = $3
+
           FOR UPDATE;
-          `,
-        [companyId.trim(), stockLocationId.trim(), variantId.trim()],
+        `,
+        [auth.companyId, normalizedLocationId, normalizedVariantId],
       )
 
       if ((balanceBeforeResult.rowCount ?? 0) === 0) {
@@ -1948,17 +2140,21 @@ inventoryRouter.post(
 
       const quantityBefore = Number(balanceBeforeResult.rows[0].quantity)
 
-      // أي حركة سابقة تعني أن الصنف بدأ العمل عليه بالفعل.
+      // وجود أي حركة سابقة يعني أن الصنف بدأ العمل
+      // ولا يجوز تسجيل رصيد افتتاحي له مرة أخرى.
       const previousMovementResult = await client.query(
         `
           SELECT id
+
           FROM stock_movements
+
           WHERE company_id = $1
             AND stock_location_id = $2
             AND variant_id = $3
+
           LIMIT 1;
-          `,
-        [companyId.trim(), stockLocationId.trim(), variantId.trim()],
+        `,
+        [auth.companyId, normalizedLocationId, normalizedVariantId],
       )
 
       if (quantityBefore !== 0 || (previousMovementResult.rowCount ?? 0) > 0) {
@@ -1968,68 +2164,120 @@ inventoryRouter.post(
         )
       }
 
-      const quantityAfter = numericQuantity
-
       const balanceResult = await client.query(
         `
-        UPDATE stock_balances
-        SET
-          quantity = $1,
-          branch_id = $2,
-          updated_at = NOW()
-        WHERE company_id = $3
-          AND stock_location_id = $4
-          AND variant_id = $5
-        RETURNING *;
+          UPDATE stock_balances
+
+          SET
+            quantity = $1,
+            branch_id = $2,
+            updated_at = NOW()
+
+          WHERE company_id = $3
+            AND stock_location_id = $4
+            AND variant_id = $5
+
+          RETURNING *;
         `,
         [
-          quantityAfter,
+          normalizedQuantity,
           trustedContext.trusted_branch_id,
-          companyId.trim(),
-          stockLocationId.trim(),
-          variantId.trim(),
+          auth.companyId,
+          normalizedLocationId,
+          normalizedVariantId,
         ],
       )
 
       const movementResult = await client.query(
         `
-        INSERT INTO stock_movements (
-          company_id,
-          branch_id,
-          stock_location_id,
-          variant_id,
-          movement_type,
-          quantity,
-          quantity_before,
-          quantity_after,
-          reference_type,
-          reference_id,
-          note,
-          created_by
-        )
-        VALUES (
-          $1, $2, $3, $4,
-          'adjustment',
-          $5, $6, $7,
-          'opening_balance',
-          NULL,
-          $8,
-          $9
-        )
-        RETURNING *;
+          INSERT INTO stock_movements (
+            company_id,
+            branch_id,
+            stock_location_id,
+            variant_id,
+
+            movement_type,
+
+            quantity,
+            quantity_before,
+            quantity_after,
+
+            reference_type,
+            reference_id,
+
+            note,
+            created_by
+          )
+          VALUES (
+            $1, $2, $3, $4,
+            'adjustment',
+            $5, 0, $5,
+            'opening_balance',
+            NULL,
+            $6,
+            $7
+          )
+          RETURNING *;
         `,
         [
-          companyId.trim(),
+          auth.companyId,
           trustedContext.trusted_branch_id,
-          stockLocationId.trim(),
-          variantId.trim(),
-          numericQuantity,
-          quantityBefore,
-          quantityAfter,
-          typeof note === 'string' && note.trim()
-            ? note.trim()
-            : 'Opening balance',
-          createdBy || null,
+          normalizedLocationId,
+          normalizedVariantId,
+          normalizedQuantity,
+          normalizedNote || 'رصيد افتتاحي',
+          auth.userId,
+        ],
+      )
+
+      const movement = movementResult.rows[0]
+
+      // الرصيد الافتتاحي حركة حساسة، لذلك يتم تسجيلها
+      // داخل Audit Log في نفس الـTransaction.
+      await client.query(
+        `
+          INSERT INTO audit_logs (
+            company_id,
+            branch_id,
+            user_id,
+
+            action,
+            entity_type,
+            entity_id,
+
+            old_data,
+            new_data,
+
+            ip_address,
+            user_agent
+          )
+          VALUES (
+            $1, $2, $3,
+            'inventory.opening_balance.created',
+            'stock_movement',
+            $4,
+            NULL,
+            $5::jsonb,
+            $6,
+            $7
+          );
+        `,
+        [
+          auth.companyId,
+          trustedContext.trusted_branch_id,
+          auth.userId,
+
+          movement.id,
+
+          JSON.stringify({
+            stockLocationId: normalizedLocationId,
+            variantId: normalizedVariantId,
+            quantity: normalizedQuantity,
+            note: normalizedNote || null,
+          }),
+
+          req.ip || null,
+          req.get('user-agent') || null,
         ],
       )
 
@@ -2038,7 +2286,7 @@ inventoryRouter.post(
       return res.status(201).json({
         data: {
           balance: balanceResult.rows[0],
-          movement: movementResult.rows[0],
+          movement,
           item: trustedContext,
         },
       })
