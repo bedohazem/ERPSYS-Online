@@ -25,6 +25,7 @@ import SalesPerformancePage from './pages/SalesPerformancePage'
 import ProductPerformancePage from './pages/ProductPerformancePage'
 import InventoryShortagesPage from './pages/InventoryShortagesPage'
 import InventoryConditionsPage from './pages/InventoryConditionsPage'
+import InventoryItemCardPage from './pages/InventoryItemCardPage'
 // requestJson مسؤول عن إضافة عنوان السيرفر تلقائيًا.
 import { requestJson } from './lib/http'
 
@@ -35,6 +36,7 @@ type PageName =
   | 'sales'
   | 'returns'
   | 'inventory'
+  | 'inventory-item-card'
   | 'stock-counts'
   | 'inventory-conditions'
   | 'transfers'
@@ -135,6 +137,12 @@ const pageDefinitions: Array<{
     name: 'inventory',
     label: 'المخزون',
     icon: '▥',
+    permission: 'inventory.view',
+  },
+  {
+    name: 'inventory-item-card',
+    label: 'كارت حركة صنف',
+    icon: '▤',
     permission: 'inventory.view',
   },
   {
@@ -920,6 +928,10 @@ function App() {
 
           {activePage === 'inventory' ? (
             <InventoryPage companyId={companyId} branchId={branchId} />
+          ) : null}
+
+          {activePage === 'inventory-item-card' ? (
+            <InventoryItemCardPage />
           ) : null}
 
           {activePage === 'stock-counts' ? (

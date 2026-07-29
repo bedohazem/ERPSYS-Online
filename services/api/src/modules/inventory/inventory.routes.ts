@@ -22,6 +22,35 @@ function isInventoryUuid(value: string) {
   return inventoryUuidPattern.test(value)
 }
 
+// يتحقق من التاريخ بصيغة YYYY-MM-DD.
+// null يعني أن الفلتر غير مُرسل، وundefined يعني قيمة غير صالحة.
+function parseInventoryDateFilter(value: unknown) {
+  if (value === undefined || value === null || value === '') {
+    return null
+  }
+
+  if (typeof value !== 'string') {
+    return undefined
+  }
+
+  const normalizedValue = value.trim()
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedValue)) {
+    return undefined
+  }
+
+  const parsedDate = new Date(`${normalizedValue}T00:00:00.000Z`)
+
+  if (
+    Number.isNaN(parsedDate.getTime()) ||
+    parsedDate.toISOString().slice(0, 10) !== normalizedValue
+  ) {
+    return undefined
+  }
+
+  return normalizedValue
+}
+
 // ======================================================
 // GET /api/inventory/lookup-item
 //
@@ -595,6 +624,508 @@ inventoryRouter.get('/api/inventory/stock-balances', async (req, res, next) => {
           ? String(firstRow.inspection_quantity)
           : '0',
 
+        branchSelectionLocked: Boolean(auth.branchId),
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// ======================================================
+// GET /api/inventory/item-card
+//
+// كارت حركة صنف واحد:
+// - البحث بـ SKU أو الباركود.
+// - الأرصدة الحالية حسب مكان التخزين.
+// - إجمالي الداخل والخارج خلال الفترة.
+// - سجل حركات المخزون.
+//
+// الشركة والفرع يأتون من Session فقط.
+// ======================================================
+inventoryRouter.get('/api/inventory/item-card', async (req, res, next) => {
+  try {
+    const auth = getAuthContext(res)
+
+    const code = typeof req.query.code === 'string' ? req.query.code.trim() : ''
+
+    if (!code) {
+      return res.status(400).json({
+        error: 'code query parameter is required',
+      })
+    }
+
+    if (code.length > 120) {
+      return res.status(400).json({
+        error: 'code cannot exceed 120 characters',
+      })
+    }
+
+    const stockLocationId =
+      typeof req.query.stockLocationId === 'string'
+        ? req.query.stockLocationId.trim().toLowerCase()
+        : ''
+
+    if (stockLocationId && !isInventoryUuid(stockLocationId)) {
+      return res.status(400).json({
+        error: 'stockLocationId is invalid',
+      })
+    }
+
+    const dateFrom = parseInventoryDateFilter(req.query.dateFrom)
+    const dateTo = parseInventoryDateFilter(req.query.dateTo)
+
+    if (dateFrom === undefined) {
+      return res.status(400).json({
+        error: 'dateFrom must use YYYY-MM-DD format',
+      })
+    }
+
+    if (dateTo === undefined) {
+      return res.status(400).json({
+        error: 'dateTo must use YYYY-MM-DD format',
+      })
+    }
+
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+      return res.status(400).json({
+        error: 'dateFrom cannot be after dateTo',
+      })
+    }
+
+    const requestedLimit = Number(req.query.limit ?? 200)
+
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 500)
+      : 200
+
+    // نحدد الصنف داخل الشركة الموثقة فقط.
+    // لا نشترط أن يكون Active لأن كارت الحركة يجب أن يعمل
+    // أيضًا مع الأصناف الموقوفة التي لها تاريخ مخزون.
+    const itemResult = await db.query(
+      `
+        SELECT DISTINCT
+          variant.id AS variant_id,
+          variant.product_id,
+
+          product.name AS product_name,
+          product.status AS product_status,
+
+          variant.sku,
+          variant.primary_barcode,
+          variant.status AS variant_status,
+
+          size.name AS size_name,
+          color.name AS color_name,
+
+          category.name AS category_name,
+          brand.name AS brand_name
+
+        FROM product_variants variant
+
+        JOIN products product
+          ON product.company_id =
+             variant.company_id
+
+          AND product.id =
+              variant.product_id
+
+        LEFT JOIN variant_barcodes barcode
+          ON barcode.company_id =
+             variant.company_id
+
+          AND barcode.variant_id =
+              variant.id
+
+        LEFT JOIN fashion_sizes size
+          ON size.company_id =
+             variant.company_id
+
+          AND size.id =
+              variant.size_id
+
+        LEFT JOIN fashion_colors color
+          ON color.company_id =
+             variant.company_id
+
+          AND color.id =
+              variant.color_id
+
+        LEFT JOIN categories category
+          ON category.company_id =
+             product.company_id
+
+          AND category.id =
+              product.category_id
+
+        LEFT JOIN brands brand
+          ON brand.company_id =
+             product.company_id
+
+          AND brand.id =
+              product.brand_id
+
+        WHERE variant.company_id = $1
+
+          AND (
+            variant.sku = $2
+            OR variant.primary_barcode = $2
+            OR barcode.barcode = $2
+          )
+
+        LIMIT 1;
+      `,
+      [auth.companyId, code],
+    )
+
+    if ((itemResult.rowCount ?? 0) === 0) {
+      return res.status(404).json({
+        error: 'الصنف غير موجود داخل الشركة الحالية.',
+      })
+    }
+
+    const item = itemResult.rows[0]
+
+    // لو تم اختيار مكان معين، نتحقق أنه تابع للشركة
+    // ومتاح للفرع الموجود في Session.
+    if (stockLocationId) {
+      const locationResult = await db.query(
+        `
+          SELECT id
+
+          FROM stock_locations
+
+          WHERE company_id = $1
+            AND id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR branch_id = $3
+            )
+
+          LIMIT 1;
+        `,
+        [auth.companyId, stockLocationId, auth.branchId],
+      )
+
+      if ((locationResult.rowCount ?? 0) === 0) {
+        return res.status(404).json({
+          error: 'مكان التخزين غير موجود أو غير مسموح.',
+        })
+      }
+    }
+
+    const [
+      balancesResult,
+      balanceSummaryResult,
+      movementsResult,
+      movementSummaryResult,
+    ] = await Promise.all([
+      db.query(
+        `
+          SELECT
+            balance.id,
+            balance.branch_id,
+
+            branch.name AS branch_name,
+
+            balance.stock_location_id,
+
+            location.code AS stock_location_code,
+            location.name AS stock_location_name,
+            location.location_type,
+
+            balance.quantity,
+            balance.updated_at
+
+          FROM stock_balances balance
+
+          JOIN stock_locations location
+            ON location.company_id =
+               balance.company_id
+
+            AND location.id =
+                balance.stock_location_id
+
+          LEFT JOIN branches branch
+            ON branch.company_id =
+               location.company_id
+
+            AND branch.id =
+                location.branch_id
+
+          WHERE balance.company_id = $1
+            AND balance.variant_id = $2
+            AND balance.quantity <> 0
+
+            AND (
+              $3::uuid IS NULL
+              OR location.id = $3
+            )
+
+            AND (
+              $4::uuid IS NULL
+              OR location.branch_id = $4
+            )
+
+          ORDER BY
+            branch.name ASC NULLS FIRST,
+            location.name ASC;
+        `,
+        [
+          auth.companyId,
+          item.variant_id,
+          stockLocationId || null,
+          auth.branchId,
+        ],
+      ),
+
+      db.query(
+        `
+          SELECT
+            COALESCE(
+              SUM(balance.quantity),
+              0
+            ) AS current_quantity,
+
+            (
+              COUNT(*)
+              FILTER (
+                WHERE balance.quantity <> 0
+              )
+            )::integer AS location_count
+
+          FROM stock_balances balance
+
+          JOIN stock_locations location
+            ON location.company_id =
+               balance.company_id
+
+            AND location.id =
+                balance.stock_location_id
+
+          WHERE balance.company_id = $1
+            AND balance.variant_id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR location.id = $3
+            )
+
+            AND (
+              $4::uuid IS NULL
+              OR location.branch_id = $4
+            );
+        `,
+        [
+          auth.companyId,
+          item.variant_id,
+          stockLocationId || null,
+          auth.branchId,
+        ],
+      ),
+
+      db.query(
+        `
+          SELECT
+            movement.id,
+            movement.branch_id,
+
+            branch.name AS branch_name,
+
+            movement.stock_location_id,
+
+            location.code AS stock_location_code,
+            location.name AS stock_location_name,
+            location.location_type,
+
+            movement.movement_type,
+            movement.quantity,
+            movement.quantity_before,
+            movement.quantity_after,
+
+            movement.reference_type,
+            movement.reference_id,
+
+            movement.note,
+            movement.created_by,
+
+            creator.full_name AS created_by_name,
+
+            movement.created_at
+
+          FROM stock_movements movement
+
+          JOIN stock_locations location
+            ON location.company_id =
+               movement.company_id
+
+            AND location.id =
+                movement.stock_location_id
+
+          LEFT JOIN branches branch
+            ON branch.company_id =
+               movement.company_id
+
+            AND branch.id =
+                movement.branch_id
+
+          LEFT JOIN users creator
+            ON creator.company_id =
+               movement.company_id
+
+            AND creator.id =
+                movement.created_by
+
+          WHERE movement.company_id = $1
+            AND movement.variant_id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR location.id = $3
+            )
+
+            AND (
+              $4::uuid IS NULL
+              OR location.branch_id = $4
+            )
+
+            AND (
+              $5::date IS NULL
+              OR movement.created_at >= $5::date
+            )
+
+            AND (
+              $6::date IS NULL
+              OR movement.created_at <
+                 $6::date + INTERVAL '1 day'
+            )
+
+          ORDER BY
+            movement.created_at DESC,
+            movement.id DESC
+
+          LIMIT $7;
+        `,
+        [
+          auth.companyId,
+          item.variant_id,
+          stockLocationId || null,
+          auth.branchId,
+          dateFrom,
+          dateTo,
+          limit,
+        ],
+      ),
+
+      db.query(
+        `
+          SELECT
+            COUNT(*)::integer
+              AS movement_count,
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN movement.quantity > 0
+                  THEN movement.quantity
+                  ELSE 0
+                END
+              ),
+              0
+            ) AS inbound_quantity,
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN movement.quantity < 0
+                  THEN ABS(movement.quantity)
+                  ELSE 0
+                END
+              ),
+              0
+            ) AS outbound_quantity,
+
+            COALESCE(
+              SUM(movement.quantity),
+              0
+            ) AS net_quantity
+
+          FROM stock_movements movement
+
+          JOIN stock_locations location
+            ON location.company_id =
+               movement.company_id
+
+            AND location.id =
+                movement.stock_location_id
+
+          WHERE movement.company_id = $1
+            AND movement.variant_id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR location.id = $3
+            )
+
+            AND (
+              $4::uuid IS NULL
+              OR location.branch_id = $4
+            )
+
+            AND (
+              $5::date IS NULL
+              OR movement.created_at >= $5::date
+            )
+
+            AND (
+              $6::date IS NULL
+              OR movement.created_at <
+                 $6::date + INTERVAL '1 day'
+            );
+        `,
+        [
+          auth.companyId,
+          item.variant_id,
+          stockLocationId || null,
+          auth.branchId,
+          dateFrom,
+          dateTo,
+        ],
+      ),
+    ])
+
+    const balanceSummary = balanceSummaryResult.rows[0]
+    const movementSummary = movementSummaryResult.rows[0]
+
+    return res.json({
+      data: {
+        item,
+
+        balances: balancesResult.rows,
+
+        movements: movementsResult.rows,
+
+        summary: {
+          currentQuantity: balanceSummary.current_quantity,
+
+          locationCount: balanceSummary.location_count,
+
+          movementCount: movementSummary.movement_count,
+
+          inboundQuantity: movementSummary.inbound_quantity,
+
+          outboundQuantity: movementSummary.outbound_quantity,
+
+          netQuantity: movementSummary.net_quantity,
+        },
+      },
+
+      meta: {
+        limit,
+        stockLocationId: stockLocationId || null,
+        dateFrom,
+        dateTo,
         branchSelectionLocked: Boolean(auth.branchId),
       },
     })
