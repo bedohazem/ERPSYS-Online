@@ -252,6 +252,80 @@ const pageDefinitions: Array<{
 ]
 
 // ======================================================
+// مجموعات التنقل.
+//
+// الصفحات تظل مستقلة ولها نفس الروابط والصلاحيات، لكن
+// الـSidebar يعرضها داخل أقسام لتقليل الزحام.
+// ======================================================
+type NavigationGroupName =
+  | 'sales'
+  | 'inventory'
+  | 'purchases'
+  | 'pos'
+  | 'reports'
+  | 'administration'
+
+const navigationGroups: Array<{
+  name: NavigationGroupName
+  label: string
+  icon: string
+  pages: PageName[]
+}> = [
+  {
+    name: 'sales',
+    label: 'المبيعات والعملاء',
+    icon: '↗',
+    pages: [
+      'new-sale',
+      'sales',
+      'new-return',
+      'returns',
+      'new-exchange',
+      'exchanges',
+      'customers',
+    ],
+  },
+  {
+    name: 'inventory',
+    label: 'المنتجات والمخزون',
+    icon: '▥',
+    pages: [
+      'products',
+      'inventory',
+      'inventory-item-card',
+      'stock-counts',
+      'inventory-conditions',
+      'transfers',
+      'inventory-shortages',
+    ],
+  },
+  {
+    name: 'purchases',
+    label: 'المشتريات',
+    icon: '↓',
+    pages: ['purchases', 'purchase-orders'],
+  },
+  {
+    name: 'pos',
+    label: 'نقاط البيع',
+    icon: '▣',
+    pages: ['pos-devices', 'pos-sync', 'cashier-shifts'],
+  },
+  {
+    name: 'reports',
+    label: 'التقارير',
+    icon: '▤',
+    pages: ['sales-performance', 'product-performance'],
+  },
+  {
+    name: 'administration',
+    label: 'الإدارة والصلاحيات',
+    icon: '⚙',
+    pages: ['users', 'roles'],
+  },
+]
+
+// ======================================================
 // readPageFromHash
 //
 // قراءة اسم الصفحة من رابط المتصفح.
@@ -397,6 +471,12 @@ function App() {
     () => readPageFromHash() ?? 'dashboard',
   )
 
+  // الأقسام المفتوحة في الـSidebar.
+  // عند فتح صفحة من رابط مباشر سيتم فتح مجموعتها تلقائيًا.
+  const [openNavigationGroups, setOpenNavigationGroups] = useState<
+    NavigationGroupName[]
+  >([])
+
   // رقم الفاتورة التي سيتم فتح مرتجع لها مباشرة
   // null يعني فتح شاشة New Return بدون فاتورة محددة
   const [selectedReturnSaleId, setSelectedReturnSaleId] = useState<
@@ -464,6 +544,47 @@ function App() {
       return isAdmin || hasPrimaryPermission || hasAnyOptionalPermission
     })
   }, [user])
+
+  // لا نظهر مجموعة فارغة.
+  // الصفحات داخل كل مجموعة تمر أولًا على فحص الصلاحيات الحالي.
+  const visibleNavigationGroups = useMemo(() => {
+    return navigationGroups
+      .map((group) => ({
+        ...group,
+
+        pages: group.pages.flatMap((pageName) => {
+          const page = visiblePages.find(
+            (visiblePage) => visiblePage.name === pageName,
+          )
+
+          return page ? [page] : []
+        }),
+      }))
+      .filter((group) => group.pages.length > 0)
+  }, [visiblePages])
+
+  const dashboardNavigationPage = visiblePages.find(
+    (page) => page.name === 'dashboard',
+  )
+
+  // عند فتح صفحة من رابط أو زر داخلي، نفتح مجموعتها تلقائيًا.
+  useEffect(() => {
+    const activeGroup = navigationGroups.find((group) =>
+      group.pages.includes(activePage),
+    )
+
+    if (!activeGroup) {
+      return
+    }
+
+    setOpenNavigationGroups((currentGroups) => {
+      if (currentGroups.includes(activeGroup.name)) {
+        return currentGroups
+      }
+
+      return [...currentGroups, activeGroup.name]
+    })
+  }, [activePage])
 
   // ======================================================
   // مزامنة الصفحة مع أزرار الرجوع والتقدم في المتصفح.
@@ -621,6 +742,56 @@ function App() {
     navigateToPage('new-exchange')
   }
 
+  // فتح أو غلق مجموعة بدون تغيير الصفحة الحالية.
+  function toggleNavigationGroup(groupName: NavigationGroupName) {
+    setOpenNavigationGroups((currentGroups) =>
+      currentGroups.includes(groupName)
+        ? currentGroups.filter((currentGroup) => currentGroup !== groupName)
+        : [...currentGroups, groupName],
+    )
+  }
+
+  // يحافظ على تنظيف بيانات المرتجع والاستبدال
+  // الموجود سابقًا عند فتح الصفحات من الـSidebar.
+  function openNavigationPage(pageName: PageName) {
+    if (pageName === 'new-return') {
+      setSelectedReturnSaleId(null)
+    }
+
+    if (pageName === 'new-exchange') {
+      setSelectedExchangeSaleId(null)
+    }
+
+    navigateToPage(pageName)
+  }
+
+  // توحيد رسم زر الصفحة بدل تكرار نفس الكود
+  // داخل الرئيسية وداخل مجموعات التنقل.
+  function renderNavigationPageButton(
+    page: (typeof pageDefinitions)[number],
+    isDashboard = false,
+  ) {
+    const classNames = [
+      'sidebar-nav-button',
+      isDashboard ? 'sidebar-nav-dashboard' : '',
+      activePage === page.name ? 'sidebar-nav-button-active' : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+
+    return (
+      <button
+        key={page.name}
+        type="button"
+        className={classNames}
+        onClick={() => openNavigationPage(page.name)}
+      >
+        <span className="sidebar-nav-icon">{page.icon}</span>
+        <span>{page.label}</span>
+      </button>
+    )
+  }
+
   return (
     <main className="app-shell" dir="rtl">
       {/* ==================================================
@@ -642,32 +813,58 @@ function App() {
         </div>
 
         <nav className="sidebar-nav" aria-label="التنقل الرئيسي">
-          {visiblePages.map((page) => (
-            <button
-              key={page.name}
-              type="button"
-              className={
-                activePage === page.name
-                  ? 'sidebar-nav-button sidebar-nav-button-active'
-                  : 'sidebar-nav-button'
-              }
-              onClick={() => {
-                if (page.name === 'new-return') {
-                  setSelectedReturnSaleId(null)
-                }
+          {dashboardNavigationPage
+            ? renderNavigationPageButton(dashboardNavigationPage, true)
+            : null}
 
-                if (page.name === 'new-exchange') {
-                  setSelectedExchangeSaleId(null)
-                }
+          {visibleNavigationGroups.map((group) => {
+            const isOpen = openNavigationGroups.includes(group.name)
 
-                navigateToPage(page.name)
-              }}
-            >
-              <span className="sidebar-nav-icon">{page.icon}</span>
+            const containsActivePage = group.pages.some(
+              (page) => page.name === activePage,
+            )
 
-              <span>{page.label}</span>
-            </button>
-          ))}
+            const groupContentId = `sidebar-group-${group.name}`
+
+            return (
+              <section key={group.name} className="sidebar-nav-group">
+                <button
+                  type="button"
+                  className={
+                    containsActivePage
+                      ? 'sidebar-nav-group-button sidebar-nav-group-button-active'
+                      : 'sidebar-nav-group-button'
+                  }
+                  aria-expanded={isOpen}
+                  aria-controls={groupContentId}
+                  onClick={() => toggleNavigationGroup(group.name)}
+                >
+                  <span className="sidebar-nav-icon">{group.icon}</span>
+
+                  <span className="sidebar-nav-group-label">{group.label}</span>
+
+                  <span
+                    className={
+                      isOpen
+                        ? 'sidebar-nav-group-arrow sidebar-nav-group-arrow-open'
+                        : 'sidebar-nav-group-arrow'
+                    }
+                    aria-hidden="true"
+                  >
+                    ‹
+                  </span>
+                </button>
+
+                {isOpen ? (
+                  <div id={groupContentId} className="sidebar-nav-group-pages">
+                    {group.pages.map((page) =>
+                      renderNavigationPageButton(page),
+                    )}
+                  </div>
+                ) : null}
+              </section>
+            )
+          })}
         </nav>
 
         <div className="sidebar-session">

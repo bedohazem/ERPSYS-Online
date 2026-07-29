@@ -751,7 +751,7 @@ inventoryRouter.get('/api/inventory/item-card', async (req, res, next) => {
           AND color.id =
               variant.color_id
 
-        LEFT JOIN categories category
+        LEFT JOIN product_categories category
           ON category.company_id =
              product.company_id
 
