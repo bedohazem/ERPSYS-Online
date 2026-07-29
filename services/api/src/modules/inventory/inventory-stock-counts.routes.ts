@@ -1060,3 +1060,617 @@ inventoryStockCountsRouter.put(
     }
   },
 )
+
+// ======================================================
+// POST /api/inventory/stock-counts/:stockCountId/complete
+//
+// يعتمد جلسة الجرد ويحوّل فروق العد إلى حركات مخزون.
+//
+// شروط الاعتماد:
+// 1. المستند ما زال Draft.
+// 2. كل الأصناف تم إدخال كمياتها الفعلية.
+// 3. الرصيد لم يتغير منذ فتح جلسة الجرد.
+//
+// لو الرصيد تغير بسبب بيع أو تحويل، نرفض الاعتماد حتى
+// لا يتم تطبيق نتيجة جرد قديمة فوق حركات أحدث.
+// ======================================================
+inventoryStockCountsRouter.post(
+  '/api/inventory/stock-counts/:stockCountId/complete',
+  async (req, res, next) => {
+    const client = await db.connect()
+
+    try {
+      const auth = getAuthContext(res)
+
+      const stockCountId =
+        typeof req.params.stockCountId === 'string'
+          ? req.params.stockCountId.trim().toLowerCase()
+          : ''
+
+      if (!isUuid(stockCountId)) {
+        return res.status(400).json({
+          error: 'stockCountId is invalid',
+        })
+      }
+
+      await client.query('BEGIN')
+
+      // قفل رأس المستند يمنع الاعتماد والإلغاء
+      // أو تعديل أحد الأصناف في نفس الوقت.
+      const stockCountResult = await client.query(
+        `
+          SELECT
+            stock_count.*,
+
+            location.code AS stock_location_code,
+            location.name AS stock_location_name,
+            location.location_type
+
+          FROM inventory_stock_counts stock_count
+
+          JOIN stock_locations location
+            ON location.company_id =
+               stock_count.company_id
+
+            AND location.id =
+                stock_count.stock_location_id
+
+          WHERE stock_count.company_id = $1
+            AND stock_count.id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR location.branch_id = $3
+            )
+
+          FOR UPDATE OF stock_count;
+        `,
+        [auth.companyId, stockCountId, auth.branchId],
+      )
+
+      if ((stockCountResult.rowCount ?? 0) === 0) {
+        throw new InventoryStockCountError(
+          404,
+          'جلسة الجرد غير موجودة أو غير مسموح بها.',
+        )
+      }
+
+      const stockCount = stockCountResult.rows[0]
+
+      // إعادة محاولة اعتماد مستند مكتمل لا تنشئ
+      // حركات مخزون جديدة.
+      if (stockCount.status === 'completed') {
+        const movementCountResult = await client.query(
+          `
+            SELECT COUNT(*)::integer AS movement_count
+
+            FROM stock_movements
+
+            WHERE company_id = $1
+              AND reference_type =
+                  'inventory_stock_count'
+
+              AND reference_id = $2;
+          `,
+          [auth.companyId, stockCountId],
+        )
+
+        await client.query('COMMIT')
+
+        return res.status(200).json({
+          data: {
+            stockCount,
+            movementCount: movementCountResult.rows[0].movement_count,
+          },
+          meta: {
+            duplicate: true,
+          },
+        })
+      }
+
+      if (stockCount.status === 'cancelled') {
+        throw new InventoryStockCountError(
+          409,
+          'لا يمكن اعتماد جلسة جرد ملغية.',
+        )
+      }
+
+      // نقفل كل أصناف الجرد بترتيب ثابت.
+      // نفس الترتيب يقلل احتمالات Deadlock.
+      const itemsResult = await client.query(
+        `
+          SELECT
+            id,
+            variant_id,
+            expected_quantity,
+            counted_quantity,
+            difference_quantity
+
+          FROM inventory_stock_count_items
+
+          WHERE company_id = $1
+            AND stock_count_id = $2
+
+          ORDER BY variant_id
+
+          FOR UPDATE;
+        `,
+        [auth.companyId, stockCountId],
+      )
+
+      if ((itemsResult.rowCount ?? 0) === 0) {
+        throw new InventoryStockCountError(
+          409,
+          'جلسة الجرد لا تحتوي على أصناف.',
+        )
+      }
+
+      const uncountedItems = itemsResult.rows.filter(
+        (item) => item.counted_quantity === null,
+      )
+
+      if (uncountedItems.length > 0) {
+        throw new InventoryStockCountError(
+          409,
+          `يوجد ${uncountedItems.length} صنف لم يتم إدخال كميته الفعلية.`,
+        )
+      }
+
+      // نقفل الأرصدة الحالية قبل مقارنتها بالـSnapshot.
+      const balancesResult = await client.query(
+        `
+          SELECT
+            balance.id AS balance_id,
+            balance.variant_id,
+            balance.quantity AS current_quantity,
+
+            item.expected_quantity,
+            item.counted_quantity,
+            item.difference_quantity,
+
+            (
+              balance.quantity <>
+              item.expected_quantity
+            ) AS changed_since_open
+
+          FROM inventory_stock_count_items item
+
+          JOIN stock_balances balance
+            ON balance.company_id =
+               item.company_id
+
+            AND balance.stock_location_id = $3
+            AND balance.variant_id =
+                item.variant_id
+
+          WHERE item.company_id = $1
+            AND item.stock_count_id = $2
+
+          ORDER BY item.variant_id
+
+          FOR UPDATE OF balance;
+        `,
+        [auth.companyId, stockCountId, stockCount.stock_location_id],
+      )
+
+      // اختفاء أي صف رصيد بعد فتح الجرد يعتبر تعارضًا.
+      if ((balancesResult.rowCount ?? 0) !== (itemsResult.rowCount ?? 0)) {
+        throw new InventoryStockCountError(
+          409,
+          'بعض أرصدة الأصناف تغيرت أو لم تعد موجودة منذ فتح الجرد.',
+        )
+      }
+
+      const changedBalances = balancesResult.rows.filter(
+        (balance) => balance.changed_since_open,
+      )
+
+      if (changedBalances.length > 0) {
+        throw new InventoryStockCountError(
+          409,
+          `تغير رصيد ${changedBalances.length} صنف منذ فتح الجرد. ألغِ الجلسة وافتح جردًا جديدًا.`,
+        )
+      }
+
+      // نعدّل الأرصدة التي يوجد بها فرق فقط.
+      // الأصناف المتطابقة لا تحتاج حركة مخزون.
+      const updatedBalancesResult = await client.query(
+        `
+          UPDATE stock_balances balance
+
+          SET
+            quantity = item.counted_quantity,
+            branch_id = $3,
+            updated_at = NOW()
+
+          FROM inventory_stock_count_items item
+
+          WHERE item.company_id = $1
+            AND item.stock_count_id = $2
+
+            AND balance.company_id =
+                item.company_id
+
+            AND balance.stock_location_id = $4
+            AND balance.variant_id =
+                item.variant_id
+
+            AND item.difference_quantity <> 0
+
+          RETURNING
+            balance.id,
+            balance.variant_id,
+            balance.quantity,
+            balance.updated_at;
+        `,
+        [
+          auth.companyId,
+          stockCountId,
+          stockCount.branch_id,
+          stockCount.stock_location_id,
+        ],
+      )
+
+      const movementNote = `Stock count ${stockCount.count_number}`
+
+      // كل فرق موجب أو سالب ينتج عنه Stock Movement.
+      // المستند نفسه هو المرجع الدائم لكل الحركات.
+      const movementsResult = await client.query(
+        `
+          INSERT INTO stock_movements (
+            company_id,
+            branch_id,
+            stock_location_id,
+            variant_id,
+
+            movement_type,
+            quantity,
+            quantity_before,
+            quantity_after,
+
+            reference_type,
+            reference_id,
+
+            note,
+            created_by
+          )
+
+          SELECT
+            item.company_id,
+            $3,
+            $4,
+            item.variant_id,
+
+            'stock_count',
+            item.difference_quantity,
+            item.expected_quantity,
+            item.counted_quantity,
+
+            'inventory_stock_count',
+            $2,
+
+            $5,
+            $6
+
+          FROM inventory_stock_count_items item
+
+          WHERE item.company_id = $1
+            AND item.stock_count_id = $2
+            AND item.difference_quantity <> 0
+
+          ORDER BY item.variant_id
+
+          RETURNING *;
+        `,
+        [
+          auth.companyId,
+          stockCountId,
+          stockCount.branch_id,
+          stockCount.stock_location_id,
+          movementNote,
+          auth.userId,
+        ],
+      )
+
+      // نغلق المستند بعد نجاح تحديث كل الأرصدة والحركات.
+      const completedResult = await client.query(
+        `
+          UPDATE inventory_stock_counts
+
+          SET
+            status = 'completed',
+            completed_by = $1,
+            completed_at = NOW(),
+            updated_at = NOW()
+
+          WHERE company_id = $2
+            AND id = $3
+
+          RETURNING *;
+        `,
+        [auth.userId, auth.companyId, stockCountId],
+      )
+
+      const completedStockCount = completedResult.rows[0]
+
+      const differenceItems = itemsResult.rows.filter(
+        (item) => Number(item.difference_quantity) !== 0,
+      )
+
+      const totalAbsoluteDifference = differenceItems.reduce(
+        (total, item) => total + Math.abs(Number(item.difference_quantity)),
+        0,
+      )
+
+      // نسجل ملخص الاعتماد بدل إنشاء Audit إضافي
+      // لكل حركة؛ تفاصيل الحركات موجودة في stock_movements.
+      await client.query(
+        `
+          INSERT INTO audit_logs (
+            company_id,
+            branch_id,
+            user_id,
+
+            action,
+            entity_type,
+            entity_id,
+
+            old_data,
+            new_data,
+
+            ip_address,
+            user_agent
+          )
+          VALUES (
+            $1, $2, $3,
+            'inventory.stock_count.completed',
+            'inventory_stock_count',
+            $4,
+            $5::jsonb,
+            $6::jsonb,
+            $7,
+            $8
+          );
+        `,
+        [
+          auth.companyId,
+          stockCount.branch_id,
+          auth.userId,
+
+          stockCountId,
+
+          JSON.stringify({
+            status: 'draft',
+          }),
+
+          JSON.stringify({
+            status: 'completed',
+            itemCount: itemsResult.rows.length,
+            differenceItemCount: differenceItems.length,
+            movementCount: movementsResult.rowCount ?? 0,
+            totalAbsoluteDifference,
+          }),
+
+          req.ip || null,
+          req.get('user-agent') || null,
+        ],
+      )
+
+      await client.query('COMMIT')
+
+      return res.json({
+        data: {
+          stockCount: completedStockCount,
+
+          summary: {
+            itemCount: itemsResult.rows.length,
+            differenceItemCount: differenceItems.length,
+            movementCount: movementsResult.rowCount ?? 0,
+            updatedBalanceCount: updatedBalancesResult.rowCount ?? 0,
+            totalAbsoluteDifference,
+          },
+
+          movements: movementsResult.rows,
+        },
+        meta: {
+          duplicate: false,
+        },
+      })
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+
+      if (error instanceof InventoryStockCountError) {
+        return res.status(error.statusCode).json({
+          error: error.message,
+        })
+      }
+
+      return next(error)
+    } finally {
+      client.release()
+    }
+  },
+)
+
+// ======================================================
+// POST /api/inventory/stock-counts/:stockCountId/cancel
+//
+// يلغي جلسة Draft بدون تغيير الأرصدة أو إنشاء حركات.
+// إعادة محاولة إلغاء نفس المستند آمنة.
+// ======================================================
+inventoryStockCountsRouter.post(
+  '/api/inventory/stock-counts/:stockCountId/cancel',
+  async (req, res, next) => {
+    const client = await db.connect()
+
+    try {
+      const auth = getAuthContext(res)
+
+      const stockCountId =
+        typeof req.params.stockCountId === 'string'
+          ? req.params.stockCountId.trim().toLowerCase()
+          : ''
+
+      if (!isUuid(stockCountId)) {
+        return res.status(400).json({
+          error: 'stockCountId is invalid',
+        })
+      }
+
+      await client.query('BEGIN')
+
+      // قفل المستند يمنع الإلغاء أثناء الاعتماد
+      // أو أثناء تعديل كمية أحد الأصناف.
+      const stockCountResult = await client.query(
+        `
+          SELECT
+            stock_count.*,
+
+            location.code AS stock_location_code,
+            location.name AS stock_location_name
+
+          FROM inventory_stock_counts stock_count
+
+          JOIN stock_locations location
+            ON location.company_id =
+               stock_count.company_id
+
+            AND location.id =
+                stock_count.stock_location_id
+
+          WHERE stock_count.company_id = $1
+            AND stock_count.id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR location.branch_id = $3
+            )
+
+          FOR UPDATE OF stock_count;
+        `,
+        [auth.companyId, stockCountId, auth.branchId],
+      )
+
+      if ((stockCountResult.rowCount ?? 0) === 0) {
+        throw new InventoryStockCountError(
+          404,
+          'جلسة الجرد غير موجودة أو غير مسموح بها.',
+        )
+      }
+
+      const stockCount = stockCountResult.rows[0]
+
+      if (stockCount.status === 'completed') {
+        throw new InventoryStockCountError(
+          409,
+          'لا يمكن إلغاء جلسة جرد تم اعتمادها.',
+        )
+      }
+
+      // إعادة محاولة الإلغاء لا تسجل Audit جديدًا.
+      if (stockCount.status === 'cancelled') {
+        await client.query('COMMIT')
+
+        return res.status(200).json({
+          data: {
+            stockCount,
+          },
+          meta: {
+            duplicate: true,
+          },
+        })
+      }
+
+      const cancelledResult = await client.query(
+        `
+          UPDATE inventory_stock_counts
+
+          SET
+            status = 'cancelled',
+            cancelled_by = $1,
+            cancelled_at = NOW(),
+            updated_at = NOW()
+
+          WHERE company_id = $2
+            AND id = $3
+
+          RETURNING *;
+        `,
+        [auth.userId, auth.companyId, stockCountId],
+      )
+
+      const cancelledStockCount = cancelledResult.rows[0]
+
+      await client.query(
+        `
+          INSERT INTO audit_logs (
+            company_id,
+            branch_id,
+            user_id,
+
+            action,
+            entity_type,
+            entity_id,
+
+            old_data,
+            new_data,
+
+            ip_address,
+            user_agent
+          )
+          VALUES (
+            $1, $2, $3,
+            'inventory.stock_count.cancelled',
+            'inventory_stock_count',
+            $4,
+            $5::jsonb,
+            $6::jsonb,
+            $7,
+            $8
+          );
+        `,
+        [
+          auth.companyId,
+          stockCount.branch_id,
+          auth.userId,
+
+          stockCountId,
+
+          JSON.stringify({
+            status: 'draft',
+          }),
+
+          JSON.stringify({
+            status: 'cancelled',
+          }),
+
+          req.ip || null,
+          req.get('user-agent') || null,
+        ],
+      )
+
+      await client.query('COMMIT')
+
+      return res.json({
+        data: {
+          stockCount: cancelledStockCount,
+        },
+        meta: {
+          duplicate: false,
+        },
+      })
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+
+      if (error instanceof InventoryStockCountError) {
+        return res.status(error.statusCode).json({
+          error: error.message,
+        })
+      }
+
+      return next(error)
+    } finally {
+      client.release()
+    }
+  },
+)
