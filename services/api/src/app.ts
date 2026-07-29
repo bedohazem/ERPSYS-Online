@@ -32,6 +32,7 @@ import { returnsRouter } from './modules/returns/returns.routes'
 import { exchangesRouter } from './modules/exchanges/exchanges.routes'
 import { reportsRouter } from './modules/reports/reports.routes'
 import { inventoryAdjustmentsRouter } from './modules/inventory/inventory-adjustments.routes'
+import { inventoryStockCountsRouter } from './modules/inventory/inventory-stock-counts.routes'
 // إدارة المستخدمين والأدوار والصلاحيات.
 import { accessRouter } from './modules/access/access.routes'
 
@@ -87,6 +88,7 @@ app.use(branchesRouter)
 app.use(catalogRouter)
 app.use(inventoryRouter)
 app.use(inventoryAdjustmentsRouter)
+app.use(inventoryStockCountsRouter)
 app.use(suppliersRouter)
 app.use(purchasesRouter)
 app.use(purchaseOrdersRouter)
