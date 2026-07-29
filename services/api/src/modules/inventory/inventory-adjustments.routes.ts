@@ -23,10 +23,19 @@ function isUuid(value: string) {
   return uuidPattern.test(value)
 }
 
-// يحول الكمية إلى ثلاث خانات عشرية.
-// null تعني أن القيمة غير صالحة.
+// يقبل رقمًا أو نصًا رقميًا غير فارغ.
+// نرفض null وboolean والنص الفارغ حتى لا يتحولوا إلى صفر.
 function parseCountedQuantity(value: unknown) {
-  const numericValue = Number(value)
+  const normalizedInput = typeof value === 'string' ? value.trim() : value
+
+  if (
+    normalizedInput === '' ||
+    (typeof normalizedInput !== 'string' && typeof normalizedInput !== 'number')
+  ) {
+    return null
+  }
+
+  const numericValue = Number(normalizedInput)
 
   if (!Number.isFinite(numericValue) || numericValue < 0) {
     return null
@@ -34,12 +43,11 @@ function parseCountedQuantity(value: unknown) {
 
   const normalizedValue = Number(numericValue.toFixed(3))
 
-  // نرفض أكثر من 3 خانات عشرية بدل تقريبها بصمت.
+  // المخزون يدعم ثلاث خانات عشرية فقط.
   if (Math.abs(numericValue - normalizedValue) > 0.0000001) {
     return null
   }
 
-  // يناسب NUMERIC(14,3).
   if (normalizedValue > 99_999_999_999.999) {
     return null
   }
@@ -47,9 +55,8 @@ function parseCountedQuantity(value: unknown) {
   return normalizedValue
 }
 
-// يبحث عن طلب سابق بنفس Idempotency Key.
-// استخدام نفس المفتاح يجب أن يعيد المستند القديم
-// بدل إنشاء تسوية وحركة مخزون جديدتين.
+// يعيد الطلب السابق بنفس شكل استجابة الإنشاء الجديدة.
+// ذلك يجعل Retry آمنًا ولا يجبر الواجهة على فهم شكلين مختلفين.
 async function loadExistingAdjustment(
   client: PoolClient,
   companyId: string,
@@ -58,10 +65,73 @@ async function loadExistingAdjustment(
   const result = await client.query(
     `
       SELECT
-        adjustment.*,
-        movement.id AS movement_id
+        ROW_TO_JSON(adjustment)
+          AS adjustment,
+
+        ROW_TO_JSON(balance)
+          AS balance,
+
+        ROW_TO_JSON(movement)
+          AS movement,
+
+        JSON_BUILD_OBJECT(
+          'stock_location_id',
+          location.id,
+
+          'trusted_branch_id',
+          location.branch_id,
+
+          'stock_location_name',
+          location.name,
+
+          'stock_location_code',
+          location.code,
+
+          'variant_id',
+          variant.id,
+
+          'sku',
+          variant.sku,
+
+          'primary_barcode',
+          variant.primary_barcode,
+
+          'product_name',
+          product.name
+        ) AS item
 
       FROM inventory_adjustments adjustment
+
+      JOIN stock_locations location
+        ON location.company_id =
+           adjustment.company_id
+
+        AND location.id =
+            adjustment.stock_location_id
+
+      JOIN product_variants variant
+        ON variant.company_id =
+           adjustment.company_id
+
+        AND variant.id =
+            adjustment.variant_id
+
+      JOIN products product
+        ON product.company_id =
+           variant.company_id
+
+        AND product.id =
+            variant.product_id
+
+      LEFT JOIN stock_balances balance
+        ON balance.company_id =
+           adjustment.company_id
+
+        AND balance.stock_location_id =
+            adjustment.stock_location_id
+
+        AND balance.variant_id =
+            adjustment.variant_id
 
       LEFT JOIN stock_movements movement
         ON movement.company_id =
@@ -75,6 +145,10 @@ async function loadExistingAdjustment(
 
       WHERE adjustment.company_id = $1
         AND adjustment.idempotency_key = $2
+
+      ORDER BY
+        movement.created_at DESC
+        NULLS LAST
 
       LIMIT 1;
     `,
