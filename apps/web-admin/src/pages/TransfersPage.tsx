@@ -152,6 +152,11 @@ function TransfersPage() {
   const [selectedTransfer, setSelectedTransfer] =
     useState<TransferDetails | null>(null)
 
+  // الكميات التي سيعتمدها مسؤول المخزون لكل صنف.
+  const [approvalQuantities, setApprovalQuantities] = useState<
+    Record<string, number>
+  >({})
+
   const [fromLocationId, setFromLocationId] = useState('')
 
   const [toLocationId, setToLocationId] = useState('')
@@ -210,6 +215,8 @@ function TransfersPage() {
   // نفس صلاحية إنشاء الطلب تسمح بإلغائه قبل الشحن.
   const canCancelTransfer = hasPermission('inventory.transfer.create')
 
+  const canApproveTransfer = hasPermission('inventory.transfer.approve')
+
   const canShipTransfer = hasPermission('inventory.transfer.approve')
 
   const canReceiveTransfer = hasPermission('inventory.transfer.receive')
@@ -228,6 +235,21 @@ function TransfersPage() {
     () => cartItems.reduce((total, item) => total + item.quantity, 0),
     [cartItems],
   )
+
+  // اختيار التحويل وتجهيز كميات الاعتماد.
+  // لو التحويل لم يعتمد بعد نبدأ بالكمية المطلوبة.
+  function applySelectedTransfer(details: TransferDetails) {
+    setSelectedTransfer(details)
+
+    setApprovalQuantities(
+      Object.fromEntries(
+        details.items.map((item) => [
+          item.id,
+          Number(item.approved_quantity ?? item.requested_quantity),
+        ]),
+      ),
+    )
+  }
 
   function resetTransferDraft(keepSuccess = false) {
     setCartItems([])
@@ -339,7 +361,7 @@ function TransfersPage() {
 
       const response = await requestJson<ApiResponse<TransferDetails>>(url)
 
-      setSelectedTransfer(response.data)
+      applySelectedTransfer(response.data)
     } catch (currentError) {
       setError(
         currentError instanceof Error
@@ -536,7 +558,7 @@ function TransfersPage() {
         },
       )
 
-      setSelectedTransfer(response.data)
+      applySelectedTransfer(response.data)
 
       setSuccess(
         `تم إنشاء التحويل ${response.data.transfer.transfer_number} بنجاح وهو بانتظار الشحن.`,
@@ -553,6 +575,85 @@ function TransfersPage() {
     } finally {
       saveRequestRef.current = false
       setSavingTransfer(false)
+    }
+  }
+
+  // اعتماد كل كميات التحويل قبل الشحن.
+  async function approveTransfer() {
+    if (actionRequestRef.current || !selectedTransfer) {
+      return
+    }
+
+    try {
+      const items = selectedTransfer.items.map((item) => {
+        const requestedQuantity = Number(item.requested_quantity)
+
+        const approvedQuantity = approvalQuantities[item.id]
+
+        if (!Number.isFinite(approvedQuantity) || approvedQuantity <= 0) {
+          throw new Error(`حدد كمية معتمدة صحيحة للصنف ${item.sku}.`)
+        }
+
+        const roundedQuantity = Number(approvedQuantity.toFixed(3))
+
+        if (Math.abs(approvedQuantity - roundedQuantity) > 0.0000001) {
+          throw new Error(
+            `الكمية المعتمدة للصنف ${item.sku} تقبل 3 خانات عشرية فقط.`,
+          )
+        }
+
+        if (roundedQuantity > requestedQuantity) {
+          throw new Error(`الكمية المعتمدة للصنف ${item.sku} أكبر من المطلوبة.`)
+        }
+
+        return {
+          itemId: item.id,
+          approvedQuantity: roundedQuantity,
+        }
+      })
+
+      const confirmed = window.confirm(
+        `هل أنت متأكد من اعتماد التحويل ${selectedTransfer.transfer.transfer_number}؟`,
+      )
+
+      if (!confirmed) {
+        return
+      }
+
+      actionRequestRef.current = true
+      setRunningAction(true)
+      setError('')
+      setSuccess('')
+
+      const response = await requestJson<ApiResponse<TransferDetails>>(
+        `/api/transfers/${encodeURIComponent(
+          selectedTransfer.transfer.id,
+        )}/approve`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            items,
+          }),
+        },
+      )
+
+      applySelectedTransfer(response.data)
+
+      setSuccess('تم اعتماد التحويل والكميات وأصبح جاهزًا للشحن.')
+
+      await loadTransfers()
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر اعتماد التحويل.',
+      )
+    } finally {
+      actionRequestRef.current = false
+      setRunningAction(false)
     }
   }
 
@@ -580,7 +681,7 @@ function TransfersPage() {
         },
       )
 
-      setSelectedTransfer(response.data)
+      applySelectedTransfer(response.data)
 
       setSuccess(
         action === 'ship'
@@ -644,7 +745,7 @@ function TransfersPage() {
         },
       )
 
-      setSelectedTransfer(response.data)
+      applySelectedTransfer(response.data)
       setCancellationReason('')
 
       setSuccess('تم إلغاء التحويل بنجاح.')
@@ -708,11 +809,16 @@ function TransfersPage() {
       selectedSummary?.status === 'approved') &&
     (!sessionBranchId || selectedSummary?.from_branch_id === sessionBranchId)
 
+  const userCanApproveSelected =
+    Boolean(selectedSummary) &&
+    canApproveTransfer &&
+    selectedSummary?.status === 'pending' &&
+    (!sessionBranchId || selectedSummary?.from_branch_id === sessionBranchId)
+
   const userCanShipSelected =
     Boolean(selectedSummary) &&
     canShipTransfer &&
-    (selectedSummary?.status === 'pending' ||
-      selectedSummary?.status === 'approved') &&
+    selectedSummary?.status === 'approved' &&
     (!sessionBranchId || selectedSummary?.from_branch_id === sessionBranchId)
 
   const userCanReceiveSelected =
@@ -969,7 +1075,8 @@ function TransfersPage() {
               onChange={(event) => setStatusFilter(event.target.value)}
             >
               <option value="">كل الحالات</option>
-              <option value="pending">بانتظار الشحن</option>
+              <option value="pending">بانتظار الاعتماد</option>
+              <option value="approved">معتمد وجاهز للشحن</option>
               <option value="in_transit">في الطريق</option>
               <option value="received">تم الاستلام</option>
               <option value="cancelled">ملغي</option>
@@ -1060,6 +1167,17 @@ function TransfersPage() {
               >
                 {translateTransferStatus(selectedTransfer.transfer.status)}
               </span>
+
+              {userCanApproveSelected ? (
+                <button
+                  type="button"
+                  className="primary-button small-button"
+                  disabled={runningAction}
+                  onClick={() => void approveTransfer()}
+                >
+                  {runningAction ? 'جاري الاعتماد...' : 'اعتماد التحويل'}
+                </button>
+              ) : null}
 
               {userCanShipSelected ? (
                 <button
@@ -1170,9 +1288,29 @@ function TransfersPage() {
                     <td>{item.color_name || '-'}</td>
                     <td>{formatQuantity(item.requested_quantity)}</td>
                     <td>
-                      {item.approved_quantity
-                        ? formatQuantity(item.approved_quantity)
-                        : '-'}
+                      {userCanApproveSelected ? (
+                        <input
+                          className="transfer-quantity-input"
+                          type="number"
+                          min="0.001"
+                          step="0.001"
+                          max={Number(item.requested_quantity)}
+                          value={approvalQuantities[item.id] ?? ''}
+                          disabled={runningAction}
+                          onChange={(event) => {
+                            const nextValue = Number(event.target.value)
+
+                            setApprovalQuantities((currentQuantities) => ({
+                              ...currentQuantities,
+                              [item.id]: nextValue,
+                            }))
+                          }}
+                        />
+                      ) : item.approved_quantity ? (
+                        formatQuantity(item.approved_quantity)
+                      ) : (
+                        '-'
+                      )}
                     </td>
                     <td>
                       {item.received_quantity

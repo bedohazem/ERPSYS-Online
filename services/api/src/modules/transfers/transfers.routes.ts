@@ -47,6 +47,24 @@ function parseTransferLimit(value: unknown) {
   return Math.min(Math.max(Math.trunc(numericValue), 1), 100)
 }
 
+// تحويل كمية التحويل إلى رقم موجب بدقة ثلاث خانات.
+// ترجع null عند إرسال قيمة غير صالحة.
+function parseTransferQuantity(value: unknown) {
+  const numericValue = Number(value)
+
+  if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    return null
+  }
+
+  const roundedValue = Number(numericValue.toFixed(3))
+
+  if (Math.abs(numericValue - roundedValue) > 0.0000001) {
+    return null
+  }
+
+  return roundedValue
+}
+
 // ======================================================
 // تحميل تحويل كامل مع أصنافه.
 // ======================================================
@@ -1061,6 +1079,330 @@ transfersRouter.post(
 )
 
 // ======================================================
+// POST /api/transfers/:transferId/approve
+//
+// يعتمد التحويل والكميات قبل الشحن.
+//
+// الاعتماد لا يغيّر stock_balances ولا ينشئ حركات مخزون.
+// الخصم يتم لاحقًا عند تنفيذ /ship.
+// ======================================================
+transfersRouter.post(
+  '/api/transfers/:transferId/approve',
+  async (req, res, next) => {
+    const auth = getAuthContext(res)
+    const client = await db.connect()
+
+    try {
+      const transferId = String(req.params.transferId || '')
+        .trim()
+        .toLowerCase()
+
+      if (!isTransferUuid(transferId)) {
+        return res.status(400).json({
+          error: 'transferId is invalid',
+        })
+      }
+
+      if (!Array.isArray(req.body?.items) || req.body.items.length === 0) {
+        return res.status(400).json({
+          error: 'Approval items are required',
+        })
+      }
+
+      const approvedItems: Array<{
+        itemId: string
+        approvedQuantity: number
+      }> = []
+
+      const itemIds = new Set<string>()
+
+      for (const item of req.body.items) {
+        const itemId =
+          typeof item?.itemId === 'string'
+            ? item.itemId.trim().toLowerCase()
+            : ''
+
+        const approvedQuantity = parseTransferQuantity(item?.approvedQuantity)
+
+        if (!isTransferUuid(itemId)) {
+          throw new TransferApiError(
+            400,
+            'itemId is invalid for one or more items',
+          )
+        }
+
+        if (approvedQuantity === null) {
+          throw new TransferApiError(
+            400,
+            'الكمية المعتمدة يجب أن تكون أكبر من صفر وبدقة 3 خانات.',
+          )
+        }
+
+        if (itemIds.has(itemId)) {
+          throw new TransferApiError(
+            400,
+            'Duplicate transfer item inside approval',
+          )
+        }
+
+        itemIds.add(itemId)
+
+        approvedItems.push({
+          itemId,
+          approvedQuantity,
+        })
+      }
+
+      await client.query('BEGIN')
+
+      // قفل رأس التحويل يمنع اعتماده أو إلغائه أو شحنه
+      // في نفس اللحظة من طلبات مختلفة.
+      const transferResult = await client.query(
+        `
+          SELECT
+            transfer.*
+
+          FROM transfers transfer
+
+          JOIN stock_locations from_location
+            ON from_location.company_id =
+               transfer.company_id
+
+            AND from_location.id =
+                transfer.from_location_id
+
+          WHERE transfer.company_id = $1
+            AND transfer.id = $2
+
+            -- مستخدم الفرع يعتمد تحويلات فرعه الصادرة فقط.
+            AND (
+              $3::uuid IS NULL
+              OR transfer.from_branch_id = $3
+            )
+
+          FOR UPDATE OF transfer;
+        `,
+        [auth.companyId, transferId, auth.branchId],
+      )
+
+      if ((transferResult.rowCount ?? 0) === 0) {
+        throw new TransferApiError(
+          404,
+          'التحويل غير موجود أو غير مسموح باعتماده.',
+        )
+      }
+
+      const transfer = transferResult.rows[0]
+
+      // إعادة طلب الاعتماد بعد نجاحه آمنة.
+      if (
+        transfer.status === 'approved' ||
+        transfer.status === 'in_transit' ||
+        transfer.status === 'received'
+      ) {
+        await client.query('COMMIT')
+
+        const details = await loadTransferDetails(
+          auth.companyId,
+          transferId,
+          auth.branchId,
+        )
+
+        return res.status(200).json({
+          duplicated: true,
+          data: details,
+        })
+      }
+
+      if (transfer.status === 'cancelled') {
+        throw new TransferApiError(409, 'لا يمكن اعتماد تحويل ملغي.')
+      }
+
+      if (transfer.status !== 'pending') {
+        throw new TransferApiError(
+          409,
+          `لا يمكن اعتماد التحويل من الحالة: ${transfer.status}`,
+        )
+      }
+
+      const transferItemsResult = await client.query(
+        `
+          SELECT
+            id,
+            requested_quantity
+
+          FROM transfer_items
+
+          WHERE company_id = $1
+            AND transfer_id = $2
+
+          ORDER BY id
+
+          FOR UPDATE;
+        `,
+        [auth.companyId, transferId],
+      )
+
+      if ((transferItemsResult.rowCount ?? 0) === 0) {
+        throw new TransferApiError(409, 'التحويل لا يحتوي على أصناف.')
+      }
+
+      // يجب إرسال كل أصناف التحويل في طلب الاعتماد.
+      if (transferItemsResult.rows.length !== approvedItems.length) {
+        throw new TransferApiError(
+          400,
+          'يجب تحديد الكمية المعتمدة لكل أصناف التحويل.',
+        )
+      }
+
+      let requestedTotal = 0
+      let approvedTotal = 0
+
+      for (const transferItem of transferItemsResult.rows) {
+        const approvedItem = approvedItems.find(
+          (item) => item.itemId === transferItem.id,
+        )
+
+        if (!approvedItem) {
+          throw new TransferApiError(
+            400,
+            'يوجد صنف في التحويل لم يتم إرسال كميته المعتمدة.',
+          )
+        }
+
+        const requestedQuantity = Number(transferItem.requested_quantity)
+
+        if (approvedItem.approvedQuantity > requestedQuantity) {
+          throw new TransferApiError(
+            400,
+            'الكمية المعتمدة لا يمكن أن تتجاوز الكمية المطلوبة.',
+          )
+        }
+
+        requestedTotal += requestedQuantity
+        approvedTotal += approvedItem.approvedQuantity
+
+        await client.query(
+          `
+            UPDATE transfer_items
+
+            SET approved_quantity = $1
+
+            WHERE company_id = $2
+              AND transfer_id = $3
+              AND id = $4;
+          `,
+          [
+            approvedItem.approvedQuantity,
+            auth.companyId,
+            transferId,
+            transferItem.id,
+          ],
+        )
+      }
+
+      const approvedResult = await client.query(
+        `
+          UPDATE transfers
+
+          SET
+            status = 'approved',
+            approved_by = $1,
+            approved_at = NOW(),
+            updated_at = NOW()
+
+          WHERE company_id = $2
+            AND id = $3
+
+          RETURNING *;
+        `,
+        [auth.userId, auth.companyId, transferId],
+      )
+
+      await client.query(
+        `
+          INSERT INTO audit_logs (
+            company_id,
+            branch_id,
+            user_id,
+
+            action,
+            entity_type,
+            entity_id,
+
+            old_data,
+            new_data,
+
+            ip_address,
+            user_agent
+          )
+          VALUES (
+            $1, $2, $3,
+            'inventory.transfer.approved',
+            'transfer',
+            $4,
+            $5::jsonb,
+            $6::jsonb,
+            $7,
+            $8
+          );
+        `,
+        [
+          auth.companyId,
+          transfer.from_branch_id,
+          auth.userId,
+
+          transferId,
+
+          JSON.stringify({
+            status: 'pending',
+            requestedTotal,
+          }),
+
+          JSON.stringify({
+            status: 'approved',
+            approvedTotal,
+            itemCount: approvedItems.length,
+          }),
+
+          req.ip || null,
+          req.get('user-agent') || null,
+        ],
+      )
+
+      await client.query('COMMIT')
+
+      const details = await loadTransferDetails(
+        auth.companyId,
+        transferId,
+        auth.branchId,
+      )
+
+      return res.json({
+        duplicated: false,
+
+        data: details || {
+          transfer: approvedResult.rows[0],
+          items: [],
+        },
+      })
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+
+      if (error instanceof TransferApiError) {
+        return res.status(error.statusCode).json({
+          error: error.message,
+        })
+      }
+
+      return next(error)
+    } finally {
+      client.release()
+    }
+  },
+)
+
+// ======================================================
 // POST /api/transfers/:transferId/ship
 //
 // يخصم الكميات من مكان المصدر ويحوّل الحالة إلى
@@ -1145,7 +1487,8 @@ transfersRouter.post(
         })
       }
 
-      if (transfer.status !== 'pending' && transfer.status !== 'approved') {
+      // الشحن لا يتم إلا بعد اعتماد الكميات.
+      if (transfer.status !== 'approved') {
         throw new TransferApiError(
           409,
           `Transfer cannot be shipped from status: ${transfer.status}`,
@@ -1168,9 +1511,8 @@ transfersRouter.post(
       }
 
       for (const item of itemsResult.rows) {
-        const transferQuantity = Number(
-          item.approved_quantity ?? item.requested_quantity,
-        )
+        // الكمية المشحونة هي الكمية التي اعتمدها المسؤول.
+        const transferQuantity = Number(item.approved_quantity)
 
         if (!Number.isFinite(transferQuantity) || transferQuantity <= 0) {
           throw new TransferApiError(
@@ -1263,32 +1605,22 @@ transfersRouter.post(
             createdBy,
           ],
         )
-
-        await client.query(
-          `
-          UPDATE transfer_items
-          SET approved_quantity = $1
-          WHERE company_id = $2
-            AND transfer_id = $3
-            AND id = $4;
-          `,
-          [transferQuantity, companyId, transferId, item.id],
-        )
       }
 
       const updatedTransferResult = await client.query(
         `
           UPDATE transfers
+
           SET
             status = 'in_transit',
-            approved_by = $1,
-            approved_at = NOW(),
             updated_at = NOW()
-          WHERE company_id = $2
-            AND id = $3
+
+          WHERE company_id = $1
+            AND id = $2
+
           RETURNING *;
-          `,
-        [createdBy, companyId, transferId],
+        `,
+        [companyId, transferId],
       )
 
       await client.query('COMMIT')

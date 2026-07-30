@@ -480,7 +480,9 @@ export function requireBusinessPermission(
 
     let requiredPermission = 'inventory.transfer.create'
 
-    if (path.endsWith('/ship')) {
+    // اعتماد التحويل وشحنه مسؤولية موظف المخزون
+    // الذي يمتلك صلاحية الموافقة على التحويلات.
+    if (path.endsWith('/approve') || path.endsWith('/ship')) {
       requiredPermission = 'inventory.transfer.approve'
     } else if (path.endsWith('/receive')) {
       requiredPermission = 'inventory.transfer.receive'
