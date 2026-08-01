@@ -48,7 +48,7 @@ function parseTransferLimit(value: unknown) {
 }
 
 // تحويل كمية التحويل إلى رقم موجب بدقة ثلاث خانات.
-// ترجع null عند إرسال قيمة غير صالحة.
+// تستخدم في الطلب والاعتماد والشحن.
 function parseTransferQuantity(value: unknown) {
   const numericValue = Number(value)
 
@@ -59,6 +59,32 @@ function parseTransferQuantity(value: unknown) {
   const roundedValue = Number(numericValue.toFixed(3))
 
   if (Math.abs(numericValue - roundedValue) > 0.0000001) {
+    return null
+  }
+
+  if (roundedValue > 99_999_999_999.999) {
+    return null
+  }
+
+  return roundedValue
+}
+
+// كمية الاستلام تسمح بصفر؛
+// لأن الصنف قد لا يصل نهائيًا ويُسجل كعجز كامل.
+function parseTransferReceivedQuantity(value: unknown) {
+  const numericValue = Number(value)
+
+  if (!Number.isFinite(numericValue) || numericValue < 0) {
+    return null
+  }
+
+  const roundedValue = Number(numericValue.toFixed(3))
+
+  if (Math.abs(numericValue - roundedValue) > 0.0000001) {
+    return null
+  }
+
+  if (roundedValue > 99_999_999_999.999) {
     return null
   }
 
@@ -441,6 +467,10 @@ transfersRouter.get('/api/transfers', async (req, res, next) => {
           t.received_at,
           t.cancelled_at,
           t.cancellation_reason,
+
+          t.has_receiving_discrepancy,
+          t.receiving_note,
+
           t.note,
           t.created_at,
 
@@ -1656,7 +1686,12 @@ transfersRouter.post(
 // ======================================================
 // POST /api/transfers/:transferId/receive
 //
-// يزيد مكان الوجهة ويحوّل الحالة إلى received.
+// يسجل الكميات التي وصلت فعليًا إلى الوجهة.
+//
+// الكمية المستلمة قد تكون أقل من المعتمدة، لكن لا يمكن
+// أن تتجاوز الكمية التي خرجت من مكان المصدر.
+//
+// أي فرق يتطلب ملاحظة توضح سبب العجز.
 // ======================================================
 transfersRouter.post(
   '/api/transfers/:transferId/receive',
@@ -1665,7 +1700,9 @@ transfersRouter.post(
     const client = await db.connect()
 
     try {
-      const transferId = String(req.params.transferId || '').trim()
+      const transferId = String(req.params.transferId || '')
+        .trim()
+        .toLowerCase()
 
       if (!isTransferUuid(transferId)) {
         return res.status(400).json({
@@ -1673,61 +1710,68 @@ transfersRouter.post(
         })
       }
 
-      // منفذ الاستلام والشركة والفرع يأتون من Session.
-      const companyId = auth.companyId
-      const authenticatedBranchId = auth.branchId
-      const createdBy = auth.userId
+      const receivingNote =
+        typeof req.body?.note === 'string' ? req.body.note.trim() : ''
+
+      if (receivingNote.length > 500) {
+        return res.status(400).json({
+          error: 'ملاحظة الاستلام لا يمكن أن تتجاوز 500 حرف.',
+        })
+      }
 
       await client.query('BEGIN')
 
+      // قفل التحويل يمنع تنفيذ استلامين متزامنين
+      // أو محاولة استلام التحويل أثناء تغيير حالته.
       const transferResult = await client.query(
         `
-          SELECT t.*
-          FROM transfers t
+          SELECT
+            transfer.*
 
-          JOIN stock_locations from_location
-            ON from_location.id =
-              t.from_location_id
-            AND from_location.company_id =
-              t.company_id
-            AND from_location.is_active = TRUE
+          FROM transfers transfer
 
           JOIN stock_locations to_location
-            ON to_location.id =
-              t.to_location_id
-            AND to_location.company_id =
-              t.company_id
+            ON to_location.company_id =
+               transfer.company_id
+
+            AND to_location.id =
+                transfer.to_location_id
+
             AND to_location.is_active = TRUE
 
-          WHERE t.company_id = $1
-            AND t.id = $2
+          WHERE transfer.company_id = $1
+            AND transfer.id = $2
 
+            -- مستخدم الفرع يستلم تحويلات فرعه
+            -- الواردة فقط.
             AND (
               $3::uuid IS NULL
-              OR t.to_branch_id = $3::uuid
+              OR transfer.to_branch_id = $3
             )
 
-          FOR UPDATE OF t;
-          `,
-        [companyId, transferId, authenticatedBranchId],
+          FOR UPDATE OF transfer;
+        `,
+        [auth.companyId, transferId, auth.branchId],
       )
 
       if ((transferResult.rowCount ?? 0) === 0) {
         throw new TransferApiError(
           404,
-          'Transfer was not found or cannot be received by this branch',
+          'التحويل غير موجود أو غير مسموح باستلامه.',
         )
       }
 
       const transfer = transferResult.rows[0]
 
+      // إعادة إرسال طلب الاستلام بعد نجاحه آمنة
+      // ولا تضيف المخزون مرة أخرى.
       if (transfer.status === 'received') {
         await client.query('COMMIT')
 
         const details = await loadTransferDetails(
-          companyId,
+          auth.companyId,
           transferId,
-          authenticatedBranchId,
+          auth.branchId,
         )
 
         return res.status(200).json({
@@ -1739,172 +1783,424 @@ transfersRouter.post(
       if (transfer.status !== 'in_transit') {
         throw new TransferApiError(
           409,
-          `Transfer cannot be received from status: ${transfer.status}`,
+          `لا يمكن استلام التحويل من الحالة: ${transfer.status}`,
         )
       }
 
-      const itemsResult = await client.query(
-        `
-        SELECT *
-        FROM transfer_items
-        WHERE company_id = $1
-          AND transfer_id = $2
-        ORDER BY variant_id ASC;
-        `,
-        [companyId, transferId],
-      )
+      if (!Array.isArray(req.body?.items) || req.body.items.length === 0) {
+        throw new TransferApiError(
+          400,
+          'يجب إرسال الكميات المستلمة لكل أصناف التحويل.',
+        )
+      }
 
-      for (const item of itemsResult.rows) {
-        const receivedQuantity = Number(item.approved_quantity)
+      const receivedItems: Array<{
+        itemId: string
+        receivedQuantity: number
+      }> = []
 
-        if (!Number.isFinite(receivedQuantity) || receivedQuantity <= 0) {
+      const receivedItemIds = new Set<string>()
+
+      for (const item of req.body.items) {
+        const itemId =
+          typeof item?.itemId === 'string'
+            ? item.itemId.trim().toLowerCase()
+            : ''
+
+        const receivedQuantity = parseTransferReceivedQuantity(
+          item?.receivedQuantity,
+        )
+
+        if (!isTransferUuid(itemId)) {
           throw new TransferApiError(
             400,
-            'Received transfer quantity is invalid',
+            'يوجد itemId غير صالح في بيانات الاستلام.',
           )
         }
 
-        await client.query(
-          `
-          INSERT INTO stock_balances (
-            company_id,
-            branch_id,
-            stock_location_id,
-            variant_id,
-            quantity
+        if (receivedQuantity === null) {
+          throw new TransferApiError(
+            400,
+            'الكمية المستلمة يجب أن تكون صفرًا أو أكبر وبدقة 3 خانات.',
           )
-          VALUES ($1, $2, $3, $4, 0)
+        }
 
-          ON CONFLICT (
-            company_id,
-            stock_location_id,
-            variant_id
+        if (receivedItemIds.has(itemId)) {
+          throw new TransferApiError(
+            400,
+            'تم إرسال نفس صنف التحويل أكثر من مرة.',
           )
-          DO NOTHING;
-          `,
-          [
-            companyId,
-            transfer.to_branch_id,
-            transfer.to_location_id,
-            item.variant_id,
-          ],
+        }
+
+        receivedItemIds.add(itemId)
+
+        receivedItems.push({
+          itemId,
+          receivedQuantity,
+        })
+      }
+
+      const transferItemsResult = await client.query(
+        `
+          SELECT
+            id,
+            variant_id,
+            approved_quantity,
+            received_quantity
+
+          FROM transfer_items
+
+          WHERE company_id = $1
+            AND transfer_id = $2
+
+          ORDER BY variant_id, id
+
+          FOR UPDATE;
+        `,
+        [auth.companyId, transferId],
+      )
+
+      if ((transferItemsResult.rowCount ?? 0) === 0) {
+        throw new TransferApiError(409, 'التحويل لا يحتوي على أصناف.')
+      }
+
+      if (transferItemsResult.rows.length !== receivedItems.length) {
+        throw new TransferApiError(
+          400,
+          'يجب تسجيل الكمية المستلمة لكل أصناف التحويل.',
+        )
+      }
+
+      const resolvedItems: Array<{
+        itemId: string
+        variantId: string
+        approvedQuantity: number
+        receivedQuantity: number
+        shortageQuantity: number
+        hasDiscrepancy: boolean
+      }> = []
+
+      let approvedTotal = 0
+      let receivedTotal = 0
+      let shortageTotal = 0
+      let discrepancyItemCount = 0
+
+      for (const transferItem of transferItemsResult.rows) {
+        const receivedItem = receivedItems.find(
+          (item) => item.itemId === transferItem.id,
         )
 
-        const balanceResult = await client.query(
-          `
-            SELECT quantity
-            FROM stock_balances
-            WHERE company_id = $1
-              AND stock_location_id = $2
-              AND variant_id = $3
-            FOR UPDATE;
+        if (!receivedItem) {
+          throw new TransferApiError(
+            400,
+            'يوجد صنف لم يتم تسجيل كميته المستلمة.',
+          )
+        }
+
+        const approvedQuantity = Number(transferItem.approved_quantity)
+
+        if (!Number.isFinite(approvedQuantity) || approvedQuantity <= 0) {
+          throw new TransferApiError(
+            409,
+            'يوجد صنف لم يتم اعتماد كميته بشكل صحيح.',
+          )
+        }
+
+        if (receivedItem.receivedQuantity > approvedQuantity) {
+          throw new TransferApiError(
+            400,
+            'الكمية المستلمة لا يمكن أن تتجاوز الكمية المشحونة.',
+          )
+        }
+
+        const shortageQuantity = Number(
+          (approvedQuantity - receivedItem.receivedQuantity).toFixed(3),
+        )
+
+        const hasDiscrepancy = shortageQuantity > 0
+
+        approvedTotal += approvedQuantity
+        receivedTotal += receivedItem.receivedQuantity
+
+        shortageTotal += shortageQuantity
+
+        if (hasDiscrepancy) {
+          discrepancyItemCount += 1
+        }
+
+        resolvedItems.push({
+          itemId: transferItem.id,
+          variantId: transferItem.variant_id,
+          approvedQuantity,
+          receivedQuantity: receivedItem.receivedQuantity,
+          shortageQuantity,
+          hasDiscrepancy,
+        })
+      }
+
+      const hasReceivingDiscrepancy = discrepancyItemCount > 0
+
+      if (hasReceivingDiscrepancy && receivingNote.length < 3) {
+        throw new TransferApiError(400, 'اكتب ملاحظة توضح سبب فرق الاستلام.')
+      }
+
+      let movementCount = 0
+
+      for (const item of resolvedItems) {
+        // الكمية صفر تعني أن الصنف لم يصل.
+        // لا نغير الرصيد ولا ننشئ حركة كمية صفرية.
+        if (item.receivedQuantity > 0) {
+          await client.query(
+            `
+              INSERT INTO stock_balances (
+                company_id,
+                branch_id,
+                stock_location_id,
+                variant_id,
+                quantity
+              )
+              VALUES (
+                $1, $2, $3, $4, 0
+              )
+
+              ON CONFLICT (
+                company_id,
+                stock_location_id,
+                variant_id
+              )
+              DO NOTHING;
             `,
-          [companyId, transfer.to_location_id, item.variant_id],
-        )
-
-        const quantityBefore = Number(balanceResult.rows[0].quantity)
-
-        const quantityAfter = quantityBefore + receivedQuantity
-
-        await client.query(
-          `
-          UPDATE stock_balances
-          SET
-            quantity = $1,
-            branch_id = $2,
-            updated_at = NOW()
-          WHERE company_id = $3
-            AND stock_location_id = $4
-            AND variant_id = $5;
-          `,
-          [
-            quantityAfter,
-            transfer.to_branch_id,
-            companyId,
-            transfer.to_location_id,
-            item.variant_id,
-          ],
-        )
-
-        await client.query(
-          `
-          INSERT INTO stock_movements (
-            company_id,
-            branch_id,
-            stock_location_id,
-            variant_id,
-            movement_type,
-            quantity,
-            quantity_before,
-            quantity_after,
-            reference_type,
-            reference_id,
-            note,
-            created_by
+            [
+              auth.companyId,
+              transfer.to_branch_id,
+              transfer.to_location_id,
+              item.variantId,
+            ],
           )
-          VALUES (
-            $1, $2, $3, $4,
-            'transfer_in',
-            $5, $6, $7,
-            'transfer',
-            $8,
-            $9,
-            $10
-          );
-          `,
-          [
-            companyId,
-            transfer.to_branch_id,
-            transfer.to_location_id,
-            item.variant_id,
-            receivedQuantity,
-            quantityBefore,
-            quantityAfter,
-            transfer.id,
-            `Transfer ${transfer.transfer_number} received`,
-            createdBy,
-          ],
-        )
 
+          const balanceResult = await client.query(
+            `
+              SELECT
+                quantity
+
+              FROM stock_balances
+
+              WHERE company_id = $1
+                AND stock_location_id = $2
+                AND variant_id = $3
+
+              FOR UPDATE;
+            `,
+            [auth.companyId, transfer.to_location_id, item.variantId],
+          )
+
+          if ((balanceResult.rowCount ?? 0) === 0) {
+            throw new TransferApiError(
+              500,
+              'تعذر إنشاء رصيد الصنف في مكان الوجهة.',
+            )
+          }
+
+          const quantityBefore = Number(balanceResult.rows[0].quantity)
+
+          const quantityAfter = Number(
+            (quantityBefore + item.receivedQuantity).toFixed(3),
+          )
+
+          await client.query(
+            `
+              UPDATE stock_balances
+
+              SET
+                quantity = $1,
+                branch_id = $2,
+                updated_at = NOW()
+
+              WHERE company_id = $3
+                AND stock_location_id = $4
+                AND variant_id = $5;
+            `,
+            [
+              quantityAfter,
+              transfer.to_branch_id,
+              auth.companyId,
+              transfer.to_location_id,
+              item.variantId,
+            ],
+          )
+
+          await client.query(
+            `
+              INSERT INTO stock_movements (
+                company_id,
+                branch_id,
+                stock_location_id,
+                variant_id,
+
+                movement_type,
+
+                quantity,
+                quantity_before,
+                quantity_after,
+
+                reference_type,
+                reference_id,
+
+                note,
+                created_by
+              )
+              VALUES (
+                $1, $2, $3, $4,
+                'transfer_in',
+                $5, $6, $7,
+                'transfer',
+                $8,
+                $9,
+                $10
+              );
+            `,
+            [
+              auth.companyId,
+              transfer.to_branch_id,
+              transfer.to_location_id,
+              item.variantId,
+
+              item.receivedQuantity,
+              quantityBefore,
+              quantityAfter,
+
+              transfer.id,
+
+              `Transfer ${transfer.transfer_number} received`,
+
+              auth.userId,
+            ],
+          )
+
+          movementCount += 1
+        }
+
+        // نحفظ الكمية الفعلية حتى لو كانت صفرًا.
         await client.query(
           `
-          UPDATE transfer_items
-          SET received_quantity = $1
-          WHERE company_id = $2
-            AND transfer_id = $3
-            AND id = $4;
+            UPDATE transfer_items
+
+            SET received_quantity = $1
+
+            WHERE company_id = $2
+              AND transfer_id = $3
+              AND id = $4;
           `,
-          [receivedQuantity, companyId, transferId, item.id],
+          [item.receivedQuantity, auth.companyId, transferId, item.itemId],
         )
       }
 
       const updatedTransferResult = await client.query(
         `
           UPDATE transfers
+
           SET
             status = 'received',
             received_by = $1,
             received_at = NOW(),
+
+            has_receiving_discrepancy = $2,
+            receiving_note = $3,
+
             updated_at = NOW()
-          WHERE company_id = $2
-            AND id = $3
+
+          WHERE company_id = $4
+            AND id = $5
+
           RETURNING *;
-          `,
-        [createdBy, companyId, transferId],
+        `,
+        [
+          auth.userId,
+          hasReceivingDiscrepancy,
+          receivingNote || null,
+          auth.companyId,
+          transferId,
+        ],
+      )
+
+      // تسجيل ملخص الاستلام والفروق في Audit Log.
+      await client.query(
+        `
+          INSERT INTO audit_logs (
+            company_id,
+            branch_id,
+            user_id,
+
+            action,
+            entity_type,
+            entity_id,
+
+            old_data,
+            new_data,
+
+            ip_address,
+            user_agent
+          )
+          VALUES (
+            $1, $2, $3,
+            'inventory.transfer.received',
+            'transfer',
+            $4,
+            $5::jsonb,
+            $6::jsonb,
+            $7,
+            $8
+          );
+        `,
+        [
+          auth.companyId,
+          transfer.to_branch_id,
+          auth.userId,
+
+          transferId,
+
+          JSON.stringify({
+            status: 'in_transit',
+            approvedTotal,
+          }),
+
+          JSON.stringify({
+            status: 'received',
+            receivedTotal,
+            shortageTotal,
+            discrepancyItemCount,
+            hasReceivingDiscrepancy,
+            movementCount,
+            receivingNote: receivingNote || null,
+          }),
+
+          req.ip || null,
+          req.get('user-agent') || null,
+        ],
       )
 
       await client.query('COMMIT')
 
       const details = await loadTransferDetails(
-        companyId,
+        auth.companyId,
         transferId,
-        authenticatedBranchId,
+        auth.branchId,
       )
 
       return res.json({
+        duplicated: false,
+
         data: details || {
           transfer: updatedTransferResult.rows[0],
           items: [],
+        },
+
+        summary: {
+          approvedTotal,
+          receivedTotal,
+          shortageTotal,
+          discrepancyItemCount,
+          movementCount,
         },
       })
     } catch (error) {

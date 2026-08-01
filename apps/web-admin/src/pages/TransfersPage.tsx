@@ -56,6 +56,9 @@ type TransferSummary = {
   cancelled_at: string | null
   cancellation_reason: string | null
 
+  has_receiving_discrepancy: boolean
+  receiving_note: string | null
+
   note: string | null
   items_count: number
   requested_quantity: string
@@ -128,8 +131,8 @@ function formatDateTime(value: string | null) {
 function translateTransferStatus(status: string) {
   const labels: Record<string, string> = {
     draft: 'مسودة',
-    pending: 'بانتظار الشحن',
-    approved: 'معتمد',
+    pending: 'بانتظار الاعتماد',
+    approved: 'معتمد وجاهز للشحن',
     in_transit: 'في الطريق',
     received: 'تم الاستلام',
     cancelled: 'ملغي',
@@ -156,6 +159,14 @@ function TransfersPage() {
   const [approvalQuantities, setApprovalQuantities] = useState<
     Record<string, number>
   >({})
+
+  // الكمية التي وصلت فعليًا لكل صنف.
+  const [receivingQuantities, setReceivingQuantities] = useState<
+    Record<string, number>
+  >({})
+
+  // سبب العجز أو ملاحظة استلام التحويل.
+  const [receivingNote, setReceivingNote] = useState('')
 
   const [fromLocationId, setFromLocationId] = useState('')
 
@@ -236,8 +247,55 @@ function TransfersPage() {
     [cartItems],
   )
 
-  // اختيار التحويل وتجهيز كميات الاعتماد.
-  // لو التحويل لم يعتمد بعد نبدأ بالكمية المطلوبة.
+  // حساب إجمالي المشحون والمستلم والعجز قبل إرسال الطلب.
+  const receivingSummary = useMemo(() => {
+    if (!selectedTransfer) {
+      return {
+        approvedTotal: 0,
+        receivedTotal: 0,
+        shortageTotal: 0,
+        discrepancyItemCount: 0,
+      }
+    }
+
+    return selectedTransfer.items.reduce(
+      (summary, item) => {
+        const approvedQuantity = Number(item.approved_quantity ?? 0)
+
+        const receivedQuantity = Number(
+          receivingQuantities[item.id] ?? approvedQuantity,
+        )
+
+        const safeReceivedQuantity = Number.isFinite(receivedQuantity)
+          ? receivedQuantity
+          : 0
+
+        const shortageQuantity = Math.max(
+          approvedQuantity - safeReceivedQuantity,
+          0,
+        )
+
+        return {
+          approvedTotal: summary.approvedTotal + approvedQuantity,
+
+          receivedTotal: summary.receivedTotal + safeReceivedQuantity,
+
+          shortageTotal: summary.shortageTotal + shortageQuantity,
+
+          discrepancyItemCount:
+            summary.discrepancyItemCount + (shortageQuantity > 0 ? 1 : 0),
+        }
+      },
+      {
+        approvedTotal: 0,
+        receivedTotal: 0,
+        shortageTotal: 0,
+        discrepancyItemCount: 0,
+      },
+    )
+  }, [selectedTransfer, receivingQuantities])
+
+  // اختيار التحويل وتجهيز كميات الاعتماد والاستلام.
   function applySelectedTransfer(details: TransferDetails) {
     setSelectedTransfer(details)
 
@@ -249,6 +307,23 @@ function TransfersPage() {
         ]),
       ),
     )
+
+    // قبل الاستلام نبدأ بالكمية المشحونة كاملة،
+    // ويمكن لموظف الوجهة تعديلها للكمية التي وصلت.
+    setReceivingQuantities(
+      Object.fromEntries(
+        details.items.map((item) => [
+          item.id,
+          Number(
+            item.received_quantity ??
+              item.approved_quantity ??
+              item.requested_quantity,
+          ),
+        ]),
+      ),
+    )
+
+    setReceivingNote(details.transfer.receiving_note || '')
   }
 
   function resetTransferDraft(keepSuccess = false) {
@@ -561,7 +636,7 @@ function TransfersPage() {
       applySelectedTransfer(response.data)
 
       setSuccess(
-        `تم إنشاء التحويل ${response.data.transfer.transfer_number} بنجاح وهو بانتظار الشحن.`,
+        `تم إنشاء التحويل ${response.data.transfer.transfer_number} بنجاح وهو بانتظار الاعتماد.`,
       )
 
       resetTransferDraft(true)
@@ -657,7 +732,8 @@ function TransfersPage() {
     }
   }
 
-  async function runTransferAction(action: 'ship' | 'receive') {
+  // شحن الكميات المعتمدة من مكان المصدر.
+  async function shipTransfer() {
     if (actionRequestRef.current || !selectedTransfer) {
       return
     }
@@ -671,7 +747,7 @@ function TransfersPage() {
       const response = await requestJson<ApiResponse<TransferDetails>>(
         `/api/transfers/${encodeURIComponent(
           selectedTransfer.transfer.id,
-        )}/${action}`,
+        )}/ship`,
         {
           method: 'POST',
           headers: {
@@ -683,10 +759,106 @@ function TransfersPage() {
 
       applySelectedTransfer(response.data)
 
+      setSuccess('تم شحن التحويل وخصم الكميات المعتمدة من المصدر.')
+
+      await loadTransfers()
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : 'تعذر شحن التحويل.',
+      )
+    } finally {
+      actionRequestRef.current = false
+      setRunningAction(false)
+    }
+  }
+
+  // تسجيل الكميات التي وصلت فعليًا إلى مكان الوجهة.
+  async function receiveTransfer() {
+    if (actionRequestRef.current || !selectedTransfer) {
+      return
+    }
+
+    try {
+      const items = selectedTransfer.items.map((item) => {
+        const approvedQuantity = Number(item.approved_quantity)
+
+        const receivedQuantity = receivingQuantities[item.id]
+
+        if (!Number.isFinite(receivedQuantity) || receivedQuantity < 0) {
+          throw new Error(`حدد كمية مستلمة صحيحة للصنف ${item.sku}.`)
+        }
+
+        const roundedQuantity = Number(receivedQuantity.toFixed(3))
+
+        if (Math.abs(receivedQuantity - roundedQuantity) > 0.0000001) {
+          throw new Error(
+            `الكمية المستلمة للصنف ${item.sku} تقبل 3 خانات عشرية فقط.`,
+          )
+        }
+
+        if (roundedQuantity > approvedQuantity) {
+          throw new Error(`الكمية المستلمة للصنف ${item.sku} أكبر من المشحونة.`)
+        }
+
+        return {
+          itemId: item.id,
+          receivedQuantity: roundedQuantity,
+        }
+      })
+
+      const normalizedNote = receivingNote.trim()
+
+      const hasDiscrepancy = receivingSummary.discrepancyItemCount > 0
+
+      if (hasDiscrepancy && normalizedNote.length < 3) {
+        throw new Error('اكتب ملاحظة توضح سبب فرق الاستلام.')
+      }
+
+      if (normalizedNote.length > 500) {
+        throw new Error('ملاحظة الاستلام لا يمكن أن تتجاوز 500 حرف.')
+      }
+
+      const confirmed = window.confirm(
+        hasDiscrepancy
+          ? `يوجد عجز قدره ${formatQuantity(
+              receivingSummary.shortageTotal,
+            )}. هل تريد اعتماد الاستلام؟`
+          : `هل أنت متأكد من استلام التحويل ${selectedTransfer.transfer.transfer_number} بالكامل؟`,
+      )
+
+      if (!confirmed) {
+        return
+      }
+
+      actionRequestRef.current = true
+      setRunningAction(true)
+      setError('')
+      setSuccess('')
+
+      const response = await requestJson<ApiResponse<TransferDetails>>(
+        `/api/transfers/${encodeURIComponent(
+          selectedTransfer.transfer.id,
+        )}/receive`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            items,
+            note: normalizedNote || null,
+          }),
+        },
+      )
+
+      applySelectedTransfer(response.data)
+
       setSuccess(
-        action === 'ship'
-          ? 'تم شحن التحويل وخصم الكميات من المصدر.'
-          : 'تم استلام التحويل وإضافة الكميات إلى الوجهة.',
+        hasDiscrepancy
+          ? 'تم استلام التحويل وتسجيل فروق الكميات.'
+          : 'تم استلام التحويل بالكامل وإضافة الكميات إلى الوجهة.',
       )
 
       await loadTransfers()
@@ -694,7 +866,7 @@ function TransfersPage() {
       setError(
         currentError instanceof Error
           ? currentError.message
-          : 'تعذر تنفيذ عملية التحويل.',
+          : 'تعذر استلام التحويل.',
       )
     } finally {
       actionRequestRef.current = false
@@ -1184,7 +1356,7 @@ function TransfersPage() {
                   type="button"
                   className="primary-button small-button"
                   disabled={runningAction}
-                  onClick={() => void runTransferAction('ship')}
+                  onClick={() => void shipTransfer()}
                 >
                   {runningAction ? 'جاري الشحن...' : 'شحن التحويل'}
                 </button>
@@ -1195,9 +1367,9 @@ function TransfersPage() {
                   type="button"
                   className="primary-button small-button"
                   disabled={runningAction}
-                  onClick={() => void runTransferAction('receive')}
+                  onClick={() => void receiveTransfer()}
                 >
-                  {runningAction ? 'جاري الاستلام...' : 'استلام التحويل'}
+                  {runningAction ? 'جاري الاستلام...' : 'اعتماد الاستلام'}
                 </button>
               ) : null}
             </div>
@@ -1265,6 +1437,60 @@ function TransfersPage() {
             </article>
           </section>
 
+          {userCanReceiveSelected ? (
+            <>
+              <section className="mini-cards-grid transfer-summary-grid">
+                <article className="mini-card">
+                  <span>إجمالي المشحون</span>
+                  <strong>
+                    {formatQuantity(receivingSummary.approvedTotal)}
+                  </strong>
+                </article>
+
+                <article className="mini-card">
+                  <span>إجمالي المستلم</span>
+                  <strong>
+                    {formatQuantity(receivingSummary.receivedTotal)}
+                  </strong>
+                </article>
+
+                <article className="mini-card">
+                  <span>إجمالي العجز</span>
+                  <strong>
+                    {formatQuantity(receivingSummary.shortageTotal)}
+                  </strong>
+                </article>
+
+                <article className="mini-card">
+                  <span>أصناف بها فرق</span>
+                  <strong>{receivingSummary.discrepancyItemCount}</strong>
+                </article>
+              </section>
+
+              <div className="form-grid">
+                <label>
+                  ملاحظة الاستلام
+                  <input
+                    value={receivingNote}
+                    maxLength={500}
+                    disabled={runningAction}
+                    placeholder="إجبارية عند وجود عجز"
+                    onChange={(event) => setReceivingNote(event.target.value)}
+                  />
+                </label>
+              </div>
+            </>
+          ) : null}
+
+          {selectedTransfer.transfer.status === 'received' &&
+          selectedTransfer.transfer.has_receiving_discrepancy ? (
+            <p className="error-message">
+              تم استلام التحويل بفروق في الكميات.
+              {' — '}
+              الملاحظة: {selectedTransfer.transfer.receiving_note || '-'}
+            </p>
+          ) : null}
+
           <div className="table-wrapper">
             <table>
               <thead>
@@ -1313,9 +1539,29 @@ function TransfersPage() {
                       )}
                     </td>
                     <td>
-                      {item.received_quantity
-                        ? formatQuantity(item.received_quantity)
-                        : '-'}
+                      {userCanReceiveSelected ? (
+                        <input
+                          className="transfer-quantity-input"
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          max={Number(item.approved_quantity ?? 0)}
+                          value={receivingQuantities[item.id] ?? ''}
+                          disabled={runningAction}
+                          onChange={(event) => {
+                            const nextValue = Number(event.target.value)
+
+                            setReceivingQuantities((currentQuantities) => ({
+                              ...currentQuantities,
+                              [item.id]: nextValue,
+                            }))
+                          }}
+                        />
+                      ) : item.received_quantity !== null ? (
+                        formatQuantity(item.received_quantity)
+                      ) : (
+                        '-'
+                      )}
                     </td>
                   </tr>
                 ))}
