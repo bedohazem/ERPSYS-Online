@@ -130,15 +130,10 @@ function mapSupplierVariantSource(row: Record<string, unknown>) {
 // ======================================================
 suppliersRouter.get('/api/suppliers', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
+    const auth = getAuthContext(res)
     const query = req.query.q
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
-
+    // الشركة مصدرها Session الموثقة فقط.
     const searchText =
       typeof query === 'string' && query.trim() ? `%${query.trim()}%` : null
 
@@ -169,7 +164,7 @@ suppliersRouter.get('/api/suppliers', async (req, res, next) => {
         ORDER BY name ASC
         LIMIT $3;
         `,
-      [companyId.trim(), searchText, parseSupplierLimit(req.query.limit)],
+      [auth.companyId, searchText, parseSupplierLimit(req.query.limit)],
     )
 
     return res.json({

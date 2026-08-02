@@ -1,5 +1,7 @@
 import { Router } from 'express'
+
 import { db } from '../../db/pool'
+import { getAuthContext } from '../auth/auth.middleware'
 
 export const purchaseOrdersRouter = Router()
 
@@ -97,6 +99,7 @@ async function loadPurchaseOrderDetails(
 
     LEFT JOIN users u
       ON u.id = po.created_by
+      AND u.company_id = po.company_id
 
     LEFT JOIN purchase_order_items poi
       ON poi.purchase_order_id = po.id
@@ -157,9 +160,11 @@ async function loadPurchaseOrderDetails(
 
     LEFT JOIN fashion_sizes fs
       ON fs.id = pv.size_id
+      AND fs.company_id = pv.company_id
 
     LEFT JOIN fashion_colors fc
       ON fc.id = pv.color_id
+      AND fc.company_id = pv.company_id
 
     WHERE poi.company_id = $1
       AND poi.purchase_order_id = $2
@@ -239,19 +244,13 @@ async function loadReceiptIdempotencyContext(
 // ======================================================
 purchaseOrdersRouter.get('/api/purchase-orders', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const auth = getAuthContext(res)
+
+    const companyId = auth.companyId
+    const authenticatedBranchId = auth.branchId
+
     const status = req.query.status
     const query = req.query.q
-
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
-
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
 
     const selectedStatus =
       typeof status === 'string' && status.trim() ? status.trim() : null
@@ -363,7 +362,7 @@ purchaseOrdersRouter.get('/api/purchase-orders', async (req, res, next) => {
         LIMIT $5;
         `,
       [
-        companyId.trim(),
+        companyId,
         authenticatedBranchId,
         selectedStatus,
         searchText,
@@ -386,10 +385,11 @@ purchaseOrdersRouter.get(
   '/api/purchase-orders/:purchaseOrderId',
   async (req, res, next) => {
     try {
-      const purchaseOrderId = String(req.params.purchaseOrderId || '').trim()
+      const auth = getAuthContext(res)
 
-      const companyId = req.query.companyId
-      const branchId = req.query.branchId
+      const purchaseOrderId = String(req.params.purchaseOrderId || '')
+        .trim()
+        .toLowerCase()
 
       if (!isUuid(purchaseOrderId)) {
         return res.status(400).json({
@@ -397,24 +397,15 @@ purchaseOrdersRouter.get(
         })
       }
 
-      if (typeof companyId !== 'string' || !companyId.trim()) {
-        return res.status(400).json({
-          error: 'companyId query parameter is required',
-        })
-      }
-
-      const authenticatedBranchId =
-        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
-
       const details = await loadPurchaseOrderDetails(
-        companyId.trim(),
+        auth.companyId,
         purchaseOrderId,
-        authenticatedBranchId,
+        auth.branchId,
       )
 
       if (!details) {
         return res.status(404).json({
-          error: 'Purchase order was not found',
+          error: 'أمر الشراء غير موجود أو غير مسموح بعرضه.',
         })
       }
 
@@ -434,26 +425,23 @@ purchaseOrdersRouter.get(
 // لا يتم تعديل المخزون هنا.
 // ======================================================
 purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
+  const auth = getAuthContext(res)
   const client = await db.connect()
 
   try {
     const {
-      companyId,
-      branchId,
       supplierId,
       purchaseNumber,
       idempotencyKey,
       expectedDate,
       note,
-      createdBy,
       items,
     } = req.body
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId is required',
-      })
-    }
+    // الشركة والفرع والمستخدم من Session فقط.
+    const companyId = auth.companyId
+    const authenticatedBranchId = auth.branchId
+    const createdBy = auth.userId
 
     if (typeof supplierId !== 'string' || !isUuid(supplierId.trim())) {
       return res.status(400).json({
@@ -479,11 +467,8 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
       })
     }
 
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
-
     const existingOrder = await loadOrderByIdempotency(
-      companyId.trim(),
+      companyId,
       idempotencyKey.trim(),
       authenticatedBranchId,
     )
@@ -603,7 +588,7 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
             AND is_active = TRUE
           FOR SHARE;
           `,
-      [companyId.trim(), supplierId.trim()],
+      [companyId, supplierId.trim()],
     )
 
     if ((supplierResult.rowCount ?? 0) === 0) {
@@ -618,7 +603,7 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
             AND id = ANY($2::uuid[])
             AND status = 'active';
           `,
-      [companyId.trim(), Array.from(variantIds)],
+      [companyId, Array.from(variantIds)],
     )
 
     if ((variantsResult.rowCount ?? 0) !== normalizedItems.length) {
@@ -657,7 +642,7 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
           RETURNING *;
           `,
       [
-        companyId.trim(),
+        companyId,
         authenticatedBranchId,
         supplierId.trim(),
         purchaseNumber.trim(),
@@ -670,7 +655,7 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
           ? expectedDate.trim()
           : null,
         typeof note === 'string' && note.trim() ? note.trim() : null,
-        createdBy || null,
+        createdBy,
       ],
     )
 
@@ -696,7 +681,7 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
           );
           `,
         [
-          companyId.trim(),
+          companyId,
           createdOrder.id,
           item.variantId,
           item.quantity,
@@ -711,7 +696,7 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
     await client.query('COMMIT')
 
     const details = await loadPurchaseOrderDetails(
-      companyId.trim(),
+      companyId,
       createdOrder.id,
       authenticatedBranchId,
     )
@@ -723,24 +708,16 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
     await client.query('ROLLBACK').catch(() => {})
 
     if (isUniqueViolation(error)) {
-      const requestCompanyId =
-        typeof req.body?.companyId === 'string' ? req.body.companyId.trim() : ''
-
       const requestIdempotencyKey =
         typeof req.body?.idempotencyKey === 'string'
           ? req.body.idempotencyKey.trim()
           : ''
 
-      const requestBranchId =
-        typeof req.body?.branchId === 'string' && req.body.branchId.trim()
-          ? req.body.branchId.trim()
-          : null
-
-      if (requestCompanyId && requestIdempotencyKey) {
+      if (requestIdempotencyKey) {
         const existingOrder = await loadOrderByIdempotency(
-          requestCompanyId,
+          auth.companyId,
           requestIdempotencyKey,
-          requestBranchId,
+          auth.branchId,
         )
 
         if (existingOrder) {
@@ -753,12 +730,6 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
 
       return res.status(409).json({
         error: 'رقم أمر الشراء مستخدم بالفعل.',
-      })
-    }
-
-    if (error instanceof PurchaseOrderApiError) {
-      return res.status(error.statusCode).json({
-        error: error.message,
       })
     }
 
@@ -776,33 +747,26 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
 purchaseOrdersRouter.post(
   '/api/purchase-orders/:purchaseOrderId/receive',
   async (req, res, next) => {
+    const auth = getAuthContext(res)
     const client = await db.connect()
 
     // يجب تعريفه خارج try لأن catch يحتاج استخدامه
     // عند معالجة طلبات Idempotency المتزامنة.
-    const purchaseOrderId = String(req.params.purchaseOrderId || '').trim()
+    const purchaseOrderId = String(req.params.purchaseOrderId || '')
+      .trim()
+      .toLowerCase()
 
     try {
-      const {
-        companyId,
-        branchId,
-        stockLocationId,
-        receiptNumber,
-        idempotencyKey,
-        note,
-        createdBy,
-        items,
-      } = req.body
+      const { stockLocationId, receiptNumber, idempotencyKey, note, items } =
+        req.body
+
+      const companyId = auth.companyId
+      const authenticatedBranchId = auth.branchId
+      const createdBy = auth.userId
 
       if (!isUuid(purchaseOrderId)) {
         return res.status(400).json({
           error: 'purchaseOrderId is invalid',
-        })
-      }
-
-      if (typeof companyId !== 'string' || !companyId.trim()) {
-        return res.status(400).json({
-          error: 'companyId is required',
         })
       }
 
@@ -833,11 +797,8 @@ purchaseOrdersRouter.post(
         })
       }
 
-      const authenticatedBranchId =
-        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
-
       const existingReceipt = await loadReceiptIdempotencyContext(
-        companyId.trim(),
+        companyId,
         idempotencyKey.trim(),
       )
 
@@ -850,7 +811,7 @@ purchaseOrdersRouter.post(
         }
 
         const details = await loadPurchaseOrderDetails(
-          companyId.trim(),
+          companyId,
           purchaseOrderId,
           authenticatedBranchId,
         )
@@ -921,7 +882,7 @@ purchaseOrdersRouter.post(
             )
           FOR UPDATE;
           `,
-        [companyId.trim(), purchaseOrderId, authenticatedBranchId],
+        [companyId, purchaseOrderId, authenticatedBranchId],
       )
 
       if ((orderResult.rowCount ?? 0) === 0) {
@@ -948,7 +909,7 @@ purchaseOrdersRouter.post(
             )
           FOR SHARE;
           `,
-        [companyId.trim(), stockLocationId.trim(), authenticatedBranchId],
+        [companyId, stockLocationId.trim(), authenticatedBranchId],
       )
 
       if ((locationResult.rowCount ?? 0) === 0) {
@@ -970,7 +931,7 @@ purchaseOrdersRouter.post(
           ORDER BY id ASC
           FOR UPDATE;
           `,
-        [companyId.trim(), purchaseOrderId, Array.from(itemIds)],
+        [companyId, purchaseOrderId, Array.from(itemIds)],
       )
 
       if ((selectedOrderItemsResult.rowCount ?? 0) !== normalizedItems.length) {
@@ -1084,7 +1045,7 @@ purchaseOrdersRouter.post(
           RETURNING *;
           `,
         [
-          companyId.trim(),
+          companyId,
           trustedLocation.branch_id,
           stockLocationId.trim(),
           order.supplier_id,
@@ -1096,7 +1057,7 @@ purchaseOrdersRouter.post(
           receiptTaxTotal,
           receiptTotal,
           typeof note === 'string' && note.trim() ? note.trim() : null,
-          createdBy || null,
+          createdBy,
         ],
       )
 
@@ -1150,7 +1111,7 @@ purchaseOrdersRouter.post(
           );
           `,
           [
-            companyId.trim(),
+            companyId,
             createdReceipt.id,
             orderItem.id,
             orderItem.variant_id,
@@ -1182,7 +1143,7 @@ purchaseOrdersRouter.post(
           DO NOTHING;
           `,
           [
-            companyId.trim(),
+            companyId,
             trustedLocation.branch_id,
             stockLocationId.trim(),
             orderItem.variant_id,
@@ -1198,7 +1159,7 @@ purchaseOrdersRouter.post(
               AND variant_id = $3
             FOR UPDATE;
             `,
-          [companyId.trim(), stockLocationId.trim(), orderItem.variant_id],
+          [companyId, stockLocationId.trim(), orderItem.variant_id],
         )
 
         if ((balanceResult.rowCount ?? 0) === 0) {
@@ -1215,7 +1176,7 @@ purchaseOrdersRouter.post(
               AND id = $2
             FOR UPDATE;
             `,
-          [companyId.trim(), orderItem.variant_id],
+          [companyId, orderItem.variant_id],
         )
 
         if ((variantResult.rowCount ?? 0) === 0) {
@@ -1250,7 +1211,7 @@ purchaseOrdersRouter.post(
           [
             quantityAfter,
             trustedLocation.branch_id,
-            companyId.trim(),
+            companyId,
             stockLocationId.trim(),
             orderItem.variant_id,
           ],
@@ -1265,7 +1226,7 @@ purchaseOrdersRouter.post(
           WHERE company_id = $2
             AND id = $3;
           `,
-          [averageCost, companyId.trim(), orderItem.variant_id],
+          [averageCost, companyId, orderItem.variant_id],
         )
 
         await client.query(
@@ -1295,7 +1256,7 @@ purchaseOrdersRouter.post(
           );
           `,
           [
-            companyId.trim(),
+            companyId,
             trustedLocation.branch_id,
             stockLocationId.trim(),
             orderItem.variant_id,
@@ -1304,7 +1265,7 @@ purchaseOrdersRouter.post(
             quantityAfter,
             purchaseOrderId,
             `Purchase order ${order.purchase_number}`,
-            createdBy || null,
+            createdBy,
           ],
         )
 
@@ -1318,7 +1279,7 @@ purchaseOrdersRouter.post(
             AND purchase_order_id = $3
             AND id = $4;
           `,
-          [receivedQuantity, companyId.trim(), purchaseOrderId, orderItem.id],
+          [receivedQuantity, companyId, purchaseOrderId, orderItem.id],
         )
       }
 
@@ -1336,7 +1297,7 @@ purchaseOrdersRouter.post(
           WHERE company_id = $1
             AND purchase_order_id = $2;
           `,
-        [companyId.trim(), purchaseOrderId],
+        [companyId, purchaseOrderId],
       )
 
       const remainingQuantity = Number(
@@ -1361,13 +1322,13 @@ purchaseOrdersRouter.post(
         WHERE company_id = $2
           AND id = $3;
         `,
-        [nextStatus, companyId.trim(), purchaseOrderId],
+        [nextStatus, companyId, purchaseOrderId],
       )
 
       await client.query('COMMIT')
 
       const details = await loadPurchaseOrderDetails(
-        companyId.trim(),
+        companyId,
         purchaseOrderId,
         authenticatedBranchId,
       )
@@ -1383,24 +1344,14 @@ purchaseOrdersRouter.post(
       await client.query('ROLLBACK').catch(() => {})
 
       if (isUniqueViolation(error)) {
-        const requestCompanyId =
-          typeof req.body?.companyId === 'string'
-            ? req.body.companyId.trim()
-            : ''
-
         const requestIdempotencyKey =
           typeof req.body?.idempotencyKey === 'string'
             ? req.body.idempotencyKey.trim()
             : ''
 
-        const requestBranchId =
-          typeof req.body?.branchId === 'string' && req.body.branchId.trim()
-            ? req.body.branchId.trim()
-            : null
-
-        if (requestCompanyId && requestIdempotencyKey) {
+        if (requestIdempotencyKey) {
           const existingReceipt = await loadReceiptIdempotencyContext(
-            requestCompanyId,
+            auth.companyId,
             requestIdempotencyKey,
           )
 
@@ -1409,9 +1360,9 @@ purchaseOrdersRouter.post(
             existingReceipt.purchase_order_id === purchaseOrderId
           ) {
             const details = await loadPurchaseOrderDetails(
-              requestCompanyId,
+              auth.companyId,
               purchaseOrderId,
-              requestBranchId,
+              auth.branchId,
             )
 
             return res.status(200).json({

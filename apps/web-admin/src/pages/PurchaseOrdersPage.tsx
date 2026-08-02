@@ -79,11 +79,6 @@ type PurchaseOrderDetails = {
   }>
 }
 
-type PurchaseOrdersPageProps = {
-  companyId: string
-  branchId: string
-}
-
 const moneyFormatter = new Intl.NumberFormat('ar-EG', {
   style: 'currency',
   currency: 'EGP',
@@ -134,7 +129,7 @@ function translateStatus(status: string) {
   return labels[status] || status
 }
 
-function PurchaseOrdersPage({ companyId, branchId }: PurchaseOrdersPageProps) {
+function PurchaseOrdersPage() {
   const { user } = useAuth()
 
   const isAdmin = user?.roles.includes('admin') ?? false
@@ -223,19 +218,11 @@ function PurchaseOrdersPage({ companyId, branchId }: PurchaseOrdersPageProps) {
   }, [cartItems])
 
   async function loadSetupData() {
-    const branchQuery = branchId.trim()
-      ? `&branchId=${encodeURIComponent(branchId.trim())}`
-      : ''
-
     const [suppliersResponse, locationsResponse] = await Promise.all([
-      requestJson<ApiResponse<Supplier[]>>(
-        `/api/suppliers?companyId=${encodeURIComponent(companyId)}&limit=100`,
-      ),
+      requestJson<ApiResponse<Supplier[]>>('/api/suppliers?limit=100'),
 
       requestJson<ApiResponse<StockLocation[]>>(
-        `/api/purchases/stock-locations?companyId=${encodeURIComponent(
-          companyId,
-        )}${branchQuery}`,
+        '/api/purchases/stock-locations',
       ),
     ])
 
@@ -260,19 +247,20 @@ function PurchaseOrdersPage({ companyId, branchId }: PurchaseOrdersPageProps) {
     setError('')
 
     try {
-      const branchQuery = branchId.trim()
-        ? `&branchId=${encodeURIComponent(branchId.trim())}`
-        : ''
+      const query = new URLSearchParams({
+        limit: '100',
+      })
+
+      if (orderSearch.trim()) {
+        query.set('q', orderSearch.trim())
+      }
+
+      if (statusFilter) {
+        query.set('status', statusFilter)
+      }
 
       const response = await requestJson<ApiResponse<PurchaseOrderSummary[]>>(
-        `/api/purchase-orders?companyId=${encodeURIComponent(
-          companyId,
-        )}${branchQuery}` +
-          (orderSearch.trim()
-            ? `&q=${encodeURIComponent(orderSearch.trim())}`
-            : '') +
-          (statusFilter ? `&status=${encodeURIComponent(statusFilter)}` : '') +
-          '&limit=100',
+        `/api/purchase-orders?${query.toString()}`,
       )
 
       setOrders(response.data)
@@ -291,14 +279,8 @@ function PurchaseOrdersPage({ companyId, branchId }: PurchaseOrdersPageProps) {
     setError('')
 
     try {
-      const branchQuery = branchId.trim()
-        ? `&branchId=${encodeURIComponent(branchId.trim())}`
-        : ''
-
       const response = await requestJson<ApiResponse<PurchaseOrderDetails>>(
-        `/api/purchase-orders/${encodeURIComponent(
-          orderId,
-        )}?companyId=${encodeURIComponent(companyId)}${branchQuery}`,
+        `/api/purchase-orders/${encodeURIComponent(orderId)}`,
       )
 
       setSelectedOrder(response.data)
@@ -338,9 +320,7 @@ function PurchaseOrdersPage({ companyId, branchId }: PurchaseOrdersPageProps) {
       }
 
       const response = await requestJson<ApiResponse<LookupItem>>(
-        `/api/purchases/lookup-item?companyId=${encodeURIComponent(
-          companyId,
-        )}&code=${encodeURIComponent(code.trim())}`,
+        `/api/purchases/lookup-item?code=${encodeURIComponent(code.trim())}`,
       )
 
       const lookupItem = response.data
@@ -429,8 +409,7 @@ function PurchaseOrdersPage({ companyId, branchId }: PurchaseOrdersPageProps) {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            companyId,
-            branchId: branchId || null,
+            // Tenant والمستخدم مصدرهم Session.
             supplierId,
             purchaseNumber,
             idempotencyKey: orderKey,
@@ -511,8 +490,7 @@ function PurchaseOrdersPage({ companyId, branchId }: PurchaseOrdersPageProps) {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            companyId,
-            branchId: branchId || null,
+            // Tenant والمستخدم مصدرهم Session.
             stockLocationId,
             receiptNumber,
             idempotencyKey: receiptKey,
@@ -544,16 +522,12 @@ function PurchaseOrdersPage({ companyId, branchId }: PurchaseOrdersPageProps) {
   }
 
   useEffect(() => {
-    if (!companyId.trim()) {
-      return
-    }
-
     void loadOrders()
 
     if (canCreate) {
       void loadSetupData()
     }
-  }, [companyId, branchId, canCreate])
+  }, [canCreate])
 
   return (
     <>

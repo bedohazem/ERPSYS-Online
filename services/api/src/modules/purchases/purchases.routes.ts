@@ -1,5 +1,7 @@
 import { Router } from 'express'
+
 import { db } from '../../db/pool'
+import { getAuthContext } from '../auth/auth.middleware'
 
 export const purchasesRouter = Router()
 
@@ -168,18 +170,9 @@ purchasesRouter.get(
   '/api/purchases/stock-locations',
   async (req, res, next) => {
     try {
-      const companyId = req.query.companyId
-      const branchId = req.query.branchId
+      const auth = getAuthContext(res)
 
-      if (typeof companyId !== 'string' || !companyId.trim()) {
-        return res.status(400).json({
-          error: 'companyId query parameter is required',
-        })
-      }
-
-      const authenticatedBranchId =
-        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
-
+      // لا نقبل companyId أو branchId من Query String.
       const result = await db.query(
         `
         SELECT
@@ -205,7 +198,7 @@ purchasesRouter.get(
 
         ORDER BY sl.name ASC;
         `,
-        [companyId.trim(), authenticatedBranchId],
+        [auth.companyId, auth.branchId],
       )
 
       return res.json({
@@ -224,14 +217,8 @@ purchasesRouter.get(
 // ======================================================
 purchasesRouter.get('/api/purchases/lookup-item', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
+    const auth = getAuthContext(res)
     const code = req.query.code
-
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
 
     if (typeof code !== 'string' || !code.trim()) {
       return res.status(400).json({
@@ -277,7 +264,7 @@ purchasesRouter.get('/api/purchases/lookup-item', async (req, res, next) => {
 
         LIMIT 1;
         `,
-      [companyId.trim(), code.trim()],
+      [auth.companyId, code.trim()],
     )
 
     if ((result.rowCount ?? 0) === 0) {

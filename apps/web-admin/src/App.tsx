@@ -1145,9 +1145,7 @@ function App() {
             <PurchasesPage companyId={companyId} branchId={branchId} />
           ) : null}
 
-          {activePage === 'purchase-orders' ? (
-            <PurchaseOrdersPage companyId={companyId} branchId={branchId} />
-          ) : null}
+          {activePage === 'purchase-orders' ? <PurchaseOrdersPage /> : null}
 
           {activePage === 'pos-devices' ? (
             <PosDevicesPage companyId={companyId} branchId={branchId} />
