@@ -7,6 +7,64 @@
 -- 3. متابعة المدفوع والمتبقي.
 -- ============================================================
 
+-- ============================================================
+-- المفتاح المركب المطلوب لربط فاتورة المورد بإذن الاستلام
+-- مع التأكد أن السجلين تابعان لنفس الشركة.
+--
+-- suppliers وusers عندهما بالفعل مفاتيح مركبة
+-- من Migrations سابقة، لذلك لا نعيد إنشاءها هنا.
+-- ============================================================
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+
+        FROM pg_constraint constraint_row
+
+        WHERE constraint_row.conrelid =
+              'purchase_receipts'::regclass
+
+          AND constraint_row.contype IN ('p', 'u')
+
+          AND constraint_row.conkey = ARRAY[
+              (
+                  SELECT attribute.attnum
+
+                  FROM pg_attribute attribute
+
+                  WHERE attribute.attrelid =
+                        'purchase_receipts'::regclass
+
+                    AND attribute.attname =
+                        'company_id'
+              ),
+              (
+                  SELECT attribute.attnum
+
+                  FROM pg_attribute attribute
+
+                  WHERE attribute.attrelid =
+                        'purchase_receipts'::regclass
+
+                    AND attribute.attname =
+                        'id'
+              )
+          ]::smallint[]
+    ) THEN
+        ALTER TABLE purchase_receipts
+
+        ADD CONSTRAINT
+            uq_purchase_receipts_company_id_id
+
+        UNIQUE (
+            company_id,
+            id
+        );
+    END IF;
+END;
+$$;
+
 
 CREATE TABLE IF NOT EXISTS supplier_invoices (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -89,6 +147,57 @@ CREATE TABLE IF NOT EXISTS supplier_invoices (
             OR due_date >= invoice_date
         )
 );
+
+
+-- المفتاح المركب مطلوب حتى يستطيع جدول الدفعات
+-- الربط بالفاتورة مع ضمان أنها تتبع نفس الشركة.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+
+        FROM pg_constraint constraint_row
+
+        WHERE constraint_row.conrelid =
+              'supplier_invoices'::regclass
+
+          AND constraint_row.contype IN ('p', 'u')
+
+          AND constraint_row.conkey = ARRAY[
+              (
+                  SELECT attribute.attnum
+
+                  FROM pg_attribute attribute
+
+                  WHERE attribute.attrelid =
+                        'supplier_invoices'::regclass
+
+                    AND attribute.attname = 'company_id'
+              ),
+              (
+                  SELECT attribute.attnum
+
+                  FROM pg_attribute attribute
+
+                  WHERE attribute.attrelid =
+                        'supplier_invoices'::regclass
+
+                    AND attribute.attname = 'id'
+              )
+          ]::smallint[]
+    ) THEN
+        ALTER TABLE supplier_invoices
+
+        ADD CONSTRAINT
+            uq_supplier_invoices_company_scope
+
+        UNIQUE (
+            company_id,
+            id
+        );
+    END IF;
+END;
+$$;
 
 
 CREATE TABLE IF NOT EXISTS supplier_payments (
