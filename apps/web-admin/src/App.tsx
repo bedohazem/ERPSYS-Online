@@ -10,6 +10,7 @@ import StockCountsPage from './pages/StockCountsPage'
 import TransfersPage from './pages/TransfersPage'
 import PurchasesPage from './pages/PurchasesPage'
 import PurchaseOrdersPage from './pages/PurchaseOrdersPage'
+import SupplierFinancePage from './pages/SupplierFinancePage'
 import PosDevicesPage from './pages/PosDevicesPage'
 import PosSyncPage from './pages/PosSyncPage'
 import NewSalePage from './pages/NewSalePage'
@@ -42,6 +43,7 @@ type PageName =
   | 'transfers'
   | 'purchases'
   | 'purchase-orders'
+  | 'supplier-finance'
   | 'pos-devices'
   | 'pos-sync'
   | 'users'
@@ -192,6 +194,14 @@ const pageDefinitions: Array<{
     anyPermissions: ['purchases.view', 'purchases.create'],
   },
   {
+    name: 'supplier-finance',
+    label: 'فواتير ومدفوعات الموردين',
+    icon: '¤',
+    permission: 'purchases.view',
+
+    anyPermissions: ['purchases.view', 'purchases.create'],
+  },
+  {
     name: 'pos-devices',
     label: 'أجهزة نقاط البيع',
     icon: '▣',
@@ -303,7 +313,7 @@ const navigationGroups: Array<{
     name: 'purchases',
     label: 'المشتريات',
     icon: '↓',
-    pages: ['purchases', 'purchase-orders'],
+    pages: ['purchases', 'purchase-orders', 'supplier-finance'],
   },
   {
     name: 'pos',
@@ -1146,6 +1156,8 @@ function App() {
           ) : null}
 
           {activePage === 'purchase-orders' ? <PurchaseOrdersPage /> : null}
+
+          {activePage === 'supplier-finance' ? <SupplierFinancePage /> : null}
 
           {activePage === 'pos-devices' ? (
             <PosDevicesPage companyId={companyId} branchId={branchId} />
