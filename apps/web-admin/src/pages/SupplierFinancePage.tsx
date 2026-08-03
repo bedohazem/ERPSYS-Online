@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useAuth } from '../auth/AuthContext'
+import SupplierReturnsPanel from '../components/SupplierReturnsPanel'
 import { requestJson } from '../lib/http'
 
 type Receipt = {
@@ -27,8 +28,12 @@ type SupplierInvoice = {
   status: string
 
   total: string
+
   paid_total: string
+  credit_total: string
+
   balance: string
+  supplier_credit_balance: string
 
   payments_count: number
   last_payment_at: string | null
@@ -41,6 +46,10 @@ type InvoiceListResponse = {
     invoices_count: number
     total_invoiced: string
     total_paid: string
+
+    total_credited: string
+    total_supplier_credit: string
+
     total_outstanding: string
     overdue_count: number
   }
@@ -92,7 +101,8 @@ function translateStatus(status: string) {
   const labels: Record<string, string> = {
     open: 'مفتوحة',
     partially_paid: 'مدفوعة جزئيًا',
-    paid: 'مدفوعة',
+    paid: 'مسددة',
+    credit_due: 'رصيد دائن مستحق من المورد',
     cancelled: 'ملغية',
   }
 
@@ -412,8 +422,18 @@ function SupplierFinancePage() {
           </article>
 
           <article className="mini-card">
-            <span>الرصيد المستحق</span>
+            <span>إشعارات الخصم</span>
+            <strong>{formatMoney(summary.total_credited)}</strong>
+          </article>
+
+          <article className="mini-card">
+            <span>الرصيد المستحق للموردين</span>
             <strong>{formatMoney(summary.total_outstanding)}</strong>
+          </article>
+
+          <article className="mini-card">
+            <span>رصيد دائن لنا</span>
+            <strong>{formatMoney(summary.total_supplier_credit)}</strong>
           </article>
 
           <article className="mini-card">
@@ -595,6 +615,19 @@ function SupplierFinancePage() {
         </section>
       ) : null}
 
+      <SupplierReturnsPanel
+        invoices={invoices}
+        canCreate={canCreate}
+        onChanged={async () => {
+          // نغلق نموذج الدفع لو تغير رصيد الفاتورة
+          // نتيجة إشعار خصم جديد.
+          setSelectedInvoice(null)
+          setPaymentAmount('')
+
+          await Promise.all([loadInvoices(), loadReceipts()])
+        }}
+      />
+
       <section className="panel">
         <div className="section-header">
           <h2>سجل فواتير الموردين</h2>
@@ -618,7 +651,8 @@ function SupplierFinancePage() {
               <option value="">كل الحالات</option>
               <option value="open">مفتوحة</option>
               <option value="partially_paid">مدفوعة جزئيًا</option>
-              <option value="paid">مدفوعة</option>
+              <option value="paid">مسددة</option>
+              <option value="credit_due">رصيد دائن مستحق من المورد</option>
               <option value="cancelled">ملغية</option>
             </select>
 
@@ -646,7 +680,9 @@ function SupplierFinancePage() {
                   <th>الاستحقاق</th>
                   <th>الإجمالي</th>
                   <th>المدفوع</th>
-                  <th>المتبقي</th>
+                  <th>إشعارات الخصم</th>
+                  <th>المتبقي للمورد</th>
+                  <th>رصيد دائن لنا</th>
                   <th>الحالة</th>
                   <th>الإجراء</th>
                 </tr>
@@ -670,10 +706,19 @@ function SupplierFinancePage() {
                     <td>{formatDate(invoice.invoice_date)}</td>
                     <td>{formatDate(invoice.due_date)}</td>
                     <td>{formatMoney(invoice.total)}</td>
+
                     <td>{formatMoney(invoice.paid_total)}</td>
+
+                    <td>{formatMoney(invoice.credit_total)}</td>
 
                     <td>
                       <strong>{formatMoney(invoice.balance)}</strong>
+                    </td>
+
+                    <td>
+                      <strong>
+                        {formatMoney(invoice.supplier_credit_balance)}
+                      </strong>
                     </td>
 
                     <td>{translateStatus(invoice.status)}</td>
