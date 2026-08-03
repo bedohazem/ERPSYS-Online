@@ -733,6 +733,14 @@ purchaseOrdersRouter.post('/api/purchase-orders', async (req, res, next) => {
       })
     }
 
+    // أخطاء العمل المتوقعة لا يجب أن تصل إلى
+    // Global Error Handler وتتحول إلى 500.
+    if (error instanceof PurchaseOrderApiError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+      })
+    }
+
     return next(error)
   } finally {
     client.release()

@@ -132,6 +132,13 @@ function SupplierFinancePage() {
 
   const [paymentAmount, setPaymentAmount] = useState<number | ''>('')
 
+  // يظلان ثابتين أثناء إعادة محاولة نفس الدفعة.
+  // لا يتم تغييرهما إلا بعد نجاح العملية أو اختيار فاتورة جديدة.
+  const [paymentNumber, setPaymentNumber] = useState(() => createNumber('SPAY'))
+
+  const [paymentIdempotencyKey, setPaymentIdempotencyKey] =
+    useState(createIdempotencyKey)
+
   const [paymentMethod, setPaymentMethod] = useState('cash')
 
   const [paymentReference, setPaymentReference] = useState('')
@@ -279,12 +286,16 @@ function SupplierFinancePage() {
   function selectInvoiceForPayment(invoice: SupplierInvoice) {
     setSelectedInvoice(invoice)
     setPaymentAmount(Number(invoice.balance))
+
+    // اختيار فاتورة جديدة يعني بدء محاولة دفع جديدة.
+    setPaymentNumber(createNumber('SPAY'))
+    setPaymentIdempotencyKey(createIdempotencyKey())
+
     setPaymentReference('')
     setPaymentNote('')
     setError('')
     setSuccess('')
   }
-
   async function createPayment() {
     if (paymentLock.current || !selectedInvoice) {
       return
@@ -316,8 +327,8 @@ function SupplierFinancePage() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            paymentNumber: createNumber('SPAY'),
-            idempotencyKey: createIdempotencyKey(),
+            paymentNumber,
+            idempotencyKey: paymentIdempotencyKey,
             amount,
             paymentMethod,
             referenceNumber: paymentReference.trim() || null,
@@ -336,6 +347,10 @@ function SupplierFinancePage() {
       setPaymentAmount('')
       setPaymentReference('')
       setPaymentNote('')
+
+      // نجاح العملية فقط هو الذي يبدأ مفتاح دفعة جديد.
+      setPaymentNumber(createNumber('SPAY'))
+      setPaymentIdempotencyKey(createIdempotencyKey())
 
       await loadInvoices()
     } catch (currentError) {

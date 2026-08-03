@@ -911,6 +911,67 @@ supplierFinanceRouter.post(
       await client.query('ROLLBACK').catch(() => {})
 
       if (isUniqueViolation(error)) {
+        const requestedInvoiceId = String(req.params.invoiceId || '')
+          .trim()
+          .toLowerCase()
+
+        const requestIdempotencyKey =
+          typeof req.body?.idempotencyKey === 'string'
+            ? req.body.idempotencyKey.trim()
+            : ''
+
+        if (isUuid(requestedInvoiceId) && requestIdempotencyKey) {
+          const existingPaymentResult = await client.query(
+            `
+                SELECT
+                  payment.id,
+                  payment.supplier_invoice_id
+
+                FROM supplier_payments payment
+
+                WHERE payment.company_id = $1
+                  AND payment.idempotency_key = $2
+
+                LIMIT 1;
+              `,
+            [auth.companyId, requestIdempotencyKey],
+          )
+
+          const existingPayment = existingPaymentResult.rows[0]
+
+          if (
+            existingPayment &&
+            existingPayment.supplier_invoice_id === requestedInvoiceId
+          ) {
+            const existingInvoiceResult = await client.query(
+              `
+                  SELECT *
+
+                  FROM supplier_invoices
+
+                  WHERE company_id = $1
+                    AND id = $2
+
+                    AND (
+                      $3::uuid IS NULL
+                      OR branch_id = $3
+                    )
+
+                  LIMIT 1;
+                `,
+              [auth.companyId, requestedInvoiceId, auth.branchId],
+            )
+
+            if ((existingInvoiceResult.rowCount ?? 0) > 0) {
+              return res.status(200).json({
+                duplicated: true,
+                data: existingInvoiceResult.rows[0],
+                payment: existingPayment,
+              })
+            }
+          }
+        }
+
         return res.status(409).json({
           error: 'رقم الدفعة مستخدم بالفعل.',
         })
