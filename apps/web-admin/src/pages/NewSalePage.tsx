@@ -83,11 +83,6 @@ function roundSaleMoney(value: number) {
   return Number(value.toFixed(2))
 }
 
-type NewSalePageProps = {
-  companyId: string
-  branchId: string
-}
-
 function createSaleNumber() {
   return `WEB-${Date.now()}`
 }
@@ -96,7 +91,7 @@ function createIdempotencyKey() {
   return `web-admin-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-function NewSalePage({ companyId, branchId }: NewSalePageProps) {
+function NewSalePage() {
   const { user } = useAuth()
 
   // زر الحفظ يظهر فقط لمن يملك صلاحية إنشاء البيع
@@ -104,6 +99,8 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
     user?.roles.includes('admin') ||
     user?.permissions.includes('sales.create') ||
     false
+
+  const sessionBranchId = user?.branchId || ''
 
   // مكان البيع يُختار من الداتا الموثقة ولا يُكتب يدويًا.
   const [stockLocations, setStockLocations] = useState<StockLocation[]>([])
@@ -232,22 +229,16 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
     setError('')
 
     try {
-      const selectedCompanyId = companyId.trim()
-      const selectedBranchId = branchId.trim()
-
-      if (!selectedCompanyId || !selectedBranchId) {
+      if (!sessionBranchId) {
         setStockLocations([])
         setStockLocationId('')
         return
       }
 
-      const locationsUrl =
-        `/api/pos/stock-locations` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        `&branchId=${encodeURIComponent(selectedBranchId)}`
-
-      const locationsResponse =
-        await requestJson<ApiResponse<StockLocation[]>>(locationsUrl)
+      // الشركة والفرع يحددهما الـBackend من Session.
+      const locationsResponse = await requestJson<ApiResponse<StockLocation[]>>(
+        '/api/pos/stock-locations',
+      )
 
       const availableLocations = locationsResponse.data
 
@@ -292,18 +283,17 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
 
   // إعادة تحميل الأماكن عند تغير شركة أو فرع Session.
   useEffect(() => {
-    // تغير الشركة أو الفرع يعني بدء فاتورة جديدة بالكامل.
     resetSaleDraft()
     setLastSavedSale(null)
 
-    if (!companyId.trim() || !branchId.trim()) {
+    if (!canCreateSale || !sessionBranchId) {
       setStockLocations([])
       setStockLocationId('')
       return
     }
 
     void loadStockLocations()
-  }, [companyId, branchId])
+  }, [canCreateSale, sessionBranchId])
 
   // ======================================================
   // lookupAndAddItem
@@ -321,13 +311,9 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
     setError('')
 
     try {
-      const selectedCompanyId = companyId.trim()
       const selectedStockLocationId = stockLocationId.trim()
-      const selectedCode = code.trim()
 
-      if (!selectedCompanyId) {
-        throw new Error('companyId is required')
-      }
+      const selectedCode = code.trim()
 
       if (!selectedStockLocationId) {
         throw new Error('stockLocationId is required')
@@ -343,8 +329,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
 
       const lookupUrl =
         `/api/pos/lookup-item` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        `&stockLocationId=${encodeURIComponent(selectedStockLocationId)}` +
+        `?stockLocationId=${encodeURIComponent(selectedStockLocationId)}` +
         `&code=${encodeURIComponent(selectedCode)}`
 
       const lookupResponse =
@@ -495,19 +480,11 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
     setError('')
 
     try {
-      const selectedCompanyId = companyId.trim()
       const query = customerSearchText.trim()
 
-      if (!selectedCompanyId) {
-        throw new Error('companyId is required')
-      }
-
-      // بحث العملاء الخاص بإنشاء البيع.
-      // المسار يحتاج sales.create ولا يحتاج customers.view.
+      // الشركة مصدرها Session داخل الـBackend.
       const customersUrl =
-        `/api/pos/customers` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        (query ? `&q=${encodeURIComponent(query)}` : '')
+        `/api/pos/customers` + (query ? `?q=${encodeURIComponent(query)}` : '')
 
       const customersResponse =
         await requestJson<ApiResponse<Customer[]>>(customersUrl)
@@ -562,19 +539,16 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
     setLastSavedSale(null)
 
     try {
-      const selectedCompanyId = companyId.trim()
-      const selectedBranchId = branchId.trim()
       const selectedStockLocationId = stockLocationId.trim()
+
       const selectedSaleNumber = saleNumber.trim()
+
       const selectedCustomerId = customerId.trim()
+
       const selectedPaidAmount = roundSaleMoney(Number(paidAmount))
 
-      if (!selectedCompanyId) {
-        throw new Error('companyId is required')
-      }
-
-      if (!selectedBranchId) {
-        throw new Error('branchId is required')
+      if (!sessionBranchId) {
+        throw new Error('المستخدم الحالي غير مرتبط بفرع.')
       }
 
       if (!selectedStockLocationId) {
@@ -602,8 +576,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
       }
 
       const saleBody = {
-        companyId: selectedCompanyId,
-        branchId: selectedBranchId,
+        // Tenant والكاشير مصدرهم Session.
         stockLocationId: selectedStockLocationId,
         customerId: selectedCustomerId || null,
         saleNumber: selectedSaleNumber,
@@ -682,7 +655,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
                   cartItems.length === 0 ||
                   savingSale ||
                   loadingLookup ||
-                  !branchId.trim() ||
+                  !sessionBranchId ||
                   !stockLocationId.trim() ||
                   !paymentIsValid
                 }
@@ -696,7 +669,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
 
         {error ? <p className="error-message">{error}</p> : null}
 
-        {!branchId.trim() ? (
+        {!sessionBranchId ? (
           <p className="error-message">
             المستخدم الحالي غير مرتبط بفرع، لذلك لا يمكن إنشاء فاتورة بيع قبل
             تحديد فرع له.
@@ -771,7 +744,7 @@ function NewSalePage({ companyId, branchId }: NewSalePageProps) {
             <button
               type="button"
               className="primary-button small-button"
-              disabled={!companyId.trim() || loadingCustomers}
+              disabled={loadingCustomers}
               onClick={() => void loadCustomers()}
             >
               {loadingCustomers ? 'جاري البحث...' : 'بحث العملاء'}

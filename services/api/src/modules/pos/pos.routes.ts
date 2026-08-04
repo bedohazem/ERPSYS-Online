@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { db } from '../../db/pool'
-
+import { getAuthContext } from '../auth/auth.middleware'
 export const posRouter = Router()
 
 const posUuidPattern =
@@ -20,20 +20,14 @@ function isPosUuid(value: string) {
 //
 // companyId وbranchId يتم فرضهما من Session الموثقة.
 // ======================================================
-posRouter.get('/api/pos/stock-locations', async (req, res, next) => {
+posRouter.get('/api/pos/stock-locations', async (_req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const auth = getAuthContext(res)
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
-
-    if (typeof branchId !== 'string' || !branchId.trim()) {
-      return res.status(400).json({
-        error: 'branchId query parameter is required',
+    // إنشاء فاتورة البيع يتطلب مستخدمًا مرتبطًا بفرع.
+    if (!auth.branchId) {
+      return res.status(409).json({
+        error: 'المستخدم الحالي غير مرتبط بفرع ولا يمكنه إنشاء فاتورة بيع.',
       })
     }
 
@@ -80,7 +74,7 @@ posRouter.get('/api/pos/stock-locations', async (req, res, next) => {
         END,
         sl.name ASC;
       `,
-      [companyId.trim(), branchId.trim()],
+      [auth.companyId, auth.branchId],
     )
 
     res.json({ data: result.rows })
@@ -101,14 +95,8 @@ posRouter.get('/api/pos/stock-locations', async (req, res, next) => {
 // ======================================================
 posRouter.get('/api/pos/customers', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
+    const auth = getAuthContext(res)
     const query = req.query.q
-
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
 
     const searchText =
       typeof query === 'string' && query.trim() ? `%${query.trim()}%` : null
@@ -135,7 +123,7 @@ posRouter.get('/api/pos/customers', async (req, res, next) => {
       ORDER BY name ASC
       LIMIT 20;
       `,
-      [companyId.trim(), searchText],
+      [auth.companyId, searchText],
     )
 
     res.json({
@@ -156,18 +144,11 @@ posRouter.get('/api/pos/customers', async (req, res, next) => {
 // ======================================================
 posRouter.get('/api/pos/lookup-item', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const auth = getAuthContext(res)
 
     const stockLocationId = req.query.stockLocationId
 
     const code = req.query.code
-
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
 
     if (
       typeof stockLocationId !== 'string' ||
@@ -183,9 +164,6 @@ posRouter.get('/api/pos/lookup-item', async (req, res, next) => {
         error: 'code query parameter is required',
       })
     }
-
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
 
     const result = await db.query(
       `
@@ -268,12 +246,7 @@ posRouter.get('/api/pos/lookup-item', async (req, res, next) => {
 
         LIMIT 1;
         `,
-      [
-        companyId.trim(),
-        stockLocationId.trim(),
-        code.trim(),
-        authenticatedBranchId,
-      ],
+      [auth.companyId, stockLocationId.trim(), code.trim(), auth.branchId],
     )
 
     if ((result.rowCount ?? 0) === 0) {

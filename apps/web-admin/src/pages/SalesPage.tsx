@@ -259,10 +259,8 @@ function getSaleMovementClass(quantity: number | string) {
 }
 
 type SalesPageProps = {
-  companyId: string
-  branchId: string
-
   initialSaleId: string | null
+
   onInitialSaleHandled: () => void
 
   // ترسل رقم الفاتورة إلى App
@@ -272,8 +270,6 @@ type SalesPageProps = {
 }
 
 function SalesPage({
-  companyId,
-  branchId,
   initialSaleId,
   onInitialSaleHandled,
   onCreateReturn,
@@ -321,15 +317,7 @@ function SalesPage({
     setError('')
 
     try {
-      const selectedCompanyId = companyId.trim()
-      const selectedBranchId = branchId.trim()
-
-      const salesUrl =
-        `/api/sales` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        (selectedBranchId
-          ? `&branchId=${encodeURIComponent(selectedBranchId)}`
-          : '')
+      const salesUrl = '/api/sales?limit=100'
 
       const salesResponse = await requestJson<ApiResponse<Sale[]>>(salesUrl)
 
@@ -354,12 +342,8 @@ function SalesPage({
   // أو تغير الشركة أو الفرع المرتبط بالجلسة.
   // ======================================================
   useEffect(() => {
-    if (!companyId.trim()) {
-      return
-    }
-
     void loadSales()
-  }, [companyId, branchId])
+  }, [])
 
   // ======================================================
   // loadSaleDetails
@@ -375,11 +359,7 @@ function SalesPage({
     setError('')
 
     try {
-      const selectedCompanyId = companyId.trim()
-
-      const saleDetailsUrl =
-        `/api/sales/${encodeURIComponent(saleId)}` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}`
+      const saleDetailsUrl = `/api/sales/${encodeURIComponent(saleId)}`
 
       const saleDetailsResponse =
         await requestJson<ApiResponse<SaleDetails>>(saleDetailsUrl)
@@ -539,7 +519,7 @@ function SalesPage({
   }
 
   useEffect(() => {
-    if (!companyId.trim() || !initialSaleId) {
+    if (!initialSaleId) {
       return
     }
 
@@ -548,7 +528,7 @@ function SalesPage({
     onInitialSaleHandled()
 
     void loadSaleDetails(saleId)
-  }, [companyId, initialSaleId])
+  }, [initialSaleId])
 
   return (
     <>
@@ -567,7 +547,7 @@ function SalesPage({
             <button
               type="button"
               className="primary-button small-button"
-              disabled={!companyId.trim() || loadingSales}
+              disabled={loadingSales}
               onClick={loadSales}
             >
               {loadingSales ? 'جاري التحديث...' : 'تحديث البيانات'}

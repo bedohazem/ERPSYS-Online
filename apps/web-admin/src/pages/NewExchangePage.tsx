@@ -130,9 +130,6 @@ type ApiResponse<T> = {
 }
 
 type NewExchangePageProps = {
-  companyId: string
-  branchId: string
-
   initialSaleId: string | null
 
   onInitialSaleHandled: () => void
@@ -209,8 +206,6 @@ function calculateReturnValue(item: OriginalSaleItem, quantity: number) {
 }
 
 function NewExchangePage({
-  companyId,
-  branchId,
   initialSaleId,
   onInitialSaleHandled,
 }: NewExchangePageProps) {
@@ -338,21 +333,7 @@ function NewExchangePage({
     setError('')
 
     try {
-      const selectedCompanyId = companyId.trim()
-
-      const selectedBranchId = branchId.trim()
-
-      if (!selectedCompanyId) {
-        throw new Error('بيانات الشركة غير مكتملة.')
-      }
-
-      const requestUrl =
-        `/api/sales` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        (selectedBranchId
-          ? `&branchId=${encodeURIComponent(selectedBranchId)}`
-          : '') +
-        '&limit=100'
+      const requestUrl = '/api/sales?limit=100'
 
       const response = await requestJson<ApiResponse<SaleSummary[]>>(requestUrl)
 
@@ -410,12 +391,12 @@ function NewExchangePage({
   }
 
   useEffect(() => {
-    if (!companyId.trim()) {
+    if (!canCreateExchange) {
       return
     }
 
     void loadSales()
-  }, [companyId, branchId])
+  }, [canCreateExchange])
 
   useEffect(() => {
     const saleId = initialSaleId?.trim()
@@ -709,7 +690,7 @@ function NewExchangePage({
           <button
             type="button"
             className="primary-button small-button"
-            disabled={loadingSales || !companyId.trim()}
+            disabled={loadingSales}
             onClick={() => void loadSales()}
           >
             {loadingSales ? 'جاري التحديث...' : 'تحديث الفواتير'}

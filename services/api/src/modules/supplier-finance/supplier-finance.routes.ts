@@ -812,12 +812,28 @@ supplierFinanceRouter.post(
         const invoiceResult = await db.query(
           `
             SELECT *
+
             FROM supplier_invoices
+
             WHERE company_id = $1
-              AND id = $2;
+              AND id = $2
+
+              -- إعادة المحاولة لا تتجاوز نطاق فرع المستخدم.
+              AND (
+                $3::uuid IS NULL
+                OR branch_id = $3
+              )
+
+            LIMIT 1;
           `,
-          [auth.companyId, invoiceId],
+          [auth.companyId, invoiceId, auth.branchId],
         )
+
+        if ((invoiceResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'فاتورة المورد غير موجودة أو غير مسموح بها.',
+          })
+        }
 
         return res.status(200).json({
           duplicated: true,

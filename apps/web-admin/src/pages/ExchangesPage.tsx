@@ -165,9 +165,6 @@ type ApiResponse<T> = {
 }
 
 type ExchangesPageProps = {
-  companyId: string
-  branchId: string
-
   onOpenSale: (saleId: string) => void
 }
 
@@ -294,11 +291,7 @@ function getMovementClass(quantity: number | string) {
   return 'movement-badge'
 }
 
-function ExchangesPage({
-  companyId,
-  branchId,
-  onOpenSale,
-}: ExchangesPageProps) {
+function ExchangesPage({ onOpenSale }: ExchangesPageProps) {
   const { user } = useAuth()
 
   const canVoidExchange =
@@ -357,17 +350,8 @@ function ExchangesPage({
     setError('')
 
     try {
-      if (!companyId.trim()) {
-        throw new Error('بيانات الشركة غير مكتملة.')
-      }
-
-      const selectedBranchId = branchId.trim()
-
       const requestUrl =
         `/api/exchanges?limit=100` +
-        (selectedBranchId
-          ? `&branchId=${encodeURIComponent(selectedBranchId)}`
-          : '') +
         (statusFilter ? `&status=${encodeURIComponent(statusFilter)}` : '')
 
       const response =
@@ -570,12 +554,8 @@ function ExchangesPage({
   }
 
   useEffect(() => {
-    if (!companyId.trim()) {
-      return
-    }
-
     void loadExchanges()
-  }, [companyId, branchId, statusFilter])
+  }, [statusFilter])
 
   return (
     <>

@@ -230,12 +230,7 @@ function getReturnMovementClass(quantity: number | string) {
   return 'movement-badge'
 }
 
-type ReturnsPageProps = {
-  companyId: string
-  branchId: string
-}
-
-function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
+function ReturnsPage() {
   const [returns, setReturns] = useState<ReturnDocument[]>([])
   const [selectedReturnDetails, setSelectedReturnDetails] =
     useState<ReturnDetails | null>(null)
@@ -272,15 +267,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
     setError('')
 
     try {
-      const selectedCompanyId = companyId.trim()
-      const selectedBranchId = branchId.trim()
-
-      const returnsUrl =
-        `/api/returns` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        (selectedBranchId
-          ? `&branchId=${encodeURIComponent(selectedBranchId)}`
-          : '')
+      const returnsUrl = '/api/returns?limit=100'
 
       const returnsResponse =
         await requestJson<ApiResponse<ReturnDocument[]>>(returnsUrl)
@@ -303,12 +290,12 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
   // أو تغير الشركة أو الفرع المرتبط بالجلسة.
   // ======================================================
   useEffect(() => {
-    if (!canReadReturns || !companyId.trim()) {
+    if (!canReadReturns) {
       return
     }
 
     void loadReturns()
-  }, [canReadReturns, companyId, branchId])
+  }, [canReadReturns])
 
   // ======================================================
   // loadReturnDetails
@@ -324,11 +311,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
     setError('')
 
     try {
-      const selectedCompanyId = companyId.trim()
-
-      const returnDetailsUrl =
-        `/api/returns/${encodeURIComponent(returnId)}` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}`
+      const returnDetailsUrl = `/api/returns/${encodeURIComponent(returnId)}`
 
       const returnDetailsResponse =
         await requestJson<ApiResponse<ReturnDetails>>(returnDetailsUrl)
@@ -501,7 +484,7 @@ function ReturnsPage({ companyId, branchId }: ReturnsPageProps) {
               <button
                 type="button"
                 className="primary-button small-button"
-                disabled={!companyId.trim() || loadingReturns}
+                disabled={loadingReturns}
                 onClick={loadReturns}
               >
                 {loadingReturns ? 'جاري التحديث...' : 'تحديث البيانات'}

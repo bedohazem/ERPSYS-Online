@@ -160,17 +160,16 @@ async function loadReturnByIdempotency(
 // ======================================================
 returnsRouter.get('/api/returns', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const auth = getAuthContext(res)
 
-    // limit عشان ما نرجعش عدد كبير جدًا مرة واحدة
-    const limit = Math.min(Number(req.query.limit || 50), 100)
+    const companyId = auth.companyId
+    const branchId = auth.branchId
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res
-        .status(400)
-        .json({ error: 'companyId query parameter is required' })
-    }
+    const requestedLimit = Number(req.query.limit ?? 50)
+
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 100)
+      : 50
 
     const result = await db.query(
       `
@@ -204,15 +203,29 @@ returnsRouter.get('/api/returns', async (req, res, next) => {
         -- عدد الأصناف داخل المرتجع
         COUNT(ri.id)::int AS items_count
       FROM returns r
-      JOIN branches b ON b.id = r.branch_id
-      JOIN stock_locations sl ON sl.id = r.stock_location_id
-      LEFT JOIN customers c ON c.id = r.customer_id
-      LEFT JOIN sales s ON s.id = r.original_sale_id
+      JOIN branches b
+        ON b.id = r.branch_id
+        AND b.company_id = r.company_id
+
+      JOIN stock_locations sl
+        ON sl.id = r.stock_location_id
+        AND sl.company_id = r.company_id
+
+      LEFT JOIN customers c
+        ON c.id = r.customer_id
+        AND c.company_id = r.company_id
+
+      LEFT JOIN sales s
+        ON s.id = r.original_sale_id
+        AND s.company_id = r.company_id
+
       LEFT JOIN users voider
         ON voider.id = r.voided_by
         AND voider.company_id =
             r.company_id
-      LEFT JOIN return_items ri ON ri.return_id = r.id
+      LEFT JOIN return_items ri
+        ON ri.return_id = r.id
+        AND ri.company_id = r.company_id
       WHERE r.company_id = $1
         AND ($2::uuid IS NULL OR r.branch_id = $2::uuid)
       GROUP BY
@@ -225,11 +238,7 @@ returnsRouter.get('/api/returns', async (req, res, next) => {
       ORDER BY r.created_at DESC
       LIMIT $3;
       `,
-      [
-        companyId,
-        typeof branchId === 'string' && branchId.trim() ? branchId : null,
-        limit,
-      ],
+      [companyId, branchId, limit],
     )
 
     res.json({ data: result.rows })
@@ -494,16 +503,11 @@ returnsRouter.get(
 // لو بعت originalSaleItemId، هنمنع ترجيع كمية أكبر من المباعة
 // ======================================================
 returnsRouter.post('/api/returns', async (req, res, next) => {
+  const auth = getAuthContext(res)
   const client = await db.connect()
 
   try {
-    const auth = getAuthContext(res)
     const {
-      companyId,
-
-      // branchId تم فرضه من Session للمستخدم المرتبط بفرع.
-      branchId,
-
       originalSaleId,
       returnNumber,
       source,
@@ -513,13 +517,9 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
       refunds,
     } = req.body
 
-    // =========================
-    // Basic validation
-    // =========================
-
-    if (!companyId || typeof companyId !== 'string') {
-      return res.status(400).json({ error: 'companyId is required' })
-    }
+    // الشركة والفرع والمستخدم من Session فقط.
+    const companyId = auth.companyId
+    const authenticatedBranchId = auth.branchId
 
     const normalizedOriginalSaleId =
       typeof originalSaleId === 'string'
@@ -531,9 +531,6 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
         error: 'originalSaleId is invalid',
       })
     }
-
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
 
     if (!returnNumber || typeof returnNumber !== 'string') {
       return res.status(400).json({ error: 'returnNumber is required' })

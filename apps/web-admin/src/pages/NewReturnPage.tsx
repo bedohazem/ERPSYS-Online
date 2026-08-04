@@ -106,9 +106,6 @@ type ApiResponse<T> = {
 }
 
 type NewReturnPageProps = {
-  companyId: string
-  branchId: string
-
   // فاتورة تم اختيارها من شاشة Sales
   // لو القيمة null تعمل الشاشة بالطريقة العادية
   initialSaleId: string | null
@@ -155,8 +152,6 @@ function calculateItemRefundAmount(saleItem: SaleItem, returnQuantity: number) {
 }
 
 function NewReturnPage({
-  companyId,
-  branchId,
   initialSaleId,
   onInitialSaleHandled,
 }: NewReturnPageProps) {
@@ -248,20 +243,7 @@ function NewReturnPage({
     setLastSavedReturn(null)
 
     try {
-      const selectedCompanyId = companyId.trim()
-      const selectedBranchId = branchId.trim()
-
-      if (!selectedCompanyId) {
-        throw new Error('companyId is required')
-      }
-
-      const salesUrl =
-        `/api/sales` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}` +
-        (selectedBranchId
-          ? `&branchId=${encodeURIComponent(selectedBranchId)}`
-          : '') +
-        '&limit=100'
+      const salesUrl = '/api/sales?limit=100'
 
       const salesResponse = await requestJson<ApiResponse<Sale[]>>(salesUrl)
 
@@ -294,15 +276,7 @@ function NewReturnPage({
     setLastSavedReturn(null)
 
     try {
-      const selectedCompanyId = companyId.trim()
-
-      if (!selectedCompanyId) {
-        throw new Error('companyId is required')
-      }
-
-      const saleDetailsUrl =
-        `/api/sales/${encodeURIComponent(saleId)}` +
-        `?companyId=${encodeURIComponent(selectedCompanyId)}`
+      const saleDetailsUrl = `/api/sales/${encodeURIComponent(saleId)}`
 
       const saleDetailsResponse =
         await requestJson<ApiResponse<SaleDetails>>(saleDetailsUrl)
@@ -418,12 +392,7 @@ function NewReturnPage({
     setLastSavedReturn(null)
 
     try {
-      const selectedCompanyId = companyId.trim()
       const selectedReturnNumber = returnNumber.trim()
-
-      if (!selectedCompanyId) {
-        throw new Error('companyId is required')
-      }
 
       if (!selectedSaleDetails) {
         throw new Error('اختر الفاتورة الأصلية أولًا')
@@ -469,10 +438,8 @@ function NewReturnPage({
       setShowReturnConfirm(false)
 
       const returnBody = {
-        companyId: selectedCompanyId,
-        branchId: originalSale.branch_id,
-        stockLocationId: originalSale.stock_location_id,
-        customerId: originalSale.customer_id,
+        // الفرع والمخزن والعميل يتم استخراجهم
+        // من الفاتورة الأصلية داخل Backend.
         originalSaleId: originalSale.id,
         returnNumber: selectedReturnNumber,
         source: 'web_admin',
@@ -572,7 +539,7 @@ function NewReturnPage({
           <button
             className="primary-button small-button"
             type="button"
-            disabled={!companyId.trim() || loadingSales}
+            disabled={loadingSales}
             onClick={loadSales}
           >
             {loadingSales ? 'جاري تحميل الفواتير...' : 'تحميل الفواتير'}

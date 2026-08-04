@@ -679,12 +679,8 @@ exchangesRouter.get(
     try {
       const auth = getAuthContext(res)
 
-      const requestedBranchId =
-        typeof req.query.branchId === 'string' && req.query.branchId.trim()
-          ? req.query.branchId.trim()
-          : null
-
-      const branchId = auth.branchId ?? requestedBranchId
+      // مستخدم الفرع يرى فرعه، ومدير الشركة يرى كل الفروع.
+      const branchId = auth.branchId
 
       const status =
         typeof req.query.status === 'string' && req.query.status.trim()

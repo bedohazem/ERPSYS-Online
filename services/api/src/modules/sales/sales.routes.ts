@@ -100,25 +100,17 @@ function isPostgresUniqueViolation(error: unknown) {
 // ======================================================
 salesRouter.get('/api/sales', async (req, res, next) => {
   try {
-    // companyId مهم جدًا عشان نجيب فواتير الشركة الحالية فقط
-    // ده جزء من فكرة multi-tenant مستقبلاً
-    const companyId = req.query.companyId
+    const auth = getAuthContext(res)
 
-    // branchId اختياري
-    // لو اتبعت، نجيب فواتير فرع محدد
-    // لو ما اتبعتش، نجيب فواتير كل الفروع داخل نفس الشركة
-    const branchId = req.query.branchId
+    // الشركة والفرع من Session فقط.
+    const companyId = auth.companyId
+    const branchId = auth.branchId
 
-    // limit اختياري عشان ما نرجعش عدد ضخم من الفواتير مرة واحدة
-    // لو المستخدم ما بعتوش نخليه 50
-    const limit = Math.min(Number(req.query.limit || 50), 100)
+    const requestedLimit = Number(req.query.limit ?? 50)
 
-    // Validation بسيط للتأكد إن companyId موجود وصحيح كنص
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res
-        .status(400)
-        .json({ error: 'companyId query parameter is required' })
-    }
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 100)
+      : 50
 
     // ======================================================
     // تحميل الفواتير مع حالة المرتجعات
@@ -200,12 +192,15 @@ salesRouter.get('/api/sales', async (req, res, next) => {
 
       JOIN branches b
         ON b.id = s.branch_id
+        AND b.company_id = s.company_id
 
       JOIN stock_locations sl
         ON sl.id = s.stock_location_id
+        AND sl.company_id = s.company_id
 
       LEFT JOIN customers c
         ON c.id = s.customer_id
+        AND c.company_id = s.company_id
 
       LEFT JOIN cashier_shifts
         sale_shift
@@ -222,6 +217,7 @@ salesRouter.get('/api/sales', async (req, res, next) => {
 
       LEFT JOIN sale_items si
         ON si.sale_id = s.id
+        AND si.company_id = s.company_id
 
       -- نجمع كل الكميات التي خرجت من قابلية
       -- الإرجاع، سواء عن طريق مرتجع أو استبدال.
@@ -319,11 +315,7 @@ salesRouter.get('/api/sales', async (req, res, next) => {
         s.created_at DESC
       LIMIT $3;
       `,
-      [
-        companyId,
-        typeof branchId === 'string' && branchId.trim() ? branchId : null,
-        limit,
-      ],
+      [companyId, branchId, limit],
     )
 
     res.json({ data: result.rows })
@@ -681,14 +673,12 @@ salesRouter.get(
 )
 
 salesRouter.post('/api/sales', async (req, res, next) => {
+  const auth = getAuthContext(res)
   const client = await db.connect()
 
   try {
     const {
-      companyId,
-      branchId,
       stockLocationId,
-      cashierId,
       shiftId,
       customerId,
       saleNumber,
@@ -699,16 +689,21 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       payments,
     } = req.body
 
-    if (!companyId || typeof companyId !== 'string') {
-      return res.status(400).json({ error: 'companyId is required' })
-    }
+    // الشركة والفرع والكاشير من Session فقط.
+    const companyId = auth.companyId
+    const branchId = auth.branchId
+    const cashierId = auth.userId
 
-    if (!branchId || typeof branchId !== 'string') {
-      return res.status(400).json({ error: 'branchId is required' })
+    if (!branchId) {
+      return res.status(409).json({
+        error: 'المستخدم الحالي غير مرتبط بفرع ولا يمكنه إنشاء فاتورة بيع.',
+      })
     }
 
     if (!stockLocationId || typeof stockLocationId !== 'string') {
-      return res.status(400).json({ error: 'stockLocationId is required' })
+      return res.status(400).json({
+        error: 'stockLocationId is required',
+      })
     }
 
     const normalizedSaleNumber =
@@ -1451,20 +1446,15 @@ salesRouter.post('/api/sales', async (req, res, next) => {
           ? (req.body as Record<string, unknown>)
           : {}
 
-      const requestCompanyId =
-        typeof requestBody.companyId === 'string'
-          ? requestBody.companyId.trim()
-          : ''
+      // حتى معالجة الطلب المكرر تستخدم Session الحالية.
+      const requestCompanyId = auth.companyId
 
       const requestIdempotencyKey =
         typeof requestBody.idempotencyKey === 'string'
           ? requestBody.idempotencyKey.trim()
           : ''
 
-      const requestBranchId =
-        typeof requestBody.branchId === 'string'
-          ? requestBody.branchId.trim().toLowerCase()
-          : ''
+      const requestBranchId = auth.branchId || ''
 
       if (
         requestCompanyId &&

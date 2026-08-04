@@ -1118,8 +1118,6 @@ function App() {
 
           {activePage === 'sales' ? (
             <SalesPage
-              companyId={companyId}
-              branchId={branchId}
               initialSaleId={selectedPosSyncSaleId}
               onInitialSaleHandled={() => setSelectedPosSyncSaleId(null)}
               onCreateReturn={openNewReturnFromSale}
@@ -1127,9 +1125,7 @@ function App() {
             />
           ) : null}
 
-          {activePage === 'returns' ? (
-            <ReturnsPage companyId={companyId} branchId={branchId} />
-          ) : null}
+          {activePage === 'returns' ? <ReturnsPage /> : null}
 
           {activePage === 'inventory' ? (
             <InventoryPage companyId={companyId} branchId={branchId} />
@@ -1187,14 +1183,10 @@ function App() {
 
           {activePage === 'roles' ? <RolesPage /> : null}
 
-          {activePage === 'new-sale' ? (
-            <NewSalePage companyId={companyId} branchId={branchId} />
-          ) : null}
+          {activePage === 'new-sale' ? <NewSalePage /> : null}
 
           {activePage === 'new-return' ? (
             <NewReturnPage
-              companyId={companyId}
-              branchId={branchId}
               initialSaleId={selectedReturnSaleId}
               onInitialSaleHandled={() => setSelectedReturnSaleId(null)}
             />
@@ -1202,19 +1194,13 @@ function App() {
 
           {activePage === 'new-exchange' ? (
             <NewExchangePage
-              companyId={companyId}
-              branchId={branchId}
               initialSaleId={selectedExchangeSaleId}
               onInitialSaleHandled={() => setSelectedExchangeSaleId(null)}
             />
           ) : null}
 
           {activePage === 'exchanges' ? (
-            <ExchangesPage
-              companyId={companyId}
-              branchId={branchId}
-              onOpenSale={openSaleFromPosSync}
-            />
+            <ExchangesPage onOpenSale={openSaleFromPosSync} />
           ) : null}
         </div>
       </section>
