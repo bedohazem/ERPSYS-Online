@@ -62,9 +62,14 @@ Fashion Retail ERP/POS.
 
 ## Project Documentation
 
+The repository documentation is the official living project reference.
+
 - [Architecture](./docs/architecture.md)
 - [Database](./docs/database.md)
+- [Master Backlog](./docs/backlog.md)
 - [Roadmap](./docs/roadmap.md)
+- [Product Strategy](./docs/product-strategy.md)
+- [POS Sync Policy](./docs/sync-policy.md)
 - [Sales Management](./docs/features/sales.md)
 - [Cashier Shifts and Settlement](./docs/features/cashier-shifts.md)
 - [Exchange Management](./docs/features/exchanges.md)
