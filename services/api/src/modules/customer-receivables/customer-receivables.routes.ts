@@ -45,7 +45,9 @@ function parsePositiveMoney(value: unknown) {
 
   const roundedValue = roundMoney(numericValue)
 
-  if (roundedValue > 99_999_999_999.99) {
+  // قيمة موجبة قبل التقريب قد تتحول إلى صفر مالي.
+  // مثال: 0.004 يجب رفضها بدل ترك PostgreSQL ترجع خطأ Constraint.
+  if (roundedValue <= 0 || roundedValue > 99_999_999_999.99) {
     return null
   }
 
@@ -91,16 +93,13 @@ async function loadCollectionByIdempotency(
   branchId: string | null,
   idempotencyKey: string,
 ) {
-  const result = await db.query(
+  const collectionResult = await db.query(
     `
       SELECT
         collection.*,
 
-        customer.name AS customer_name,
-
-        sale.sale_number,
-        sale.payment_status,
-        sale.outstanding_total
+        customer.name
+          AS customer_name
 
       FROM customer_collections collection
 
@@ -110,13 +109,6 @@ async function loadCollectionByIdempotency(
 
         AND customer.id =
             collection.customer_id
-
-      JOIN sales sale
-        ON sale.company_id =
-           collection.company_id
-
-        AND sale.id =
-            collection.sale_id
 
       WHERE collection.company_id = $1
         AND collection.idempotency_key = $2
@@ -131,7 +123,62 @@ async function loadCollectionByIdempotency(
     [companyId, idempotencyKey, branchId],
   )
 
-  return result.rows[0] || null
+  if ((collectionResult.rowCount ?? 0) === 0) {
+    return null
+  }
+
+  const collection = collectionResult.rows[0]
+
+  // الاستجابة المكررة يجب أن تطابق استجابة الإنشاء:
+  // collection + payment + sale.
+  const [paymentResult, saleResult] = await Promise.all([
+    db.query(
+      `
+        SELECT *
+
+        FROM payments
+
+        WHERE company_id = $1
+          AND customer_collection_id = $2
+
+        LIMIT 1;
+      `,
+      [companyId, collection.id],
+    ),
+
+    db.query(
+      `
+        SELECT *
+
+        FROM sales
+
+        WHERE company_id = $1
+          AND id = $2
+
+          AND (
+            $3::uuid IS NULL
+            OR branch_id = $3
+          )
+
+        LIMIT 1;
+      `,
+      [companyId, collection.sale_id, branchId],
+    ),
+  ])
+
+  const sale = saleResult.rows[0]
+
+  if (!sale) {
+    return null
+  }
+
+  return {
+    collection,
+
+    payment: paymentResult.rows[0] || null,
+
+    sale,
+  }
 }
 
 // ======================================================
@@ -206,26 +253,71 @@ customerReceivablesRouter.get('/api/receivables', async (req, res, next) => {
 
           collection_summary AS (
             SELECT
-              customer_id,
+              collection.customer_id,
 
-              MAX(collected_at)
+              MAX(
+                collection.collected_at
+              )
+              FILTER (
+                WHERE reversal_payment.id
+                      IS NULL
+              )
                 AS last_collection_at,
 
               COALESCE(
-                SUM(amount),
+                SUM(
+                  collection.amount
+                )
+                FILTER (
+                  WHERE reversal_payment.id
+                        IS NULL
+                ),
                 0
               ) AS total_collected
 
             FROM customer_collections
+                 collection
 
-            WHERE company_id = $1
+            -- كل تحصيل له Payment أصلية.
+            LEFT JOIN payments
+                      original_payment
+              ON original_payment
+                   .company_id =
+                 collection.company_id
+
+              AND original_payment
+                   .customer_collection_id =
+                 collection.id
+
+              AND original_payment
+                   .payment_role =
+                 'sale_collection'
+
+            -- عند إلغاء الفاتورة يتم إنشاء
+            -- Payment عكسية مرتبطة بالأصلية.
+            LEFT JOIN payments
+                      reversal_payment
+              ON reversal_payment
+                   .company_id =
+                 original_payment.company_id
+
+              AND reversal_payment
+                   .reverses_payment_id =
+                 original_payment.id
+
+              AND reversal_payment
+                   .payment_role =
+                 'void_reversal'
+
+            WHERE collection.company_id = $1
 
               AND (
                 $2::uuid IS NULL
-                OR branch_id = $2
+                OR collection.branch_id = $2
               )
 
-            GROUP BY customer_id
+            GROUP BY
+              collection.customer_id
           )
 
           SELECT
@@ -479,42 +571,83 @@ customerReceivablesRouter.get(
 
       const collectionsResult = await db.query(
         `
-            SELECT
-              collection.*,
+          SELECT
+            collection.*,
 
-              sale.sale_number,
+            sale.sale_number,
 
-              creator.full_name
-                AS created_by_name
+            creator.full_name
+              AS created_by_name,
 
-            FROM customer_collections collection
+            original_payment.id
+              AS payment_id,
 
-            JOIN sales sale
-              ON sale.company_id =
-                 collection.company_id
+            reversal_payment.id
+              AS reversal_payment_id,
 
-              AND sale.id =
-                  collection.sale_id
+            reversal_payment.created_at
+              AS reversed_at,
 
-            LEFT JOIN users creator
-              ON creator.company_id =
-                 collection.company_id
+            (
+              reversal_payment.id
+              IS NOT NULL
+            ) AS is_reversed
 
-              AND creator.id =
-                  collection.created_by
+          FROM customer_collections
+               collection
 
-            WHERE collection.company_id = $1
-              AND collection.customer_id = $2
+          JOIN sales sale
+            ON sale.company_id =
+               collection.company_id
 
-              AND (
-                $3::uuid IS NULL
-                OR collection.branch_id = $3
-              )
+            AND sale.id =
+                collection.sale_id
 
-            ORDER BY
-              collection.collected_at DESC,
-              collection.id DESC;
-          `,
+          LEFT JOIN users creator
+            ON creator.company_id =
+               collection.company_id
+
+            AND creator.id =
+                collection.created_by
+
+          LEFT JOIN payments
+                    original_payment
+            ON original_payment.company_id =
+               collection.company_id
+
+            AND original_payment
+                 .customer_collection_id =
+               collection.id
+
+            AND original_payment
+                 .payment_role =
+               'sale_collection'
+
+          LEFT JOIN payments
+                    reversal_payment
+            ON reversal_payment.company_id =
+               original_payment.company_id
+
+            AND reversal_payment
+                 .reverses_payment_id =
+               original_payment.id
+
+            AND reversal_payment
+                 .payment_role =
+               'void_reversal'
+
+          WHERE collection.company_id = $1
+            AND collection.customer_id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR collection.branch_id = $3
+            )
+
+          ORDER BY
+            collection.collected_at DESC,
+            collection.id DESC;
+        `,
         [auth.companyId, customerId, auth.branchId],
       )
 
@@ -873,7 +1006,7 @@ customerReceivablesRouter.post(
       )
 
       if (existingCollection) {
-        if (existingCollection.sale_id !== saleId) {
+        if (existingCollection.collection.sale_id !== saleId) {
           return res.status(409).json({
             error: 'Idempotency key belongs to another sale',
           })
@@ -881,6 +1014,8 @@ customerReceivablesRouter.post(
 
         return res.status(200).json({
           duplicated: true,
+
+          // نفس شكل Response الإنشاء العادي.
           data: existingCollection,
         })
       }
@@ -933,7 +1068,9 @@ customerReceivablesRouter.post(
         throw new CustomerReceivablesApiError(409, 'الفاتورة مسددة بالكامل.')
       }
 
-      if (amount - currentOutstanding > 0.01) {
+      // القيمتان مقربتان بالفعل لمنزلتين عشريتين،
+      // لذلك لا نسمح حتى بزيادة قرش واحد.
+      if (amount > currentOutstanding) {
         throw new CustomerReceivablesApiError(
           409,
           'مبلغ التحصيل أكبر من الرصيد المستحق.',
@@ -1155,13 +1292,16 @@ customerReceivablesRouter.post(
 
           if (
             existingCollection &&
-            existingCollection.sale_id ===
+            existingCollection.collection.sale_id ===
               String(req.params.saleId || '')
                 .trim()
                 .toLowerCase()
           ) {
             return res.status(200).json({
               duplicated: true,
+
+              // الطلب المتزامن يحصل على نفس
+              // Response الطلب الذي تم حفظه.
               data: existingCollection,
             })
           }

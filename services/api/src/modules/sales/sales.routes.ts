@@ -1294,13 +1294,16 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         currentOutstanding + outstandingTotal,
       )
 
-      if (nextCustomerOutstanding - creditLimit > 0.01) {
+      // الرصيد والحد الائتماني مقربان لمنزلتين،
+      // لذلك الحد الأقصى يطبق بدقة دون سماح بقرش زائد.
+      if (nextCustomerOutstanding > creditLimit) {
         throw new SalesApiError(
           409,
           'الفاتورة تتجاوز الحد الائتماني المتاح للعميل.',
           {
             creditLimit,
             currentOutstanding,
+
             requestedCredit: outstandingTotal,
 
             nextCustomerOutstanding,

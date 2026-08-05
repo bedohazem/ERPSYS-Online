@@ -59,6 +59,12 @@ type CustomerCollection = {
 
   collected_at: string
   created_by_name: string | null
+
+  payment_id: string | null
+  reversal_payment_id: string | null
+
+  is_reversed: boolean
+  reversed_at: string | null
 }
 
 type CustomerStatement = {
@@ -364,12 +370,14 @@ function CustomerReceivablesPage() {
         },
       )
 
-      setSuccess('تم تحديث السياسة الائتمانية للعميل.')
-
       await Promise.all([
         loadReceivables(),
         loadStatement(statement.customer.id),
       ])
+
+      // توضع الرسالة بعد إعادة التحميل لأن
+      // loadStatement يمسح الرسائل القديمة.
+      setSuccess('تم تحديث السياسة الائتمانية للعميل.')
     } catch (currentError) {
       setError(
         currentError instanceof Error
@@ -445,11 +453,13 @@ function CustomerReceivablesPage() {
 
       const updatedSale = response.data.sale
 
-      setSuccess(
-        `تم تسجيل التحصيل. المتبقي: ${formatMoney(
-          updatedSale.outstanding_total,
-        )}`,
-      )
+      const successMessage = response.duplicated
+        ? `تم العثور على نفس التحصيل المسجل سابقًا. المتبقي: ${formatMoney(
+            updatedSale.outstanding_total,
+          )}`
+        : `تم تسجيل التحصيل. المتبقي: ${formatMoney(
+            updatedSale.outstanding_total,
+          )}`
 
       setSelectedSale(null)
       setCollectionAmount('')
@@ -458,8 +468,13 @@ function CustomerReceivablesPage() {
 
       await Promise.all([
         loadReceivables(),
+
         loadStatement(statement.customer.id),
       ])
+
+      // توضع بعد إعادة تحميل كشف الحساب
+      // حتى لا تختفي فورًا.
+      setSuccess(successMessage)
     } catch (currentError) {
       setError(
         currentError instanceof Error
@@ -885,6 +900,7 @@ function CustomerReceivablesPage() {
                       <th>المرجع</th>
                       <th>المستخدم</th>
                       <th>التاريخ</th>
+                      <th>الحالة</th>
                     </tr>
                   </thead>
 
@@ -908,6 +924,14 @@ function CustomerReceivablesPage() {
                         <td>{collection.created_by_name || '-'}</td>
 
                         <td>{formatDateTime(collection.collected_at)}</td>
+
+                        <td>
+                          {collection.is_reversed
+                            ? `تم رده في ${formatDateTime(
+                                collection.reversed_at,
+                              )}`
+                            : 'تحصيل فعال'}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
