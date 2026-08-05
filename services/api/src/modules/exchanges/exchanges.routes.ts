@@ -430,6 +430,11 @@ exchangesRouter.get(
             AND s.status =
                 'completed'
 
+            AND COALESCE(
+              s.outstanding_total,
+              0
+            ) = 0
+
             AND (
               $3::uuid IS NULL
               OR s.branch_id =
@@ -443,7 +448,8 @@ exchangesRouter.get(
 
       if ((saleResult.rowCount ?? 0) === 0) {
         return res.status(404).json({
-          error: 'Completed sale was not found or belongs to another branch',
+          error:
+            'Completed and fully paid sale was not found or belongs to another branch',
         })
       }
 
@@ -1742,6 +1748,11 @@ exchangesRouter.post(
             AND s.status =
                 'completed'
 
+            AND COALESCE(
+              s.outstanding_total,
+              0
+            ) = 0
+
             AND b.is_active = TRUE
             AND sl.is_active = TRUE
 
@@ -1759,7 +1770,7 @@ exchangesRouter.post(
       if ((saleResult.rowCount ?? 0) === 0) {
         throw new ExchangeApiError(
           404,
-          'Completed original sale was not found, inactive, or belongs to another branch',
+          'Completed and fully paid original sale was not found, inactive, or belongs to another branch',
         )
       }
 

@@ -28,6 +28,11 @@ type Sale = {
   total: string
   paid_total: string
   change_total: string
+
+  payment_status: string
+  outstanding_total: string
+  due_date: string | null
+
   status: string
   void_reason: string | null
 
@@ -422,9 +427,16 @@ function SalesPage({
       return
     }
 
+    const refundableAmount = Math.max(
+      Number(sale.paid_total) - Number(sale.change_total),
+      0,
+    )
+
     const confirmed = window.confirm(
       `إلغاء الفاتورة ${sale.sale_number}؟\n\n` +
-        `سيتم رد ${formatSaleCurrency(sale.total)} للعميل.\n` +
+        `سيتم رد ${formatSaleCurrency(
+          refundableAmount,
+        )} المحصلة فعليًا للعميل.\n` +
         'وسيتم إعادة جميع أصناف الفاتورة إلى المخزون.\n\n' +
         'لن تُحذف السجلات الأصلية، وسيتم إنشاء حركات عكسية مرتبطة بها.',
     )

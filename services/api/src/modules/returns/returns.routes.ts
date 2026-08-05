@@ -604,6 +604,12 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
     AND s.id = $2
     AND s.status = 'completed'
 
+    -- لا يتم رد مبلغ من فاتورة لم يكتمل سدادها.
+    AND COALESCE(
+      s.outstanding_total,
+      0
+    ) = 0
+
     -- المستخدم المرتبط بفرع لا يرجع فاتورة فرع آخر.
     AND (
       $3::uuid IS NULL
@@ -618,7 +624,7 @@ returnsRouter.post('/api/returns', async (req, res, next) => {
     if ((originalSaleResult.rowCount ?? 0) === 0) {
       throw new ReturnsApiError(
         404,
-        'Original sale was not found, inactive, or belongs to another branch',
+        'Original sale was not found, is not fully paid, inactive, or belongs to another branch',
       )
     }
 

@@ -29,6 +29,7 @@ import {
   posSyncAdminRouter,
 } from './modules/pos-sync/pos-sync.routes'
 import { customersRouter } from './modules/customers/customers.routes'
+import { customerReceivablesRouter } from './modules/customer-receivables/customer-receivables.routes'
 import { returnsRouter } from './modules/returns/returns.routes'
 import { exchangesRouter } from './modules/exchanges/exchanges.routes'
 import { reportsRouter } from './modules/reports/reports.routes'
@@ -100,6 +101,7 @@ app.use(posRouter)
 app.use(posDevicesRouter)
 app.use(posSyncAdminRouter)
 app.use(customersRouter)
+app.use(customerReceivablesRouter)
 app.use(returnsRouter)
 app.use(exchangesRouter)
 app.use(reportsRouter)

@@ -34,6 +34,10 @@ type Customer = {
   email: string | null
   address: string | null
   is_active: boolean
+
+  allow_credit_sales: boolean
+  credit_limit: string
+  payment_terms_days: number
 }
 
 type StockLocation = {
@@ -51,6 +55,11 @@ type SaleResponse = {
     sale_number: string
     total: string
     paid_total: string
+
+    payment_status: string
+    outstanding_total: string
+    due_date: string | null
+
     status: string
   }
 }
@@ -120,6 +129,11 @@ function NewSalePage() {
   const [customerId, setCustomerId] = useState('')
   const [customerSearchText, setCustomerSearchText] = useState('')
   const [customers, setCustomers] = useState<Customer[]>([])
+
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(
+    null,
+  )
+
   const [selectedCustomerName, setSelectedCustomerName] = useState('')
   const [code, setCode] = useState('')
   const [quantity, setQuantity] = useState(1)
@@ -163,10 +177,22 @@ function NewSalePage() {
     return roundSaleMoney(Math.max(Number(paidAmount) - invoiceTotal, 0))
   }, [invoiceTotal, paidAmount])
 
+  const outstandingAmount = useMemo(() => {
+    return roundSaleMoney(
+      Math.max(
+        invoiceTotal - Math.min(Number(paidAmount) || 0, invoiceTotal),
+        0,
+      ),
+    )
+  }, [invoiceTotal, paidAmount])
+
+  const isCreditSale = outstandingAmount > 0
+
   const paymentIsValid =
     invoiceTotal > 0 &&
     Number.isFinite(Number(paidAmount)) &&
-    Number(paidAmount) >= invoiceTotal
+    Number(paidAmount) >= 0 &&
+    (!isCreditSale || Boolean(selectedCustomer?.allow_credit_sales))
 
   // عند تغير الإجمالي أو طريقة الدفع نبدأ بالمبلغ الكامل.
   useEffect(() => {
@@ -187,6 +213,7 @@ function NewSalePage() {
     setSaleIdempotencyKey(createIdempotencyKey())
 
     setCustomerId('')
+    setSelectedCustomer(null)
     setSelectedCustomerName('')
     setCustomerSearchText('')
     setCustomers([])
@@ -504,6 +531,7 @@ function NewSalePage() {
 
   function selectCustomer(customer: Customer) {
     setCustomerId(customer.id)
+    setSelectedCustomer(customer)
     setSelectedCustomerName(customer.name)
     setCustomerSearchText(customer.name)
     setCustomers([])
@@ -511,6 +539,7 @@ function NewSalePage() {
 
   function clearSelectedCustomer() {
     setCustomerId('')
+    setSelectedCustomer(null)
     setSelectedCustomerName('')
     setCustomerSearchText('')
     setCustomers([])
@@ -563,16 +592,18 @@ function NewSalePage() {
         throw new Error('Add at least one item before saving')
       }
 
-      if (!Number.isFinite(selectedPaidAmount) || selectedPaidAmount <= 0) {
+      if (!Number.isFinite(selectedPaidAmount) || selectedPaidAmount < 0) {
         throw new Error('المبلغ المستلم غير صالح.')
       }
 
       if (selectedPaidAmount < invoiceTotal) {
-        throw new Error(
-          `المبلغ المستلم أقل من إجمالي الفاتورة بمقدار ${formatSaleCurrency(
-            invoiceTotal - selectedPaidAmount,
-          )}`,
-        )
+        if (!selectedCustomerId) {
+          throw new Error('يجب اختيار عميل عند البيع الآجل أو الدفع الجزئي.')
+        }
+
+        if (!selectedCustomer?.allow_credit_sales) {
+          throw new Error('البيع الآجل غير مفعل للعميل المختار.')
+        }
       }
 
       const saleBody = {
@@ -590,13 +621,18 @@ function NewSalePage() {
           discountAmount: 0,
           taxAmount: 0,
         })),
-        payments: [
-          {
-            method: paymentMethod,
-            amount: selectedPaidAmount,
-            reference: null,
-          },
-        ],
+        payments:
+          selectedPaidAmount > 0
+            ? [
+                {
+                  method: paymentMethod,
+
+                  amount: selectedPaidAmount,
+
+                  reference: null,
+                },
+              ]
+            : [],
       }
 
       const saleResponse = await requestJson<ApiResponse<SaleResponse>>(
@@ -762,9 +798,23 @@ function NewSalePage() {
           </div>
 
           {selectedCustomerName ? (
-            <p className="selected-customer">
-              العميل المختار: <strong>{selectedCustomerName}</strong>
-            </p>
+            <div className="selected-customer">
+              <p>
+                العميل المختار: <strong>{selectedCustomerName}</strong>
+              </p>
+
+              {selectedCustomer ? (
+                <small>
+                  البيع الآجل:{' '}
+                  {selectedCustomer.allow_credit_sales ? 'مفعل' : 'غير مفعل'}
+                  {' — '}
+                  الحد الائتماني:{' '}
+                  {formatSaleCurrency(selectedCustomer.credit_limit)}
+                  {' — '}
+                  مدة السداد: {selectedCustomer.payment_terms_days} يوم
+                </small>
+              ) : null}
+            </div>
           ) : null}
 
           {customers.length > 0 ? (
@@ -777,7 +827,14 @@ function NewSalePage() {
                   onClick={() => selectCustomer(customer)}
                 >
                   <strong>{customer.name}</strong>
+
                   <span>{customer.phone || 'بدون تليفون'}</span>
+
+                  <small>
+                    {customer.allow_credit_sales
+                      ? `آجل حتى ${formatSaleCurrency(customer.credit_limit)}`
+                      : 'بيع نقدي فقط'}
+                  </small>
                 </button>
               ))}
             </div>
@@ -1004,10 +1061,9 @@ function NewSalePage() {
             المبلغ المستلم
             <input
               type="number"
-              min={invoiceTotal}
+              min="0"
               step="0.01"
               value={paidAmount}
-              readOnly={paymentMethod !== 'cash'}
               disabled={savingSale || cartItems.length === 0}
               onChange={(event) => {
                 const nextPaidAmount = Number(event.target.value)
@@ -1018,7 +1074,7 @@ function NewSalePage() {
               }}
             />
             <small className="field-note">
-              في الدفع غير النقدي يتم استخدام إجمالي الفاتورة تلقائيًا.
+              يمكن تسجيل المبلغ كاملًا أو جزئيًا أو صفرًا عند البيع الآجل.
             </small>
           </label>
         </div>
@@ -1050,11 +1106,17 @@ function NewSalePage() {
               {formatSaleCurrency(changeTotal)}
             </strong>
           </article>
+
+          <article className="mini-card">
+            <span>رصيد آجل على العميل</span>
+
+            <strong>{formatSaleCurrency(outstandingAmount)}</strong>
+          </article>
         </section>
 
         {!paymentIsValid && cartItems.length > 0 ? (
           <p className="error-message">
-            المبلغ المستلم يجب ألا يقل عن إجمالي الفاتورة.
+            عند دفع مبلغ أقل من الإجمالي يجب اختيار عميل مفعل له البيع الآجل.
           </p>
         ) : null}
       </section>

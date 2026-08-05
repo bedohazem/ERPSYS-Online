@@ -150,6 +150,12 @@ salesRouter.get('/api/sales', async (req, res, next) => {
         s.total,
         s.paid_total,
         s.change_total,
+
+        s.payment_status,
+        s.outstanding_total,
+        s.due_date,
+        s.is_credit_sale,
+
         s.status,
 
         s.void_reason,
@@ -384,6 +390,12 @@ salesRouter.get(
             s.total,
             s.paid_total,
             s.change_total,
+
+            s.payment_status,
+            s.outstanding_total,
+            s.due_date,
+            s.is_credit_sale,
+
             s.status,
 
             s.void_reason,
@@ -740,8 +752,11 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       return res.status(400).json({ error: 'items are required' })
     }
 
-    if (!Array.isArray(payments) || payments.length === 0) {
-      return res.status(400).json({ error: 'payments are required' })
+    // البيع الآجل الكامل يرسل مصفوفة دفع فارغة.
+    if (!Array.isArray(payments)) {
+      return res.status(400).json({
+        error: 'payments must be an array',
+      })
     }
 
     // ======================================================
@@ -1198,16 +1213,115 @@ salesRouter.post('/api/sales', async (req, res, next) => {
       }, 0),
     )
 
-    // النظام لا يحتوي حاليًا على مبيعات آجلة أو حسابات مدينة،
-    // لذلك لا نسمح بحفظ فاتورة ناقصة الدفع.
-    if (paidTotal < total) {
-      throw new SalesApiError(
-        400,
-        `Paid total is less than sale total. Sale total: ${total}, Paid total: ${paidTotal}`,
-      )
-    }
-
     const changeTotal = roundMoney(Math.max(paidTotal - total, 0))
+
+    // القيمة التي تم تطبيقها فعليًا على الفاتورة
+    // بعد استبعاد الباقي الذي عاد للعميل.
+    const netPaidTotal = roundMoney(Math.max(paidTotal - changeTotal, 0))
+
+    const outstandingTotal = roundMoney(Math.max(total - netPaidTotal, 0))
+
+    let paymentStatus = 'paid'
+    let dueDate: string | null = null
+    let isCreditSale = false
+
+    if (outstandingTotal > 0) {
+      if (!selectedCustomerId) {
+        throw new SalesApiError(
+          400,
+          'يجب اختيار عميل عند إنشاء فاتورة آجلة أو مدفوعة جزئيًا.',
+        )
+      }
+
+      // قفل العميل يجعل فحص الحد الائتماني آمنًا
+      // عند تنفيذ فاتورتين متزامنتين.
+      const creditPolicyResult = await client.query(
+        `
+            SELECT
+              allow_credit_sales,
+              credit_limit,
+              payment_terms_days
+
+            FROM customers
+
+            WHERE company_id = $1
+              AND id = $2
+              AND is_active = TRUE
+
+            FOR UPDATE;
+          `,
+        [companyId, selectedCustomerId],
+      )
+
+      if ((creditPolicyResult.rowCount ?? 0) === 0) {
+        throw new SalesApiError(404, 'العميل غير موجود أو غير نشط.')
+      }
+
+      const creditPolicy = creditPolicyResult.rows[0]
+
+      if (!creditPolicy.allow_credit_sales) {
+        throw new SalesApiError(409, 'البيع الآجل غير مفعل لهذا العميل.')
+      }
+
+      const creditLimit = roundMoney(Number(creditPolicy.credit_limit))
+
+      if (!Number.isFinite(creditLimit) || creditLimit <= 0) {
+        throw new SalesApiError(409, 'الحد الائتماني للعميل غير صالح.')
+      }
+
+      const currentOutstandingResult = await client.query(
+        `
+            SELECT
+              COALESCE(
+                SUM(outstanding_total),
+                0
+              ) AS outstanding_total
+
+            FROM sales
+
+            WHERE company_id = $1
+              AND customer_id = $2
+              AND status <> 'voided';
+          `,
+        [companyId, selectedCustomerId],
+      )
+
+      const currentOutstanding = roundMoney(
+        Number(currentOutstandingResult.rows[0].outstanding_total),
+      )
+
+      const nextCustomerOutstanding = roundMoney(
+        currentOutstanding + outstandingTotal,
+      )
+
+      if (nextCustomerOutstanding - creditLimit > 0.01) {
+        throw new SalesApiError(
+          409,
+          'الفاتورة تتجاوز الحد الائتماني المتاح للعميل.',
+          {
+            creditLimit,
+            currentOutstanding,
+            requestedCredit: outstandingTotal,
+
+            nextCustomerOutstanding,
+          },
+        )
+      }
+
+      const paymentTermsDays = Number(creditPolicy.payment_terms_days)
+
+      const calculatedDueDate = new Date()
+
+      calculatedDueDate.setUTCDate(
+        calculatedDueDate.getUTCDate() + paymentTermsDays,
+      )
+
+      dueDate = calculatedDueDate.toISOString().slice(0, 10)
+
+      paymentStatus = netPaidTotal > 0 ? 'partially_paid' : 'unpaid'
+
+      isCreditSale = true
+    }
 
     const saleResult = await client.query(
       `
@@ -1228,6 +1342,12 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         total,
         paid_total,
         change_total,
+
+        payment_status,
+        outstanding_total,
+        due_date,
+        is_credit_sale,
+
         status,
         synced_at
       )
@@ -1235,6 +1355,7 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         $1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10,
         $11, $12, $13, $14, $15, $16,
+        $17, $18, $19, $20,
         'completed',
         CASE WHEN $8 = 'offline_pos' THEN NOW() ELSE NULL END
       )
@@ -1258,6 +1379,11 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         total,
         paidTotal,
         changeTotal,
+
+        paymentStatus,
+        outstandingTotal,
+        dueDate,
+        isCreditSale,
       ],
     )
 
@@ -1923,13 +2049,6 @@ salesRouter.post(
         [auth.companyId, saleId],
       )
 
-      if ((originalPaymentsResult.rowCount ?? 0) === 0) {
-        throw new SalesApiError(
-          409,
-          'Sale payment history is missing and cannot be reversed safely',
-        )
-      }
-
       const originalPaymentTotal = roundMoney(
         originalPaymentsResult.rows.reduce(
           (total, payment) => total + Number(payment.amount),
@@ -1964,12 +2083,29 @@ salesRouter.post(
         )
       }
 
-      if (Math.abs(paidTotal - changeTotal - saleTotal) > 0.01) {
-        throw new SalesApiError(409, 'Sale financial totals are inconsistent', {
-          saleTotal,
-          paidTotal,
-          changeTotal,
-        })
+      const outstandingTotal = roundMoney(Number(sale.outstanding_total ?? 0))
+
+      const netCollectedTotal = roundMoney(Math.max(paidTotal - changeTotal, 0))
+
+      const expectedOutstanding = roundMoney(
+        Math.max(saleTotal - netCollectedTotal, 0),
+      )
+
+      if (
+        !Number.isFinite(outstandingTotal) ||
+        Math.abs(expectedOutstanding - outstandingTotal) > 0.01
+      ) {
+        throw new SalesApiError(
+          409,
+          'Sale receivable totals are inconsistent',
+          {
+            saleTotal,
+            paidTotal,
+            changeTotal,
+            outstandingTotal,
+            expectedOutstanding,
+          },
+        )
       }
 
       const cashPaymentTotal = roundMoney(
@@ -2261,13 +2397,12 @@ salesRouter.post(
         ),
       )
 
-      if (Math.abs(plannedRefundTotal - saleTotal) > 0.01) {
+      if (Math.abs(plannedRefundTotal - netCollectedTotal) > 0.01) {
         throw new SalesApiError(
           409,
-          'Sale payment reversal total does not match sale total',
+          'Sale payment reversal total does not match collected total',
           {
-            saleTotal,
-
+            netCollectedTotal,
             plannedRefundTotal,
           },
         )
@@ -2340,6 +2475,10 @@ salesRouter.post(
 
           SET
             status = 'voided',
+
+            payment_status = 'voided',
+            outstanding_total = 0,
+
             void_reason = $1,
             voided_by = $2,
             voided_at = NOW()

@@ -11,6 +11,10 @@ type SaleSummary = {
   branch_name: string
 
   total: string
+
+  payment_status: string
+  outstanding_total: string
+
   status: string
   occurred_at: string
 
@@ -341,6 +345,7 @@ function NewExchangePage({
         response.data.filter(
           (sale) =>
             sale.status === 'completed' &&
+            Number(sale.outstanding_total) <= 0 &&
             Number(sale.remaining_returnable_quantity) > 0,
         ),
       )

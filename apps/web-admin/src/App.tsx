@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 // بيانات المستخدم والشركة تأتي من Session الموثقة.
 import { useAuth } from './auth/AuthContext'
 import CustomersPage from './pages/CustomersPage'
+import CustomerReceivablesPage from './pages/CustomerReceivablesPage'
 import ProductsPage from './pages/ProductsPage'
 import SalesPage from './pages/SalesPage'
 import ReturnsPage from './pages/ReturnsPage'
@@ -34,6 +35,7 @@ type PageName =
   | 'dashboard'
   | 'products'
   | 'customers'
+  | 'receivables'
   | 'sales'
   | 'returns'
   | 'inventory'
@@ -248,6 +250,18 @@ const pageDefinitions: Array<{
     permission: 'customers.view',
   },
   {
+    name: 'receivables',
+    label: 'حسابات وتحصيلات العملاء',
+    icon: '¤',
+    permission: 'receivables.view',
+
+    anyPermissions: [
+      'receivables.view',
+      'receivables.collect',
+      'receivables.manage_credit',
+    ],
+  },
+  {
     name: 'users',
     label: 'المستخدمون',
     icon: '♙',
@@ -293,6 +307,7 @@ const navigationGroups: Array<{
       'new-exchange',
       'exchanges',
       'customers',
+      'receivables',
     ],
   },
   {
@@ -1115,6 +1130,8 @@ function App() {
           {activePage === 'customers' ? (
             <CustomersPage companyId={companyId} />
           ) : null}
+
+          {activePage === 'receivables' ? <CustomerReceivablesPage /> : null}
 
           {activePage === 'sales' ? (
             <SalesPage

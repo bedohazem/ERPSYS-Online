@@ -419,6 +419,45 @@ export function requireBusinessPermission(
   }
 
   // ======================================================
+  // صلاحيات الحسابات المدينة.
+  //
+  // القراءة متاحة لمن يملك إحدى صلاحيات الدورة.
+  // التحصيل يحتاج receivables.collect.
+  // تعديل السياسة يحتاج receivables.manage_credit.
+  // ======================================================
+  if (path === '/api/receivables' || path.startsWith('/api/receivables/')) {
+    if (isReadRequest) {
+      const auth = getAuthContext(res)
+
+      const canReadReceivables =
+        auth.roles.includes('admin') ||
+        auth.permissions.includes('receivables.view') ||
+        auth.permissions.includes('receivables.collect') ||
+        auth.permissions.includes('receivables.manage_credit')
+
+      if (!canReadReceivables) {
+        return res.status(403).json({
+          error: 'A customer receivables permission is required',
+        })
+      }
+
+      return next()
+    }
+
+    if (path.endsWith('/collect')) {
+      return requirePermission('receivables.collect')(req, res, next)
+    }
+
+    if (path.endsWith('/credit-policy')) {
+      return requirePermission('receivables.manage_credit')(req, res, next)
+    }
+
+    return res.status(403).json({
+      error: 'Permission policy is missing for this receivables action',
+    })
+  }
+
+  // ======================================================
   // صلاحيات دورة تحويل المخزون.
   //
   // إنشاء التحويل يحتاج create.

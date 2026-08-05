@@ -20,6 +20,10 @@ type Sale = {
   total: string
   paid_total: string
   change_total: string
+
+  payment_status: string
+  outstanding_total: string
+
   status: string
   created_at: string
   items_count: number
@@ -252,6 +256,7 @@ function NewReturnPage({
       const returnableSales = salesResponse.data.filter((sale) => {
         return (
           sale.status === 'completed' &&
+          Number(sale.outstanding_total) <= 0 &&
           Number(sale.remaining_returnable_quantity) > 0
         )
       })

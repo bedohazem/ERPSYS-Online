@@ -110,7 +110,12 @@ posRouter.get('/api/pos/customers', async (req, res, next) => {
         phone,
         email,
         address,
-        is_active
+        is_active,
+
+        allow_credit_sales,
+        credit_limit,
+        payment_terms_days
+
       FROM customers
       WHERE company_id = $1
         AND is_active = TRUE
@@ -270,18 +275,11 @@ posRouter.get('/api/pos/lookup-item', async (req, res, next) => {
 // ======================================================
 posRouter.get('/api/pos/search-items', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const auth = getAuthContext(res)
 
     const stockLocationId = req.query.stockLocationId
 
     const query = req.query.q
-
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
 
     if (
       typeof stockLocationId !== 'string' ||
@@ -297,9 +295,6 @@ posRouter.get('/api/pos/search-items', async (req, res, next) => {
         error: 'q query parameter is required',
       })
     }
-
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
 
     const searchText = `%${query.trim()}%`
 
@@ -381,12 +376,7 @@ posRouter.get('/api/pos/search-items', async (req, res, next) => {
 
         LIMIT 20;
         `,
-      [
-        companyId.trim(),
-        stockLocationId.trim(),
-        searchText,
-        authenticatedBranchId,
-      ],
+      [auth.companyId, stockLocationId.trim(), searchText, auth.branchId],
     )
 
     return res.json({
