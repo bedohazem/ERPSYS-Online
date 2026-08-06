@@ -65,6 +65,8 @@ Fashion Retail ERP/POS.
 The repository documentation is the official living project reference.
 
 - [Architecture](./docs/architecture.md)
+- [Engineering Rules](./docs/engineering-rules.md)
+- [ADR-004: Weighted Average Cost](./docs/adr/004-weighted-average-cost.md)
 - [Database](./docs/database.md)
 - [Master Backlog](./docs/backlog.md)
 - [Roadmap](./docs/roadmap.md)

@@ -5,7 +5,7 @@
 - Database engine: PostgreSQL
 - Migration directory: `db/migrations`
 - Migration runner: `packages/database/scripts/migrate.js`
-- Current documented migration baseline: `037_customer_receivables.sql`
+- Current documented migration baseline: `038_weighted_average_costing_foundation.sql`
 
 The migration files are the authoritative schema history.
 
@@ -370,14 +370,28 @@ The same key must be rejected if it belongs to another document.
 
 ## Costing Status
 
-The current schema supports purchase cost values, but complete V1 profitability still requires:
+The database foundation for perpetual weighted-average costing is implemented.
 
-- Weighted-average costing.
-- Landed-cost allocation.
-- Sale-item cost snapshots.
-- Stock valuation.
+Current costing fields include:
 
-These remain active backlog items.
+- `stock_balances.average_cost`
+- Cost fields on `stock_movements`
+- `purchase_receipt_items.inventory_unit_cost`
+- Cost and gross-profit snapshots on `sale_items`
+
+The costing method is defined by:
+
+- [ADR-004: Weighted Average Cost](./adr/004-weighted-average-cost.md)
+
+Remaining integration work:
+
+- Purchase receipts must update moving-average cost.
+- Transfers must carry source-location cost.
+- Supplier returns must use authoritative historical cost.
+- Sales must write cost and profit snapshots.
+- Historical pre-costing data requires an initialization policy.
+- Landed-cost allocation remains pending.
+- Inventory valuation and profitability reports remain pending.
 
 ## Reporting Rule
 

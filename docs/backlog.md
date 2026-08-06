@@ -122,24 +122,24 @@ A feature can only become `DONE` when:
 
 # E. Procurement and Supplier Finance
 
-| ID    | Feature                               | Status | Reference                                 |
-| ----- | ------------------------------------- | ------ | ----------------------------------------- |
-| P-001 | Supplier management                   | DONE   | Suppliers module                          |
-| P-002 | Direct purchase receipts              | DONE   | Purchases module                          |
-| P-003 | Purchase orders                       | DONE   | Purchase order module                     |
-| P-004 | Partial purchase receiving            | DONE   | Purchase order workflow                   |
-| P-005 | Procurement session context isolation | DONE   | `4aa6a6b`                                 |
-| P-006 | Supplier invoices                     | DONE   | `3125d53`                                 |
-| P-007 | Partial and full supplier payments    | DONE   | `3125d53`                                 |
-| P-008 | Supplier payment idempotency          | DONE   | `e7d8726`                                 |
-| P-009 | Supplier returns                      | DONE   | `15f6052`                                 |
-| P-010 | Supplier credit notes                 | DONE   | `15f6052`                                 |
-| P-011 | Supplier balance updates              | DONE   | Supplier finance workflow                 |
-| P-012 | Purchase order approval lifecycle     | TODO   | Draft, approval, cancellation, closure    |
-| P-013 | Landed costs                          | TODO   | Freight, customs, and additional expenses |
-| P-014 | Weighted-average inventory costing    | TODO   | Required before profitability             |
-| P-015 | Cost snapshot on sale items           | TODO   | Required before historical profit reports |
-| P-016 | Procurement acceptance tests          | NEXT   | Included in baseline UAT                  |
+| ID    | Feature                               | Status  | Reference                                        |
+| ----- | ------------------------------------- | ------- | ------------------------------------------------ |
+| P-001 | Supplier management                   | DONE    | Suppliers module                                 |
+| P-002 | Direct purchase receipts              | DONE    | Purchases module                                 |
+| P-003 | Purchase orders                       | DONE    | Purchase order module                            |
+| P-004 | Partial purchase receiving            | DONE    | Purchase order workflow                          |
+| P-005 | Procurement session context isolation | DONE    | `4aa6a6b`                                        |
+| P-006 | Supplier invoices                     | DONE    | `3125d53`                                        |
+| P-007 | Partial and full supplier payments    | DONE    | `3125d53`                                        |
+| P-008 | Supplier payment idempotency          | DONE    | `e7d8726`                                        |
+| P-009 | Supplier returns                      | DONE    | `15f6052`                                        |
+| P-010 | Supplier credit notes                 | DONE    | `15f6052`                                        |
+| P-011 | Supplier balance updates              | DONE    | Supplier finance workflow                        |
+| P-012 | Purchase order approval lifecycle     | TODO    | Draft, approval, cancellation, closure           |
+| P-013 | Landed costs                          | TODO    | Freight, customs, and additional expenses        |
+| P-014 | Weighted-average inventory costing    | PARTIAL | Foundation: Migration 038 and ADR-004            |
+| P-015 | Cost snapshot on sale items           | PARTIAL | Snapshot columns added; sale integration pending |
+| P-016 | Procurement acceptance tests          | NEXT    | Included in baseline UAT                         |
 
 ---
 
@@ -296,8 +296,8 @@ The following order is fixed unless a blocker is discovered:
 7. `C-010` Complete variant and barcode management.
 8. `I-017` Approved stock adjustments.
 9. `P-012` Purchase order approval lifecycle.
-10. `P-014` Weighted-average costing.
-11. `P-015` Sale cost snapshot.
+10. `P-014` Complete purchase, transfer, and return costing integration.
+11. `P-015` Complete sale cost and gross-profit snapshots.
 12. `S-018` Pricing engine.
 13. `S-019` Discounts.
 14. `S-021` Taxes.
