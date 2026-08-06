@@ -1,96 +1,64 @@
-﻿# Architecture
+﻿# ERPSYS Online Architecture
 
-## Architecture Type
+## Current Reference
 
-Modular Monolith.
+- Architecture style: Modular Monolith
+- Database: PostgreSQL
+- Primary branch: `main`
+- Current scope: Fashion Retail ERP/POS V1
+- Detailed execution backlog: [backlog.md](./backlog.md)
 
-## Reason
+## Product Shape
 
-A modular monolith is simpler than microservices at the beginning, but still allows the system to grow in a clean way.
+ERPSYS Online is built as:
 
-## Main Rule
+**General ERP/POS Core**
 
-PostgreSQL is the only source of truth.
+plus
 
-## Data Access Rule
+**Fashion Retail as the first vertical module**
 
-Only the Backend API can write to PostgreSQL.
+The system serves the owner's stores first while remaining ready for future commercial use.
 
-No frontend app can access the database directly.
+SaaS subscriptions, AI services, mobile applications, extra verticals, and premature microservices are explicitly postponed until after V1.
 
-## Applications
+## Main Architecture Rules
 
-- Web Admin
-- Desktop POS
-- Mobile App later
-- Landing Website later
+1. PostgreSQL is the only source of truth.
+2. All business interfaces communicate with the Backend API.
+3. Web Admin and Desktop POS never connect directly to PostgreSQL.
+4. The Backend never trusts company, branch, or user identifiers sent by a frontend.
+5. Company, branch, and user context comes from the authenticated session.
+6. Important writes execute inside PostgreSQL transactions.
+7. Retryable business operations use idempotency keys.
+8. Inventory changes create stock movements.
+9. Financial changes create traceable financial records.
+10. Important business actions create audit logs.
+11. V1 remains a Modular Monolith.
 
-## Services
+## Repository Structure
 
-- API now
-- Worker later
-- Reporting Service later
-- AI Service later
+```text
+apps/
+  web-admin/
+  desktop-pos/
 
-## Core ERP Modules
+services/
+  api/
 
-- auth
-- companies
-- branches
-- users
-- roles
-- permissions
-- products
-- inventory
-- stock-locations
-- stock-movements
-- transfers
-- sales
-- returns
-- exchanges
-- purchases
-- customers
-- suppliers
-- reports
-- pos-sync
-- audit-log
-- settings
+packages/
+  database/
+  shared/
+  ui/
+  validation/
 
-## Future Modules
-
-- subscriptions
-- notifications
-- ai
-- mobile
-- restaurant
-- pharmacy
-- electronics
-- auto-parts
-- supermarket
-
-## First Vertical Module
-
-Fashion Retail.
-
-## Fashion Module
-
-- product variants
-- sizes
-- colors
-- collections
-- seasons
-- style codes
-- variant barcodes
-- size-color matrix
-- branch size-color stock
-- fashion sales analysis
-
-## Multi-Tenant Readiness
-
-The system must be designed so each company can see only its own data.
-
-Core business tables should include company_id or tenant_id where needed.
-
-## Current Development Rule
-
-Do not build UI before architecture and database are clear.
+docs/
+  architecture.md
+  backlog.md
+  database.md
+  roadmap.md
+  sync-policy.md
+  uat-baseline.md
+  product-strategy.md
+  features/
+```

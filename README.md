@@ -68,6 +68,7 @@ The repository documentation is the official living project reference.
 - [Database](./docs/database.md)
 - [Master Backlog](./docs/backlog.md)
 - [Roadmap](./docs/roadmap.md)
+- [Integrated Baseline UAT](./docs/uat-baseline.md)
 - [Product Strategy](./docs/product-strategy.md)
 - [POS Sync Policy](./docs/sync-policy.md)
 - [Sales Management](./docs/features/sales.md)
