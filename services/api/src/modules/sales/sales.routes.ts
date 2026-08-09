@@ -42,6 +42,18 @@ function roundQuantity(value: number) {
   return Number(value.toFixed(3))
 }
 
+function roundCost(value: number) {
+  return Number(value.toFixed(4))
+}
+
+function roundInventoryValue(value: number) {
+  return Number(value.toFixed(4))
+}
+
+function roundPercent(value: number) {
+  return Number(value.toFixed(4))
+}
+
 function normalizeParam(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value
 }
@@ -493,6 +505,12 @@ salesRouter.get(
         si.discount_amount,
         si.tax_amount,
         si.line_total,
+
+        si.unit_cost_snapshot,
+        si.cost_total_snapshot,
+        si.gross_profit_snapshot,
+        si.gross_margin_percent,
+
         si.created_at
       FROM sale_items si
 
@@ -1395,71 +1413,49 @@ salesRouter.post('/api/sales', async (req, res, next) => {
     const createdItems = []
 
     for (const item of preparedItems) {
-      const saleItemResult = await client.query(
-        `
-        INSERT INTO sale_items (
-          company_id,
-          sale_id,
-          variant_id,
-          sku_snapshot,
-          barcode_snapshot,
-          product_name_snapshot,
-          size_snapshot,
-          color_snapshot,
-          quantity,
-          unit_price,
-          discount_amount,
-          tax_amount,
-          line_total
-        )
-        VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8,
-          $9, $10, $11, $12, $13
-        )
-        RETURNING *;
-        `,
-        [
-          companyId,
-          sale.id,
-          item.variantId,
-          item.skuSnapshot,
-          item.barcodeSnapshot,
-          item.productNameSnapshot,
-          item.sizeSnapshot,
-          item.colorSnapshot,
-          item.quantity,
-          item.unitPrice,
-          item.discountAmount,
-          item.taxAmount,
-          item.lineTotal,
-        ],
-      )
-
-      createdItems.push(saleItemResult.rows[0])
-
       const balanceResult = await client.query(
         `
-        SELECT quantity
+        SELECT
+          quantity,
+          average_cost
+
         FROM stock_balances
+
         WHERE company_id = $1
           AND stock_location_id = $2
           AND variant_id = $3
+
         FOR UPDATE;
         `,
         [companyId, stockLocationId, item.variantId],
       )
 
-      // الكمية الموجودة حاليًا في المخزون قبل البيع
-      // لو مفيش record في stock_balances نعتبر الكمية = 0
+      // الكمية والتكلفة الحالية قبل البيع.
+      // لو مفيش رصيد، الكمية والتكلفة = 0.
       const quantityBefore =
         (balanceResult.rowCount ?? 0) > 0
-          ? Number(balanceResult.rows[0].quantity)
+          ? roundQuantity(Number(balanceResult.rows[0].quantity))
           : 0
 
-      // ممنوع نبيع أكتر من الكمية المتاحة
-      // مثال:
-      // الموجود 8 والعميل بيبيع 20 => نوقف العملية كلها
-      // لأن المخزون لازم ماينزلش بالسالب
+      const averageCost =
+        (balanceResult.rowCount ?? 0) > 0
+          ? roundCost(Number(balanceResult.rows[0].average_cost))
+          : 0
+
+      if (!Number.isFinite(quantityBefore) || quantityBefore < 0) {
+        throw new SalesApiError(
+          400,
+          `Invalid stock quantity for ${item.skuSnapshot}`,
+        )
+      }
+
+      if (!Number.isFinite(averageCost) || averageCost < 0) {
+        throw new SalesApiError(
+          400,
+          `Invalid average cost for ${item.skuSnapshot}`,
+        )
+      }
+
       if (quantityBefore < item.quantity) {
         throw new SalesApiError(
           400,
@@ -1467,15 +1463,93 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         )
       }
 
-      // الكمية بعد البيع = الكمية قبل البيع - الكمية المباعة
-      const quantityAfter = quantityBefore - item.quantity
+      const quantityAfter = roundQuantity(quantityBefore - item.quantity)
 
-      // هنا بنحدث المخزون بعد التأكد إن الكمية كافية
+      const unitCostSnapshot = averageCost
+
+      const costTotalSnapshot = roundMoney(item.quantity * unitCostSnapshot)
+
+      const grossProfitSnapshot = roundMoney(item.lineTotal - costTotalSnapshot)
+
+      const grossMarginPercent =
+        item.lineTotal > 0
+          ? roundPercent((grossProfitSnapshot / item.lineTotal) * 100)
+          : 0
+
+      const inventoryValueBefore = roundInventoryValue(
+        quantityBefore * averageCost,
+      )
+
+      const inventoryValueAfter = roundInventoryValue(
+        quantityAfter * averageCost,
+      )
+
+      const saleItemResult = await client.query(
+        `
+        INSERT INTO sale_items (
+          company_id,
+          sale_id,
+          variant_id,
+
+          sku_snapshot,
+          barcode_snapshot,
+          product_name_snapshot,
+          size_snapshot,
+          color_snapshot,
+
+          quantity,
+          unit_price,
+          discount_amount,
+          tax_amount,
+          line_total,
+
+          unit_cost_snapshot,
+          cost_total_snapshot,
+          gross_profit_snapshot,
+          gross_margin_percent
+        )
+        VALUES (
+          $1, $2, $3,
+          $4, $5, $6, $7, $8,
+          $9, $10, $11, $12, $13,
+          $14, $15, $16, $17
+        )
+        RETURNING *;
+        `,
+        [
+          companyId,
+          sale.id,
+          item.variantId,
+
+          item.skuSnapshot,
+          item.barcodeSnapshot,
+          item.productNameSnapshot,
+          item.sizeSnapshot,
+          item.colorSnapshot,
+
+          item.quantity,
+          item.unitPrice,
+          item.discountAmount,
+          item.taxAmount,
+          item.lineTotal,
+
+          unitCostSnapshot,
+          costTotalSnapshot,
+          grossProfitSnapshot,
+          grossMarginPercent,
+        ],
+      )
+
+      createdItems.push(saleItemResult.rows[0])
+
       await client.query(
         `
         UPDATE stock_balances
-        SET quantity = $1,
-            updated_at = NOW()
+
+        SET
+          quantity = $1,
+          updated_at = NOW()
+
         WHERE company_id = $2
           AND stock_location_id = $3
           AND variant_id = $4;
@@ -1488,38 +1562,70 @@ salesRouter.post('/api/sales', async (req, res, next) => {
         INSERT INTO stock_movements (
           company_id,
           branch_id,
+
           stock_location_id,
           variant_id,
+
           movement_type,
+
           quantity,
           quantity_before,
           quantity_after,
+
+          unit_cost,
+          average_cost_before,
+          average_cost_after,
+
+          inventory_value_before,
+          inventory_value_after,
+
           reference_type,
           reference_id,
+
           note,
           created_by
         )
         VALUES (
-          $1, $2, $3, $4,
+          $1, $2,
+          $3, $4,
+
           'sale',
+
           $5, $6, $7,
+
+          $8, $9, $10,
+
+          $11, $12,
+
           'sale',
-          $8,
-          $9,
-          $10
+          $13,
+
+          $14,
+          $15
         );
         `,
         [
           companyId,
           branchId,
+
           stockLocationId,
           item.variantId,
+
           -Math.abs(item.quantity),
           quantityBefore,
           quantityAfter,
+
+          unitCostSnapshot,
+          averageCost,
+          averageCost,
+
+          inventoryValueBefore,
+          inventoryValueAfter,
+
           sale.id,
+
           `Sale ${sale.sale_number}`,
-          // المستخدم المسؤول عن حركة المخزون
+
           selectedCashierId,
         ],
       )
