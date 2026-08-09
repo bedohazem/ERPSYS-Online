@@ -3,6 +3,11 @@ import { Router } from 'express'
 import { db } from '../../db/pool'
 import { getAuthContext } from '../auth/auth.middleware'
 
+import {
+  applyWeightedAveragePurchaseInbound,
+  calculatePurchaseInventoryUnitCost,
+} from '../inventory/inventory-cost.service'
+
 export const purchaseOrdersRouter = Router()
 
 class PurchaseOrderApiError extends Error {
@@ -1100,182 +1105,73 @@ purchaseOrdersRouter.post(
             lineTax,
         )
 
+        const inventoryUnitCost = calculatePurchaseInventoryUnitCost({
+          quantity: receivedQuantity,
+
+          unitCost: Number(orderItem.unit_cost),
+
+          discountAmount: lineDiscount,
+        })
+
         await client.query(
           `
-          INSERT INTO purchase_receipt_items (
-            company_id,
-            purchase_receipt_id,
-            purchase_order_item_id,
-            variant_id,
-            quantity,
-            unit_cost,
-            discount_amount,
-            tax_amount,
-            line_total
-          )
-          VALUES (
-            $1, $2, $3, $4, $5,
-            $6, $7, $8, $9
-          );
+            INSERT INTO purchase_receipt_items (
+              company_id,
+              purchase_receipt_id,
+              purchase_order_item_id,
+              variant_id,
+
+              quantity,
+              unit_cost,
+              inventory_unit_cost,
+
+              discount_amount,
+              tax_amount,
+              line_total
+            )
+            VALUES (
+              $1, $2, $3, $4,
+              $5, $6, $7,
+              $8, $9, $10
+            );
           `,
           [
             companyId,
             createdReceipt.id,
             orderItem.id,
             orderItem.variant_id,
+
             receivedQuantity,
             Number(orderItem.unit_cost),
+            inventoryUnitCost,
+
             lineDiscount,
             lineTax,
             lineTotal,
           ],
         )
 
-        await client.query(
-          `
-          INSERT INTO stock_balances (
-            company_id,
-            branch_id,
-            stock_location_id,
-            variant_id,
-            quantity
-          )
-          VALUES (
-            $1, $2, $3, $4, 0
-          )
-          ON CONFLICT (
-            company_id,
-            stock_location_id,
-            variant_id
-          )
-          DO NOTHING;
-          `,
-          [
-            companyId,
-            trustedLocation.branch_id,
-            stockLocationId.trim(),
-            orderItem.variant_id,
-          ],
-        )
+        await applyWeightedAveragePurchaseInbound(client, {
+          companyId,
 
-        const balanceResult = await client.query(
-          `
-            SELECT quantity
-            FROM stock_balances
-            WHERE company_id = $1
-              AND stock_location_id = $2
-              AND variant_id = $3
-            FOR UPDATE;
-            `,
-          [companyId, stockLocationId.trim(), orderItem.variant_id],
-        )
+          branchId: trustedLocation.branch_id,
 
-        if ((balanceResult.rowCount ?? 0) === 0) {
-          throw new PurchaseOrderApiError(500, 'Stock balance was not found')
-        }
+          stockLocationId: stockLocationId.trim(),
 
-        const quantityBefore = Number(balanceResult.rows[0].quantity)
+          variantId: orderItem.variant_id,
 
-        const variantResult = await client.query(
-          `
-            SELECT cost_price
-            FROM product_variants
-            WHERE company_id = $1
-              AND id = $2
-            FOR UPDATE;
-            `,
-          [companyId, orderItem.variant_id],
-        )
+          quantity: receivedQuantity,
 
-        if ((variantResult.rowCount ?? 0) === 0) {
-          throw new PurchaseOrderApiError(404, 'Variant was not found')
-        }
+          inventoryUnitCost,
 
-        const previousCost = Number(variantResult.rows[0].cost_price)
+          referenceType: 'purchase_receipt',
 
-        const unitCost = Number(orderItem.unit_cost)
+          referenceId: createdReceipt.id,
 
-        const quantityAfter = roundQuantity(quantityBefore + receivedQuantity)
+          note: `Purchase order ${order.purchase_number} / Receipt ${createdReceipt.receipt_number}`,
 
-        const averageCost =
-          quantityAfter > 0
-            ? roundMoney(
-                (quantityBefore * previousCost + receivedQuantity * unitCost) /
-                  quantityAfter,
-              )
-            : unitCost
-
-        await client.query(
-          `
-          UPDATE stock_balances
-          SET
-            quantity = $1,
-            branch_id = $2,
-            updated_at = NOW()
-          WHERE company_id = $3
-            AND stock_location_id = $4
-            AND variant_id = $5;
-          `,
-          [
-            quantityAfter,
-            trustedLocation.branch_id,
-            companyId,
-            stockLocationId.trim(),
-            orderItem.variant_id,
-          ],
-        )
-
-        await client.query(
-          `
-          UPDATE product_variants
-          SET
-            cost_price = $1,
-            updated_at = NOW()
-          WHERE company_id = $2
-            AND id = $3;
-          `,
-          [averageCost, companyId, orderItem.variant_id],
-        )
-
-        await client.query(
-          `
-          INSERT INTO stock_movements (
-            company_id,
-            branch_id,
-            stock_location_id,
-            variant_id,
-            movement_type,
-            quantity,
-            quantity_before,
-            quantity_after,
-            reference_type,
-            reference_id,
-            note,
-            created_by
-          )
-          VALUES (
-            $1, $2, $3, $4,
-            'purchase',
-            $5, $6, $7,
-            'purchase_order',
-            $8,
-            $9,
-            $10
-          );
-          `,
-          [
-            companyId,
-            trustedLocation.branch_id,
-            stockLocationId.trim(),
-            orderItem.variant_id,
-            receivedQuantity,
-            quantityBefore,
-            quantityAfter,
-            purchaseOrderId,
-            `Purchase order ${order.purchase_number}`,
-            createdBy,
-          ],
-        )
+          createdBy,
+        })
 
         await client.query(
           `

@@ -3,6 +3,11 @@ import { Router } from 'express'
 import { db } from '../../db/pool'
 import { getAuthContext } from '../auth/auth.middleware'
 
+import {
+  applyWeightedAveragePurchaseInbound,
+  calculatePurchaseInventoryUnitCost,
+} from '../inventory/inventory-cost.service'
+
 export const purchasesRouter = Router()
 
 class PurchasesApiError extends Error {
@@ -286,19 +291,15 @@ purchasesRouter.get('/api/purchases/lookup-item', async (req, res, next) => {
 // ======================================================
 purchasesRouter.get('/api/purchases/receipts', async (req, res, next) => {
   try {
-    const companyId = req.query.companyId
-    const branchId = req.query.branchId
+    const auth = getAuthContext(res)
+
+    const companyId = auth.companyId
+
+    const authenticatedBranchId = auth.branchId
+
     const supplierId = req.query.supplierId
+
     const query = req.query.q
-
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId query parameter is required',
-      })
-    }
-
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
 
     const selectedSupplierId =
       typeof supplierId === 'string' && supplierId.trim()
@@ -399,7 +400,7 @@ purchasesRouter.get('/api/purchases/receipts', async (req, res, next) => {
         LIMIT $5;
         `,
       [
-        companyId.trim(),
+        companyId,
         authenticatedBranchId,
         selectedSupplierId,
         searchText,
@@ -422,10 +423,9 @@ purchasesRouter.get(
   '/api/purchases/receipts/:receiptId',
   async (req, res, next) => {
     try {
-      const receiptId = String(req.params.receiptId || '').trim()
+      const auth = getAuthContext(res)
 
-      const companyId = req.query.companyId
-      const branchId = req.query.branchId
+      const receiptId = String(req.params.receiptId || '').trim()
 
       if (!isPurchaseUuid(receiptId)) {
         return res.status(400).json({
@@ -433,19 +433,10 @@ purchasesRouter.get(
         })
       }
 
-      if (typeof companyId !== 'string' || !companyId.trim()) {
-        return res.status(400).json({
-          error: 'companyId query parameter is required',
-        })
-      }
-
-      const authenticatedBranchId =
-        typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
-
       const details = await loadPurchaseReceiptDetails(
-        companyId.trim(),
+        auth.companyId,
         receiptId,
-        authenticatedBranchId,
+        auth.branchId,
       )
 
       if (!details) {
@@ -472,26 +463,26 @@ purchasesRouter.get(
 // الفرع الحقيقي يأتي من مكان التخزين الموثوق.
 // ======================================================
 purchasesRouter.post('/api/purchases/receipts', async (req, res, next) => {
+  const auth = getAuthContext(res)
   const client = await db.connect()
 
   try {
     const {
-      companyId,
-      branchId,
       supplierId,
       stockLocationId,
       receiptNumber,
       idempotencyKey,
       note,
-      createdBy,
       items,
     } = req.body
 
-    if (typeof companyId !== 'string' || !companyId.trim()) {
-      return res.status(400).json({
-        error: 'companyId is required',
-      })
-    }
+    // الشركة والفرع والمستخدم
+    // مصدرهم الـSession فقط.
+    const companyId = auth.companyId
+
+    const authenticatedBranchId = auth.branchId
+
+    const createdBy = auth.userId
 
     if (typeof supplierId !== 'string' || !isPurchaseUuid(supplierId.trim())) {
       return res.status(400).json({
@@ -525,9 +516,6 @@ purchasesRouter.post('/api/purchases/receipts', async (req, res, next) => {
         error: 'Purchase receipt items are required',
       })
     }
-
-    const authenticatedBranchId =
-      typeof branchId === 'string' && branchId.trim() ? branchId.trim() : null
 
     const existingReceipt = await loadReceiptByIdempotency(
       companyId.trim(),
@@ -774,63 +762,50 @@ purchasesRouter.post('/api/purchases/receipts', async (req, res, next) => {
     const createdItems: Array<Record<string, unknown>> = []
 
     for (const item of normalizedItems) {
-      // ======================================================
-      // قفل الصنف وتحديث متوسط التكلفة المرجح.
-      //
-      // متوسط التكلفة =
-      // قيمة المخزون السابقة + قيمة المشتريات الجديدة
-      // ÷ إجمالي الكمية بعد الاستلام.
-      // ======================================================
-      const variantCostResult = await client.query(
-        `
-        SELECT
-          id,
-          cost_price
-        FROM product_variants
-        WHERE company_id = $1
-          AND id = $2
-          AND status = 'active'
-        FOR UPDATE;
-        `,
-        [companyId.trim(), item.variantId],
-      )
+      // التكلفة التي تدخل تقييم المخزون.
+      // الخصم يقلل التكلفة، بينما الضريبة
+      // لا تدخل حاليًا في Costing V1.
+      const inventoryUnitCost = calculatePurchaseInventoryUnitCost({
+        quantity: item.quantity,
 
-      if ((variantCostResult.rowCount ?? 0) === 0) {
-        throw new PurchasesApiError(404, 'Purchase variant was not found')
-      }
+        unitCost: item.unitCost,
 
-      const previousCost = Number(variantCostResult.rows[0].cost_price)
-
-      if (!Number.isFinite(previousCost)) {
-        throw new PurchasesApiError(500, 'Previous variant cost is invalid')
-      }
+        discountAmount: item.discountAmount,
+      })
 
       const itemResult = await client.query(
         `
-            INSERT INTO purchase_receipt_items (
-              company_id,
-              purchase_receipt_id,
-              purchase_order_item_id,
-              variant_id,
-              quantity,
-              unit_cost,
-              discount_amount,
-              tax_amount,
-              line_total
-            )
-            VALUES (
-              $1, $2, NULL,
-              $3, $4, $5,
-              $6, $7, $8
-            )
-            RETURNING *;
-            `,
+          INSERT INTO purchase_receipt_items (
+            company_id,
+            purchase_receipt_id,
+            purchase_order_item_id,
+            variant_id,
+
+            quantity,
+            unit_cost,
+            inventory_unit_cost,
+
+            discount_amount,
+            tax_amount,
+            line_total
+          )
+          VALUES (
+            $1, $2, NULL, $3,
+            $4, $5, $6,
+            $7, $8, $9
+          )
+
+          RETURNING *;
+        `,
         [
-          companyId.trim(),
+          companyId,
           createdReceipt.id,
           item.variantId,
+
           item.quantity,
           item.unitCost,
+          inventoryUnitCost,
+
           item.discountAmount,
           item.taxAmount,
           item.lineTotal,
@@ -839,144 +814,27 @@ purchasesRouter.post('/api/purchases/receipts', async (req, res, next) => {
 
       createdItems.push(itemResult.rows[0])
 
-      await client.query(
-        `
-          INSERT INTO stock_balances (
-            company_id,
-            branch_id,
-            stock_location_id,
-            variant_id,
-            quantity
-          )
-          VALUES ($1, $2, $3, $4, 0)
+      await applyWeightedAveragePurchaseInbound(client, {
+        companyId,
 
-          ON CONFLICT (
-            company_id,
-            stock_location_id,
-            variant_id
-          )
-          DO NOTHING;
-          `,
-        [
-          companyId.trim(),
-          trustedLocation.branch_id,
-          stockLocationId.trim(),
-          item.variantId,
-        ],
-      )
+        branchId: trustedLocation.branch_id,
 
-      const balanceResult = await client.query(
-        `
-            SELECT quantity
-            FROM stock_balances
-            WHERE company_id = $1
-              AND stock_location_id = $2
-              AND variant_id = $3
-            FOR UPDATE;
-            `,
-        [companyId.trim(), stockLocationId.trim(), item.variantId],
-      )
+        stockLocationId: stockLocationId.trim(),
 
-      if ((balanceResult.rowCount ?? 0) === 0) {
-        throw new PurchasesApiError(500, 'Stock balance row was not found')
-      }
+        variantId: item.variantId,
 
-      const quantityBefore = Number(balanceResult.rows[0].quantity)
+        quantity: item.quantity,
 
-      if (!Number.isFinite(quantityBefore)) {
-        throw new PurchasesApiError(500, 'Current stock quantity is invalid')
-      }
+        inventoryUnitCost,
 
-      const previousInventoryValue = roundPurchaseMoney(
-        quantityBefore * previousCost,
-      )
+        referenceType: 'purchase_receipt',
 
-      const receivedInventoryValue = roundPurchaseMoney(
-        item.quantity * item.unitCost,
-      )
+        referenceId: createdReceipt.id,
 
-      const quantityAfter = roundPurchaseQuantity(
-        quantityBefore + item.quantity,
-      )
+        note: `Purchase receipt ${createdReceipt.receipt_number}`,
 
-      const weightedAverageCost =
-        quantityAfter > 0
-          ? roundPurchaseMoney(
-              (previousInventoryValue + receivedInventoryValue) / quantityAfter,
-            )
-          : item.unitCost
-
-      await client.query(
-        `
-        UPDATE product_variants
-        SET
-          cost_price = $1,
-          updated_at = NOW()
-        WHERE company_id = $2
-          AND id = $3;
-        `,
-        [weightedAverageCost, companyId.trim(), item.variantId],
-      )
-
-      await client.query(
-        `
-          UPDATE stock_balances
-          SET
-            quantity = $1,
-            branch_id = $2,
-            updated_at = NOW()
-          WHERE company_id = $3
-            AND stock_location_id = $4
-            AND variant_id = $5;
-          `,
-        [
-          quantityAfter,
-          trustedLocation.branch_id,
-          companyId.trim(),
-          stockLocationId.trim(),
-          item.variantId,
-        ],
-      )
-
-      await client.query(
-        `
-          INSERT INTO stock_movements (
-            company_id,
-            branch_id,
-            stock_location_id,
-            variant_id,
-            movement_type,
-            quantity,
-            quantity_before,
-            quantity_after,
-            reference_type,
-            reference_id,
-            note,
-            created_by
-          )
-          VALUES (
-            $1, $2, $3, $4,
-            'purchase',
-            $5, $6, $7,
-            'purchase',
-            $8,
-            $9,
-            $10
-          );
-          `,
-        [
-          companyId.trim(),
-          trustedLocation.branch_id,
-          stockLocationId.trim(),
-          item.variantId,
-          item.quantity,
-          quantityBefore,
-          quantityAfter,
-          createdReceipt.id,
-          `Purchase receipt ${createdReceipt.receipt_number}`,
-          createdBy || null,
-        ],
-      )
+        createdBy,
+      })
     }
 
     await client.query('COMMIT')
@@ -997,24 +855,16 @@ purchasesRouter.post('/api/purchases/receipts', async (req, res, next) => {
     await client.query('ROLLBACK').catch(() => {})
 
     if (isPostgresUniqueViolation(error)) {
-      const requestCompanyId =
-        typeof req.body?.companyId === 'string' ? req.body.companyId.trim() : ''
-
-      const requestBranchId =
-        typeof req.body?.branchId === 'string' && req.body.branchId.trim()
-          ? req.body.branchId.trim()
-          : null
-
       const requestIdempotencyKey =
         typeof req.body?.idempotencyKey === 'string'
           ? req.body.idempotencyKey.trim()
           : ''
 
-      if (requestCompanyId && requestIdempotencyKey) {
+      if (requestIdempotencyKey) {
         const existingReceipt = await loadReceiptByIdempotency(
-          requestCompanyId,
+          auth.companyId,
           requestIdempotencyKey,
-          requestBranchId,
+          auth.branchId,
         )
 
         if (existingReceipt) {

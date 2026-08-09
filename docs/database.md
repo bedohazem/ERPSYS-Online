@@ -385,7 +385,7 @@ The costing method is defined by:
 
 Remaining integration work:
 
-- Purchase receipts must update moving-average cost.
+- Purchase receipts update moving-average cost through the centralized inventory costing service.
 - Transfers must carry source-location cost.
 - Supplier returns must use authoritative historical cost.
 - Sales must write cost and profit snapshots.
