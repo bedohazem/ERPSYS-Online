@@ -402,6 +402,12 @@ Remaining integration work:
 
 Reports query authoritative PostgreSQL data.
 
+Current reporting integrations include:
+
+- Profitability reporting through `/api/reports/profitability`.
+- Stock valuation reporting through `/api/reports/stock-valuation`.
+- Inventory movement ledger reporting through `/api/reports/inventory-movement-ledger`.
+
 Reports must respect:
 
 - Company scope.
@@ -411,6 +417,7 @@ Reports must respect:
 - Returned quantities.
 - Outstanding balances.
 - Historical cost snapshots when implemented.
+- `stock_movements` as the authoritative inventory movement history.
 
 ## Backup and Restore
 
