@@ -2674,6 +2674,740 @@ reportsRouter.get(
 )
 
 // ======================================================
+// GET /api/reports/stock-valuation
+//
+// تقرير تقييم المخزون الحالي بناءً على:
+// stock_balances.quantity
+// stock_balances.average_cost
+//
+// Query:
+// - branchId?
+// - stockLocationId?
+// - status? positive | zero | negative | all
+// - search?
+// - limit?
+//
+// يرجع:
+// - summary
+// - byBranch
+// - byLocation
+// - byCategory
+// - topItems
+// ======================================================
+reportsRouter.get(
+  '/api/reports/stock-valuation',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const requestedBranchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (requestedBranchId && !uuidPattern.test(requestedBranchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      if (
+        auth.branchId &&
+        requestedBranchId &&
+        requestedBranchId !== auth.branchId
+      ) {
+        return res.status(403).json({
+          error: 'Requested branch is outside the authenticated branch scope',
+        })
+      }
+
+      const branchId = auth.branchId || requestedBranchId || ''
+
+      const stockLocationId =
+        typeof req.query.stockLocationId === 'string'
+          ? req.query.stockLocationId.trim().toLowerCase()
+          : ''
+
+      if (stockLocationId && !uuidPattern.test(stockLocationId)) {
+        return res.status(400).json({
+          error: 'stockLocationId is invalid',
+        })
+      }
+
+      const valuationStatus =
+        typeof req.query.status === 'string'
+          ? req.query.status.trim().toLowerCase()
+          : 'positive'
+
+      if (!['positive', 'zero', 'negative', 'all'].includes(valuationStatus)) {
+        return res.status(400).json({
+          error: 'status must be positive, zero, negative, or all',
+        })
+      }
+
+      const search =
+        typeof req.query.search === 'string' && req.query.search.trim()
+          ? req.query.search.trim()
+          : ''
+
+      const searchPattern = search ? `%${search}%` : null
+
+      const limit = parseReportLimit(req.query.limit)
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+          SELECT id
+
+          FROM branches
+
+          WHERE company_id = $1
+            AND id = $2
+
+          LIMIT 1;
+          `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      if (stockLocationId) {
+        const locationResult = await db.query(
+          `
+          SELECT id
+
+          FROM stock_locations
+
+          WHERE company_id = $1
+            AND id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR branch_id =
+                 $3::uuid
+            )
+
+          LIMIT 1;
+          `,
+          [auth.companyId, stockLocationId, branchId || null],
+        )
+
+        if ((locationResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error:
+              'Stock location was not found or is outside the authenticated branch scope',
+          })
+        }
+      }
+
+      const result = await db.query(
+        `
+        WITH valuation_lines AS (
+          SELECT
+            sb.branch_id,
+            sb.stock_location_id,
+            sb.variant_id,
+
+            pv.product_id,
+
+            p.category_id,
+            p.brand_id,
+
+            sb.quantity,
+
+            COALESCE(
+              sb.average_cost,
+              0
+            )
+              AS average_cost,
+
+            ROUND(
+              (
+                sb.quantity *
+                COALESCE(
+                  sb.average_cost,
+                  0
+                )
+              )::numeric,
+              2
+            )
+              AS inventory_value
+
+          FROM stock_balances sb
+
+          JOIN stock_locations sl
+            ON sl.company_id =
+               sb.company_id
+            AND sl.id =
+                sb.stock_location_id
+
+          JOIN product_variants pv
+            ON pv.company_id =
+               sb.company_id
+            AND pv.id =
+                sb.variant_id
+
+          JOIN products p
+            ON p.company_id =
+               pv.company_id
+            AND p.id =
+                pv.product_id
+
+          LEFT JOIN fashion_sizes size
+            ON size.company_id =
+               pv.company_id
+            AND size.id =
+                pv.size_id
+
+          LEFT JOIN fashion_colors color
+            ON color.company_id =
+               pv.company_id
+            AND color.id =
+                pv.color_id
+
+          LEFT JOIN product_categories category
+            ON category.company_id =
+               p.company_id
+            AND category.id =
+                p.category_id
+
+          LEFT JOIN brands brand
+            ON brand.company_id =
+               p.company_id
+            AND brand.id =
+                p.brand_id
+
+          WHERE sb.company_id = $1
+
+            AND (
+              $2::uuid IS NULL
+              OR sb.branch_id =
+                 $2::uuid
+            )
+
+            AND (
+              $3::uuid IS NULL
+              OR sb.stock_location_id =
+                 $3::uuid
+            )
+
+            AND (
+              $4::text = 'all'
+
+              OR (
+                $4::text = 'positive'
+                AND sb.quantity > 0
+              )
+
+              OR (
+                $4::text = 'zero'
+                AND sb.quantity = 0
+              )
+
+              OR (
+                $4::text = 'negative'
+                AND sb.quantity < 0
+              )
+            )
+
+            AND (
+              $5::text IS NULL
+
+              OR p.name ILIKE $5::text
+
+              OR pv.sku ILIKE $5::text
+
+              OR COALESCE(
+                   pv.primary_barcode,
+                   ''
+                 ) ILIKE $5::text
+
+              OR sl.name ILIKE $5::text
+
+              OR sl.code ILIKE $5::text
+
+              OR COALESCE(
+                   category.name,
+                   ''
+                 ) ILIKE $5::text
+
+              OR COALESCE(
+                   brand.name,
+                   ''
+                 ) ILIKE $5::text
+
+              OR COALESCE(
+                   size.name,
+                   ''
+                 ) ILIKE $5::text
+
+              OR COALESCE(
+                   color.name,
+                   ''
+                 ) ILIKE $5::text
+            )
+        ),
+
+        grouped AS (
+          SELECT
+            branch_id,
+            stock_location_id,
+            category_id,
+            variant_id,
+
+            GROUPING(branch_id)::int
+              AS grouped_branch,
+
+            GROUPING(stock_location_id)::int
+              AS grouped_location,
+
+            GROUPING(category_id)::int
+              AS grouped_category,
+
+            GROUPING(variant_id)::int
+              AS grouped_variant,
+
+            COUNT(*)::int
+              AS line_count,
+
+            COUNT(
+              DISTINCT variant_id
+            )::int
+              AS variant_count,
+
+            COUNT(
+              DISTINCT stock_location_id
+            )::int
+              AS stock_location_count,
+
+            COALESCE(
+              SUM(quantity),
+              0
+            )
+              AS total_quantity,
+
+            CASE
+              WHEN COALESCE(
+                SUM(quantity),
+                0
+              ) <> 0
+              THEN ROUND(
+                (
+                  COALESCE(
+                    SUM(inventory_value),
+                    0
+                  ) /
+                  NULLIF(
+                    SUM(quantity),
+                    0
+                  )
+                )::numeric,
+                4
+              )
+              ELSE 0
+            END
+              AS weighted_average_cost,
+
+            COALESCE(
+              SUM(inventory_value),
+              0
+            )
+              AS inventory_value,
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN quantity < 0
+                  THEN 1
+                  ELSE 0
+                END
+              ),
+              0
+            )::int
+              AS negative_quantity_lines,
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN quantity <> 0
+                   AND average_cost = 0
+                  THEN 1
+                  ELSE 0
+                END
+              ),
+              0
+            )::int
+              AS zero_cost_quantity_lines
+
+          FROM valuation_lines
+
+          GROUP BY GROUPING SETS (
+            (),
+            (branch_id),
+            (stock_location_id),
+            (category_id),
+            (stock_location_id, variant_id)
+          )
+        )
+
+        SELECT
+          CASE
+            WHEN grouped_branch = 1
+             AND grouped_location = 1
+             AND grouped_category = 1
+             AND grouped_variant = 1
+            THEN 'summary'
+
+            WHEN grouped_variant = 0
+            THEN 'item'
+
+            WHEN grouped_location = 0
+            THEN 'location'
+
+            WHEN grouped_branch = 0
+            THEN 'branch'
+
+            ELSE 'category'
+          END
+            AS group_type,
+
+          COALESCE(
+            g.branch_id,
+            item_location.branch_id
+          )
+            AS branch_id,
+
+          branch.code
+            AS branch_code,
+
+          branch.name
+            AS branch_name,
+
+          g.stock_location_id,
+
+          item_location.code
+            AS stock_location_code,
+
+          item_location.name
+            AS stock_location_name,
+
+          item_location.location_type,
+
+          g.category_id,
+
+          category.name
+            AS category_name,
+
+          g.variant_id,
+
+          pv.product_id,
+
+          p.name
+            AS product_name,
+
+          pv.sku,
+
+          pv.primary_barcode,
+
+          size.name
+            AS size_name,
+
+          color.name
+            AS color_name,
+
+          brand.name
+            AS brand_name,
+
+          p.status
+            AS product_status,
+
+          pv.status
+            AS variant_status,
+
+          g.line_count,
+          g.variant_count,
+          g.stock_location_count,
+
+          g.total_quantity,
+          g.weighted_average_cost,
+          g.inventory_value,
+
+          g.negative_quantity_lines,
+          g.zero_cost_quantity_lines
+
+        FROM grouped g
+
+        LEFT JOIN stock_locations item_location
+          ON item_location.company_id = $1
+          AND item_location.id =
+              g.stock_location_id
+
+        LEFT JOIN branches branch
+          ON branch.company_id = $1
+          AND branch.id =
+              COALESCE(
+                g.branch_id,
+                item_location.branch_id
+              )
+
+        LEFT JOIN product_categories category
+          ON category.company_id = $1
+          AND category.id =
+              g.category_id
+
+        LEFT JOIN product_variants pv
+          ON pv.company_id = $1
+          AND pv.id =
+              g.variant_id
+
+        LEFT JOIN products p
+          ON p.company_id =
+             pv.company_id
+          AND p.id =
+              pv.product_id
+
+        LEFT JOIN fashion_sizes size
+          ON size.company_id =
+             pv.company_id
+          AND size.id =
+              pv.size_id
+
+        LEFT JOIN fashion_colors color
+          ON color.company_id =
+             pv.company_id
+          AND color.id =
+              pv.color_id
+
+        LEFT JOIN brands brand
+          ON brand.company_id =
+             p.company_id
+          AND brand.id =
+              p.brand_id
+
+        ORDER BY
+          group_type ASC,
+          inventory_value DESC,
+          branch_name ASC NULLS LAST,
+          stock_location_name ASC NULLS LAST,
+          category_name ASC NULLS LAST,
+          product_name ASC NULLS LAST,
+          sku ASC NULLS LAST;
+        `,
+        [
+          auth.companyId,
+          branchId || null,
+          stockLocationId || null,
+          valuationStatus,
+          searchPattern,
+        ],
+      )
+
+      function mapValuationMetrics(row: Record<string, unknown> | undefined) {
+        return {
+          lineCount: Number(row?.line_count ?? 0),
+
+          variantCount: Number(row?.variant_count ?? 0),
+
+          stockLocationCount: Number(row?.stock_location_count ?? 0),
+
+          totalQuantity: String(row?.total_quantity ?? '0'),
+
+          weightedAverageCost: String(row?.weighted_average_cost ?? '0'),
+
+          inventoryValue: String(row?.inventory_value ?? '0'),
+
+          negativeQuantityLines: Number(row?.negative_quantity_lines ?? 0),
+
+          zeroCostQuantityLines: Number(row?.zero_cost_quantity_lines ?? 0),
+        }
+      }
+
+      const rows = result.rows as Array<Record<string, unknown>>
+
+      const summaryRow = rows.find((row) => row.group_type === 'summary')
+
+      const byBranch = rows
+        .filter((row) => row.group_type === 'branch')
+        .map((row) => ({
+          branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+          branchCode:
+            typeof row.branch_code === 'string' ? row.branch_code : null,
+
+          branchName:
+            typeof row.branch_name === 'string' ? row.branch_name : 'No branch',
+
+          ...mapValuationMetrics(row),
+        }))
+        .sort((first, second) =>
+          first.branchName.localeCompare(second.branchName),
+        )
+
+      const byLocation = rows
+        .filter((row) => row.group_type === 'location')
+        .map((row) => ({
+          stockLocationId:
+            typeof row.stock_location_id === 'string'
+              ? row.stock_location_id
+              : null,
+
+          stockLocationCode:
+            typeof row.stock_location_code === 'string'
+              ? row.stock_location_code
+              : null,
+
+          stockLocationName:
+            typeof row.stock_location_name === 'string'
+              ? row.stock_location_name
+              : 'Unknown location',
+
+          locationType:
+            typeof row.location_type === 'string' ? row.location_type : null,
+
+          branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+          branchName:
+            typeof row.branch_name === 'string' ? row.branch_name : null,
+
+          ...mapValuationMetrics(row),
+        }))
+        .sort((first, second) =>
+          first.stockLocationName.localeCompare(second.stockLocationName),
+        )
+
+      const byCategory = rows
+        .filter((row) => row.group_type === 'category')
+        .map((row) => ({
+          categoryId:
+            typeof row.category_id === 'string' ? row.category_id : null,
+
+          categoryName:
+            typeof row.category_name === 'string'
+              ? row.category_name
+              : 'Uncategorized',
+
+          ...mapValuationMetrics(row),
+        }))
+        .sort((first, second) =>
+          first.categoryName.localeCompare(second.categoryName),
+        )
+
+      const topItems = rows
+        .filter((row) => row.group_type === 'item')
+        .map((row) => ({
+          stockLocationId:
+            typeof row.stock_location_id === 'string'
+              ? row.stock_location_id
+              : null,
+
+          stockLocationName:
+            typeof row.stock_location_name === 'string'
+              ? row.stock_location_name
+              : 'Unknown location',
+
+          branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+          branchName:
+            typeof row.branch_name === 'string' ? row.branch_name : null,
+
+          variantId: typeof row.variant_id === 'string' ? row.variant_id : null,
+
+          productId: typeof row.product_id === 'string' ? row.product_id : null,
+
+          productName:
+            typeof row.product_name === 'string'
+              ? row.product_name
+              : 'Unknown product',
+
+          sku: typeof row.sku === 'string' ? row.sku : null,
+
+          primaryBarcode:
+            typeof row.primary_barcode === 'string'
+              ? row.primary_barcode
+              : null,
+
+          sizeName: typeof row.size_name === 'string' ? row.size_name : null,
+
+          colorName: typeof row.color_name === 'string' ? row.color_name : null,
+
+          brandName: typeof row.brand_name === 'string' ? row.brand_name : null,
+
+          productStatus:
+            typeof row.product_status === 'string' ? row.product_status : null,
+
+          variantStatus:
+            typeof row.variant_status === 'string' ? row.variant_status : null,
+
+          ...mapValuationMetrics(row),
+        }))
+        .sort((first, second) => {
+          const valueDifference =
+            Number(second.inventoryValue) - Number(first.inventoryValue)
+
+          if (valueDifference !== 0) {
+            return valueDifference
+          }
+
+          return first.productName.localeCompare(second.productName)
+        })
+        .slice(0, limit)
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+
+            branchId: branchId || null,
+
+            branchSelectionLocked: Boolean(auth.branchId),
+
+            stockLocationId: stockLocationId || null,
+
+            status: valuationStatus,
+
+            search: search || null,
+
+            limit,
+          },
+
+          definitions: {
+            quantityBasis: 'stock_balances.quantity',
+
+            costBasis: 'stock_balances.average_cost',
+
+            inventoryValueFormula: 'quantity * averageCost',
+
+            statusPositive: 'quantity > 0',
+
+            statusZero: 'quantity = 0',
+
+            statusNegative: 'quantity < 0',
+
+            zeroCostQuantityLinesMeaning:
+              'Lines with non-zero quantity but average cost equal to zero',
+          },
+
+          summary: mapValuationMetrics(summaryRow),
+
+          byBranch,
+          byLocation,
+          byCategory,
+          topItems,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
 // GET /api/reports/inventory-shortages
 //
 // تقرير نواقص المخزون حسب حدود إعادة الطلب.
