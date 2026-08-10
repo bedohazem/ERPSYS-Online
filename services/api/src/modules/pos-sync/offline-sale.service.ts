@@ -99,6 +99,18 @@ function roundQuantity(value: number) {
   return Number(value.toFixed(3))
 }
 
+function roundCost(value: number) {
+  return Number(value.toFixed(4))
+}
+
+function roundInventoryValue(value: number) {
+  return Number(value.toFixed(4))
+}
+
+function roundPercent(value: number) {
+  return Number(value.toFixed(4))
+}
+
 function isUniqueViolation(error: unknown) {
   return (
     typeof error === 'object' &&
@@ -837,16 +849,23 @@ export async function processOfflineSale(
 
     const stockRows = new Map<string, number>()
 
+    const costRows = new Map<string, number>()
+
     let hasNegativeStockConflict = false
 
     for (const item of preparedItems) {
       const balanceResult = await client.query(
         `
-          SELECT quantity
+          SELECT
+            quantity,
+            average_cost
+
           FROM stock_balances
+
           WHERE company_id = $1
             AND stock_location_id = $2
             AND variant_id = $3
+
           FOR UPDATE;
           `,
         [device.companyId, input.stockLocationId, item.variantId],
@@ -854,10 +873,31 @@ export async function processOfflineSale(
 
       const availableQuantity =
         (balanceResult.rowCount ?? 0) > 0
-          ? Number(balanceResult.rows[0].quantity)
+          ? roundQuantity(Number(balanceResult.rows[0].quantity))
+          : 0
+
+      const averageCost =
+        (balanceResult.rowCount ?? 0) > 0
+          ? roundCost(Number(balanceResult.rows[0].average_cost))
           : 0
 
       stockRows.set(item.variantId, availableQuantity)
+
+      costRows.set(item.variantId, averageCost)
+
+      if (!Number.isFinite(averageCost) || averageCost < 0) {
+        hasNegativeStockConflict = true
+
+        conflicts.push({
+          type: 'invalid_average_cost',
+          severity: 'critical',
+          details: {
+            variantId: item.variantId,
+            sku: item.skuSnapshot,
+            averageCost,
+          },
+        })
+      }
 
       if (
         !Number.isFinite(availableQuantity) ||
@@ -952,6 +992,17 @@ export async function processOfflineSale(
     const createdItems: Array<Record<string, unknown>> = []
 
     for (const item of preparedItems) {
+      const unitCostSnapshot = costRows.get(item.variantId) ?? 0
+
+      const costTotalSnapshot = roundMoney(item.quantity * unitCostSnapshot)
+
+      const grossProfitSnapshot = roundMoney(item.lineTotal - costTotalSnapshot)
+
+      const grossMarginPercent =
+        item.lineTotal > 0
+          ? roundPercent((grossProfitSnapshot / item.lineTotal) * 100)
+          : 0
+
       const itemResult = await client.query(
         `
           INSERT INTO sale_items (
@@ -969,12 +1020,18 @@ export async function processOfflineSale(
             unit_price,
             discount_amount,
             tax_amount,
-            line_total
+            line_total,
+
+            unit_cost_snapshot,
+            cost_total_snapshot,
+            gross_profit_snapshot,
+            gross_margin_percent
           )
           VALUES (
             $1, $2, $3,
             $4, $5, $6, $7, $8,
-            $9, $10, 0, 0, $11
+            $9, $10, 0, 0, $11,
+            $12, $13, $14, $15
           )
           RETURNING *;
           `,
@@ -982,14 +1039,21 @@ export async function processOfflineSale(
           device.companyId,
           sale.id,
           item.variantId,
+
           item.skuSnapshot,
           item.barcodeSnapshot,
           item.productNameSnapshot,
           item.sizeSnapshot,
           item.colorSnapshot,
+
           item.quantity,
           item.submittedUnitPrice,
           item.lineTotal,
+
+          unitCostSnapshot,
+          costTotalSnapshot,
+          grossProfitSnapshot,
+          grossMarginPercent,
         ],
       )
 
@@ -1002,7 +1066,17 @@ export async function processOfflineSale(
       for (const item of preparedItems) {
         const quantityBefore = stockRows.get(item.variantId) ?? 0
 
+        const averageCost = costRows.get(item.variantId) ?? 0
+
         const quantityAfter = roundQuantity(quantityBefore - item.quantity)
+
+        const inventoryValueBefore = roundInventoryValue(
+          quantityBefore * averageCost,
+        )
+
+        const inventoryValueAfter = roundInventoryValue(
+          quantityAfter * averageCost,
+        )
 
         await client.query(
           `
@@ -1031,23 +1105,40 @@ export async function processOfflineSale(
             variant_id,
 
             movement_type,
+
             quantity,
             quantity_before,
             quantity_after,
 
+            unit_cost,
+            average_cost_before,
+            average_cost_after,
+
+            inventory_value_before,
+            inventory_value_after,
+
             reference_type,
             reference_id,
+
             note,
             created_by
           )
           VALUES (
             $1, $2, $3, $4,
+
             'sale',
+
             $5, $6, $7,
+
+            $8, $9, $10,
+
+            $11, $12,
+
             'sale',
-            $8,
-            $9,
-            $10
+            $13,
+
+            $14,
+            $15
           );
           `,
           [
@@ -1055,11 +1146,22 @@ export async function processOfflineSale(
             device.branchId,
             input.stockLocationId,
             item.variantId,
+
             -Math.abs(item.quantity),
             quantityBefore,
             quantityAfter,
+
+            averageCost,
+            averageCost,
+            averageCost,
+
+            inventoryValueBefore,
+            inventoryValueAfter,
+
             sale.id,
+
             `Offline POS sale ${sale.sale_number}`,
+
             input.cashierId,
           ],
         )
