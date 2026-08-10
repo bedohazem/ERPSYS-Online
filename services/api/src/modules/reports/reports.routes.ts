@@ -3408,6 +3408,859 @@ reportsRouter.get(
 )
 
 // ======================================================
+// GET /api/reports/inventory-movement-ledger
+//
+// تقرير دفتر حركات المخزون.
+//
+// Query:
+// - dateFrom: YYYY-MM-DD
+// - dateTo: YYYY-MM-DD
+// - branchId?
+// - stockLocationId?
+// - variantId?
+// - movementType?
+// - referenceType?
+// - search?
+// - page?
+// - pageSize?
+//
+// يرجع:
+// - summary
+// - byMovementType
+// - movements
+// - pagination
+// ======================================================
+reportsRouter.get(
+  '/api/reports/inventory-movement-ledger',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const dateFrom =
+        typeof req.query.dateFrom === 'string' ? req.query.dateFrom.trim() : ''
+
+      const dateTo =
+        typeof req.query.dateTo === 'string' ? req.query.dateTo.trim() : ''
+
+      if (!dateFrom || !isValidReportDate(dateFrom)) {
+        return res.status(400).json({
+          error: 'dateFrom must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (!dateTo || !isValidReportDate(dateTo)) {
+        return res.status(400).json({
+          error: 'dateTo must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (dateFrom > dateTo) {
+        return res.status(400).json({
+          error: 'dateFrom cannot be after dateTo',
+        })
+      }
+
+      const startTimestamp = new Date(`${dateFrom}T00:00:00.000Z`).getTime()
+
+      const endTimestamp = new Date(`${dateTo}T00:00:00.000Z`).getTime()
+
+      const reportDays =
+        Math.floor((endTimestamp - startTimestamp) / (24 * 60 * 60 * 1000)) + 1
+
+      if (reportDays > 366) {
+        return res.status(400).json({
+          error: 'Report period cannot exceed 366 days',
+        })
+      }
+
+      const requestedBranchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (requestedBranchId && !uuidPattern.test(requestedBranchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      if (
+        auth.branchId &&
+        requestedBranchId &&
+        requestedBranchId !== auth.branchId
+      ) {
+        return res.status(403).json({
+          error: 'Requested branch is outside the authenticated branch scope',
+        })
+      }
+
+      const branchId = auth.branchId || requestedBranchId || ''
+
+      const stockLocationId =
+        typeof req.query.stockLocationId === 'string'
+          ? req.query.stockLocationId.trim().toLowerCase()
+          : ''
+
+      if (stockLocationId && !uuidPattern.test(stockLocationId)) {
+        return res.status(400).json({
+          error: 'stockLocationId is invalid',
+        })
+      }
+
+      const variantId =
+        typeof req.query.variantId === 'string'
+          ? req.query.variantId.trim().toLowerCase()
+          : ''
+
+      if (variantId && !uuidPattern.test(variantId)) {
+        return res.status(400).json({
+          error: 'variantId is invalid',
+        })
+      }
+
+      const movementType =
+        typeof req.query.movementType === 'string' &&
+        req.query.movementType.trim()
+          ? req.query.movementType.trim().toLowerCase()
+          : ''
+
+      const referenceType =
+        typeof req.query.referenceType === 'string' &&
+        req.query.referenceType.trim()
+          ? req.query.referenceType.trim().toLowerCase()
+          : ''
+
+      const search =
+        typeof req.query.search === 'string' && req.query.search.trim()
+          ? req.query.search.trim()
+          : ''
+
+      const searchPattern = search ? `%${search}%` : null
+
+      const rawPage = Number(req.query.page ?? 1)
+
+      const page = Number.isFinite(rawPage)
+        ? Math.max(Math.trunc(rawPage), 1)
+        : 1
+
+      const rawPageSize = Number(req.query.pageSize ?? 50)
+
+      const pageSize = Number.isFinite(rawPageSize)
+        ? Math.min(Math.max(Math.trunc(rawPageSize), 1), 100)
+        : 50
+
+      const offset = (page - 1) * pageSize
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+          SELECT id
+
+          FROM branches
+
+          WHERE company_id = $1
+            AND id = $2
+
+          LIMIT 1;
+          `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      if (stockLocationId) {
+        const locationResult = await db.query(
+          `
+          SELECT id
+
+          FROM stock_locations
+
+          WHERE company_id = $1
+            AND id = $2
+
+            AND (
+              $3::uuid IS NULL
+              OR branch_id =
+                 $3::uuid
+            )
+
+          LIMIT 1;
+          `,
+          [auth.companyId, stockLocationId, branchId || null],
+        )
+
+        if ((locationResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error:
+              'Stock location was not found or is outside the authenticated branch scope',
+          })
+        }
+      }
+
+      if (variantId) {
+        const variantResult = await db.query(
+          `
+          SELECT id
+
+          FROM product_variants
+
+          WHERE company_id = $1
+            AND id = $2
+
+          LIMIT 1;
+          `,
+          [auth.companyId, variantId],
+        )
+
+        if ((variantResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Variant was not found in the authenticated company',
+          })
+        }
+      }
+
+      const baseValues = [
+        auth.companyId,
+        branchId || null,
+        stockLocationId || null,
+        variantId || null,
+        movementType || null,
+        referenceType || null,
+        dateFrom,
+        dateTo,
+        searchPattern,
+      ]
+
+      const movementScopeSql = `
+        SELECT
+          sm.id,
+          sm.company_id,
+          sm.branch_id,
+
+          branch.code
+            AS branch_code,
+
+          branch.name
+            AS branch_name,
+
+          sm.stock_location_id,
+
+          sl.code
+            AS stock_location_code,
+
+          sl.name
+            AS stock_location_name,
+
+          sl.location_type,
+
+          sm.variant_id,
+
+          pv.product_id,
+
+          p.name
+            AS product_name,
+
+          pv.sku,
+
+          pv.primary_barcode,
+
+          size.name
+            AS size_name,
+
+          color.name
+            AS color_name,
+
+          category.name
+            AS category_name,
+
+          brand.name
+            AS brand_name,
+
+          sm.movement_type,
+          sm.quantity,
+          sm.quantity_before,
+          sm.quantity_after,
+
+          sm.unit_cost,
+          sm.average_cost_before,
+          sm.average_cost_after,
+          sm.inventory_value_before,
+          sm.inventory_value_after,
+
+          sm.reference_type,
+          sm.reference_id,
+
+          sm.note,
+
+          sm.created_by,
+
+          creator.full_name
+            AS created_by_name,
+
+          creator.username
+            AS created_by_username,
+
+          sm.created_at
+
+        FROM stock_movements sm
+
+        JOIN stock_locations sl
+          ON sl.company_id =
+             sm.company_id
+          AND sl.id =
+              sm.stock_location_id
+
+        LEFT JOIN branches branch
+          ON branch.company_id =
+             sm.company_id
+          AND branch.id =
+              sm.branch_id
+
+        JOIN product_variants pv
+          ON pv.company_id =
+             sm.company_id
+          AND pv.id =
+              sm.variant_id
+
+        JOIN products p
+          ON p.company_id =
+             pv.company_id
+          AND p.id =
+              pv.product_id
+
+        LEFT JOIN fashion_sizes size
+          ON size.company_id =
+             pv.company_id
+          AND size.id =
+              pv.size_id
+
+        LEFT JOIN fashion_colors color
+          ON color.company_id =
+             pv.company_id
+          AND color.id =
+              pv.color_id
+
+        LEFT JOIN product_categories category
+          ON category.company_id =
+             p.company_id
+          AND category.id =
+              p.category_id
+
+        LEFT JOIN brands brand
+          ON brand.company_id =
+             p.company_id
+          AND brand.id =
+              p.brand_id
+
+        LEFT JOIN users creator
+          ON creator.company_id =
+             sm.company_id
+          AND creator.id =
+              sm.created_by
+
+        WHERE sm.company_id = $1
+
+          AND (
+            $2::uuid IS NULL
+            OR sm.branch_id =
+               $2::uuid
+          )
+
+          AND (
+            $3::uuid IS NULL
+            OR sm.stock_location_id =
+               $3::uuid
+          )
+
+          AND (
+            $4::uuid IS NULL
+            OR sm.variant_id =
+               $4::uuid
+          )
+
+          AND (
+            $5::text IS NULL
+            OR sm.movement_type =
+               $5::text
+          )
+
+          AND (
+            $6::text IS NULL
+            OR sm.reference_type =
+               $6::text
+          )
+
+          AND sm.created_at >=
+              $7::date
+
+          AND sm.created_at <
+              (
+                $8::date +
+                INTERVAL '1 day'
+              )
+
+          AND (
+            $9::text IS NULL
+
+            OR p.name ILIKE $9::text
+
+            OR pv.sku ILIKE $9::text
+
+            OR COALESCE(
+                 pv.primary_barcode,
+                 ''
+               ) ILIKE $9::text
+
+            OR sl.name ILIKE $9::text
+
+            OR sl.code ILIKE $9::text
+
+            OR COALESCE(
+                 branch.name,
+                 ''
+               ) ILIKE $9::text
+
+            OR COALESCE(
+                 category.name,
+                 ''
+               ) ILIKE $9::text
+
+            OR COALESCE(
+                 brand.name,
+                 ''
+               ) ILIKE $9::text
+
+            OR COALESCE(
+                 sm.reference_type,
+                 ''
+               ) ILIKE $9::text
+
+            OR COALESCE(
+                 sm.note,
+                 ''
+               ) ILIKE $9::text
+          )
+      `
+
+      const [summaryResult, byMovementTypeResult, movementsResult] =
+        await Promise.all([
+          db.query(
+            `
+            WITH movement_rows AS (
+              ${movementScopeSql}
+            )
+
+            SELECT
+              COUNT(*)::int
+                AS total_movements,
+
+              COUNT(
+                DISTINCT variant_id
+              )::int
+                AS variant_count,
+
+              COUNT(
+                DISTINCT stock_location_id
+              )::int
+                AS stock_location_count,
+
+              COALESCE(
+                SUM(
+                  CASE
+                    WHEN quantity > 0
+                    THEN quantity
+                    ELSE 0
+                  END
+                ),
+                0
+              )
+                AS incoming_quantity,
+
+              COALESCE(
+                SUM(
+                  CASE
+                    WHEN quantity < 0
+                    THEN ABS(quantity)
+                    ELSE 0
+                  END
+                ),
+                0
+              )
+                AS outgoing_quantity,
+
+              COALESCE(
+                SUM(quantity),
+                0
+              )
+                AS net_quantity,
+
+              COALESCE(
+                SUM(
+                  COALESCE(
+                    inventory_value_after,
+                    0
+                  )
+                  -
+                  COALESCE(
+                    inventory_value_before,
+                    0
+                  )
+                ),
+                0
+              )
+                AS inventory_value_delta,
+
+              COUNT(*) FILTER (
+                WHERE unit_cost IS NOT NULL
+                  OR average_cost_before IS NOT NULL
+                  OR average_cost_after IS NOT NULL
+                  OR inventory_value_before IS NOT NULL
+                  OR inventory_value_after IS NOT NULL
+              )::int
+                AS costed_movement_count,
+
+              COUNT(*) FILTER (
+                WHERE unit_cost IS NULL
+                  AND average_cost_before IS NULL
+                  AND average_cost_after IS NULL
+                  AND inventory_value_before IS NULL
+                  AND inventory_value_after IS NULL
+              )::int
+                AS missing_cost_movement_count,
+
+              MIN(created_at)
+                AS first_movement_at,
+
+              MAX(created_at)
+                AS last_movement_at
+
+            FROM movement_rows;
+            `,
+            baseValues,
+          ),
+
+          db.query(
+            `
+            WITH movement_rows AS (
+              ${movementScopeSql}
+            )
+
+            SELECT
+              movement_type,
+
+              COUNT(*)::int
+                AS movement_count,
+
+              COALESCE(
+                SUM(
+                  CASE
+                    WHEN quantity > 0
+                    THEN quantity
+                    ELSE 0
+                  END
+                ),
+                0
+              )
+                AS incoming_quantity,
+
+              COALESCE(
+                SUM(
+                  CASE
+                    WHEN quantity < 0
+                    THEN ABS(quantity)
+                    ELSE 0
+                  END
+                ),
+                0
+              )
+                AS outgoing_quantity,
+
+              COALESCE(
+                SUM(quantity),
+                0
+              )
+                AS net_quantity,
+
+              COALESCE(
+                SUM(
+                  COALESCE(
+                    inventory_value_after,
+                    0
+                  )
+                  -
+                  COALESCE(
+                    inventory_value_before,
+                    0
+                  )
+                ),
+                0
+              )
+                AS inventory_value_delta
+
+            FROM movement_rows
+
+            GROUP BY
+              movement_type
+
+            ORDER BY
+              movement_count DESC,
+              movement_type ASC;
+            `,
+            baseValues,
+          ),
+
+          db.query(
+            `
+            WITH movement_rows AS (
+              ${movementScopeSql}
+            )
+
+            SELECT *
+
+            FROM movement_rows
+
+            ORDER BY
+              created_at DESC,
+              id DESC
+
+            LIMIT $10
+            OFFSET $11;
+            `,
+            [...baseValues, pageSize, offset],
+          ),
+        ])
+
+      const summaryRow = summaryResult.rows[0] as
+        | Record<string, unknown>
+        | undefined
+
+      const totalItems = Number(summaryRow?.total_movements ?? 0)
+
+      const totalPages = totalItems > 0 ? Math.ceil(totalItems / pageSize) : 0
+
+      const summary = {
+        totalMovements: totalItems,
+
+        variantCount: Number(summaryRow?.variant_count ?? 0),
+
+        stockLocationCount: Number(summaryRow?.stock_location_count ?? 0),
+
+        incomingQuantity: String(summaryRow?.incoming_quantity ?? '0'),
+
+        outgoingQuantity: String(summaryRow?.outgoing_quantity ?? '0'),
+
+        netQuantity: String(summaryRow?.net_quantity ?? '0'),
+
+        inventoryValueDelta: String(summaryRow?.inventory_value_delta ?? '0'),
+
+        costedMovementCount: Number(summaryRow?.costed_movement_count ?? 0),
+
+        missingCostMovementCount: Number(
+          summaryRow?.missing_cost_movement_count ?? 0,
+        ),
+
+        firstMovementAt: serializeReportTimestamp(
+          summaryRow?.first_movement_at,
+        ),
+
+        lastMovementAt: serializeReportTimestamp(summaryRow?.last_movement_at),
+      }
+
+      const byMovementType = (
+        byMovementTypeResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        movementType: String(row.movement_type),
+
+        movementCount: Number(row.movement_count ?? 0),
+
+        incomingQuantity: String(row.incoming_quantity ?? '0'),
+
+        outgoingQuantity: String(row.outgoing_quantity ?? '0'),
+
+        netQuantity: String(row.net_quantity ?? '0'),
+
+        inventoryValueDelta: String(row.inventory_value_delta ?? '0'),
+      }))
+
+      const movements = (
+        movementsResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        id: String(row.id),
+
+        branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+        branchCode:
+          typeof row.branch_code === 'string' ? row.branch_code : null,
+
+        branchName:
+          typeof row.branch_name === 'string' ? row.branch_name : null,
+
+        stockLocationId: String(row.stock_location_id),
+
+        stockLocationCode: String(row.stock_location_code),
+
+        stockLocationName: String(row.stock_location_name),
+
+        locationType: String(row.location_type),
+
+        variantId: String(row.variant_id),
+
+        productId: String(row.product_id),
+
+        productName: String(row.product_name),
+
+        sku: String(row.sku),
+
+        primaryBarcode:
+          typeof row.primary_barcode === 'string' ? row.primary_barcode : null,
+
+        sizeName: typeof row.size_name === 'string' ? row.size_name : null,
+
+        colorName: typeof row.color_name === 'string' ? row.color_name : null,
+
+        categoryName:
+          typeof row.category_name === 'string' ? row.category_name : null,
+
+        brandName: typeof row.brand_name === 'string' ? row.brand_name : null,
+
+        movementType: String(row.movement_type),
+
+        quantity: String(row.quantity ?? '0'),
+
+        quantityBefore:
+          row.quantity_before === null || row.quantity_before === undefined
+            ? null
+            : String(row.quantity_before),
+
+        quantityAfter:
+          row.quantity_after === null || row.quantity_after === undefined
+            ? null
+            : String(row.quantity_after),
+
+        unitCost:
+          row.unit_cost === null || row.unit_cost === undefined
+            ? null
+            : String(row.unit_cost),
+
+        averageCostBefore:
+          row.average_cost_before === null ||
+          row.average_cost_before === undefined
+            ? null
+            : String(row.average_cost_before),
+
+        averageCostAfter:
+          row.average_cost_after === null ||
+          row.average_cost_after === undefined
+            ? null
+            : String(row.average_cost_after),
+
+        inventoryValueBefore:
+          row.inventory_value_before === null ||
+          row.inventory_value_before === undefined
+            ? null
+            : String(row.inventory_value_before),
+
+        inventoryValueAfter:
+          row.inventory_value_after === null ||
+          row.inventory_value_after === undefined
+            ? null
+            : String(row.inventory_value_after),
+
+        referenceType:
+          typeof row.reference_type === 'string' ? row.reference_type : null,
+
+        referenceId:
+          typeof row.reference_id === 'string' ? row.reference_id : null,
+
+        note: typeof row.note === 'string' ? row.note : null,
+
+        createdBy: typeof row.created_by === 'string' ? row.created_by : null,
+
+        createdByName:
+          typeof row.created_by_name === 'string' ? row.created_by_name : null,
+
+        createdByUsername:
+          typeof row.created_by_username === 'string'
+            ? row.created_by_username
+            : null,
+
+        createdAt: serializeReportTimestamp(row.created_at),
+      }))
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+
+            branchId: branchId || null,
+
+            branchSelectionLocked: Boolean(auth.branchId),
+
+            stockLocationId: stockLocationId || null,
+
+            variantId: variantId || null,
+
+            movementType: movementType || null,
+
+            referenceType: referenceType || null,
+
+            dateFrom,
+            dateTo,
+            days: reportDays,
+
+            search: search || null,
+
+            page,
+            pageSize,
+          },
+
+          definitions: {
+            quantityBasis: 'stock_movements.quantity',
+
+            incomingQuantityRule: 'quantity > 0',
+
+            outgoingQuantityRule: 'quantity < 0',
+
+            netQuantityFormula: 'sum(quantity)',
+
+            inventoryValueDeltaFormula:
+              'sum(inventory_value_after - inventory_value_before)',
+
+            costBasis:
+              'stock_movements unit_cost and average-cost snapshot columns where available',
+          },
+
+          summary,
+
+          byMovementType,
+
+          movements,
+
+          pagination: {
+            page,
+            pageSize,
+            totalItems,
+            totalPages,
+
+            hasPreviousPage: page > 1,
+
+            hasNextPage: totalPages > 0 && page < totalPages,
+          },
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
 // GET /api/reports/inventory-shortages
 //
 // تقرير نواقص المخزون حسب حدود إعادة الطلب.
