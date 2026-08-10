@@ -2084,6 +2084,596 @@ reportsRouter.get(
 )
 
 // ======================================================
+// GET /api/reports/profitability
+//
+// تقرير ربحية المبيعات بناءً على Cost Snapshots
+// المحفوظة داخل sale_items.
+//
+// Query:
+// - dateFrom: YYYY-MM-DD
+// - dateTo: YYYY-MM-DD
+// - branchId?
+// - cashierId?
+// - limit?
+//
+// يرجع:
+// - summary
+// - byDay
+// - byBranch
+// - byCashier
+// - topProducts
+// ======================================================
+reportsRouter.get(
+  '/api/reports/profitability',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const dateFrom =
+        typeof req.query.dateFrom === 'string' ? req.query.dateFrom.trim() : ''
+
+      const dateTo =
+        typeof req.query.dateTo === 'string' ? req.query.dateTo.trim() : ''
+
+      if (!dateFrom || !isValidReportDate(dateFrom)) {
+        return res.status(400).json({
+          error: 'dateFrom must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (!dateTo || !isValidReportDate(dateTo)) {
+        return res.status(400).json({
+          error: 'dateTo must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (dateFrom > dateTo) {
+        return res.status(400).json({
+          error: 'dateFrom cannot be after dateTo',
+        })
+      }
+
+      const startTimestamp = new Date(`${dateFrom}T00:00:00.000Z`).getTime()
+
+      const endTimestamp = new Date(`${dateTo}T00:00:00.000Z`).getTime()
+
+      const reportDays =
+        Math.floor((endTimestamp - startTimestamp) / (24 * 60 * 60 * 1000)) + 1
+
+      if (reportDays > 366) {
+        return res.status(400).json({
+          error: 'Report period cannot exceed 366 days',
+        })
+      }
+
+      const requestedBranchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (requestedBranchId && !uuidPattern.test(requestedBranchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      if (
+        auth.branchId &&
+        requestedBranchId &&
+        requestedBranchId !== auth.branchId
+      ) {
+        return res.status(403).json({
+          error: 'Requested branch is outside the authenticated branch scope',
+        })
+      }
+
+      const branchId = auth.branchId || requestedBranchId || ''
+
+      const cashierId =
+        typeof req.query.cashierId === 'string'
+          ? req.query.cashierId.trim().toLowerCase()
+          : ''
+
+      if (cashierId && !uuidPattern.test(cashierId)) {
+        return res.status(400).json({
+          error: 'cashierId is invalid',
+        })
+      }
+
+      const limit = parseProductReportLimit(req.query.limit)
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+            SELECT id
+
+            FROM branches
+
+            WHERE company_id = $1
+              AND id = $2
+
+            LIMIT 1;
+          `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      if (cashierId) {
+        const cashierResult = await db.query(
+          `
+            SELECT id
+
+            FROM users
+
+            WHERE company_id = $1
+              AND id = $2
+
+            LIMIT 1;
+          `,
+          [auth.companyId, cashierId],
+        )
+
+        if ((cashierResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Cashier was not found in the authenticated company',
+          })
+        }
+      }
+
+      const result = await db.query(
+        `
+        WITH sale_lines AS (
+          SELECT
+            s.id
+              AS sale_id,
+
+            s.occurred_at::date
+              AS event_date,
+
+            s.branch_id,
+            s.cashier_id,
+
+            si.variant_id,
+
+            si.quantity,
+
+            si.line_total
+              AS gross_revenue,
+
+            COALESCE(
+              si.cost_total_snapshot,
+              0
+            )
+              AS total_cost,
+
+            COALESCE(
+              si.gross_profit_snapshot,
+              (
+                si.line_total -
+                COALESCE(
+                  si.cost_total_snapshot,
+                  0
+                )
+              )
+            )
+              AS gross_profit,
+
+            CASE
+              WHEN si.cost_total_snapshot IS NULL
+                OR si.gross_profit_snapshot IS NULL
+              THEN 1
+              ELSE 0
+            END
+              AS missing_cost_snapshot
+
+          FROM sales s
+
+          JOIN sale_items si
+            ON si.company_id =
+               s.company_id
+
+            AND si.sale_id =
+                s.id
+
+          WHERE s.company_id = $1
+
+            AND (
+              $2::uuid IS NULL
+              OR s.branch_id =
+                 $2::uuid
+            )
+
+            AND (
+              $3::uuid IS NULL
+              OR s.cashier_id =
+                 $3::uuid
+            )
+
+            AND s.occurred_at >=
+                $4::date
+
+            AND s.occurred_at <
+                (
+                  $5::date +
+                  INTERVAL '1 day'
+                )
+
+            AND s.status IN (
+              'completed',
+              'pending_review',
+              'refunded'
+            )
+        ),
+
+        grouped AS (
+          SELECT
+            event_date,
+            branch_id,
+            cashier_id,
+            variant_id,
+
+            GROUPING(event_date)::int
+              AS grouped_date,
+
+            GROUPING(branch_id)::int
+              AS grouped_branch,
+
+            GROUPING(cashier_id)::int
+              AS grouped_cashier,
+
+            GROUPING(variant_id)::int
+              AS grouped_variant,
+
+            COUNT(
+              DISTINCT sale_id
+            )::int
+              AS sales_count,
+
+            COUNT(*)::int
+              AS line_count,
+
+            COALESCE(
+              SUM(quantity),
+              0
+            )
+              AS sold_quantity,
+
+            COALESCE(
+              SUM(gross_revenue),
+              0
+            )
+              AS gross_revenue,
+
+            COALESCE(
+              SUM(total_cost),
+              0
+            )
+              AS total_cost,
+
+            COALESCE(
+              SUM(gross_profit),
+              0
+            )
+              AS gross_profit,
+
+            COALESCE(
+              SUM(missing_cost_snapshot),
+              0
+            )::int
+              AS missing_cost_snapshot_lines
+
+          FROM sale_lines
+
+          GROUP BY GROUPING SETS (
+            (),
+            (event_date),
+            (branch_id),
+            (cashier_id),
+            (variant_id)
+          )
+        )
+
+        SELECT
+          CASE
+            WHEN grouped_date = 1
+             AND grouped_branch = 1
+             AND grouped_cashier = 1
+             AND grouped_variant = 1
+            THEN 'summary'
+
+            WHEN grouped_date = 0
+            THEN 'day'
+
+            WHEN grouped_branch = 0
+            THEN 'branch'
+
+            WHEN grouped_cashier = 0
+            THEN 'cashier'
+
+            ELSE 'product'
+          END
+            AS group_type,
+
+          CASE
+            WHEN grouped_date = 0
+            THEN TO_CHAR(
+              event_date,
+              'YYYY-MM-DD'
+            )
+            ELSE NULL
+          END
+            AS period_date,
+
+          g.branch_id,
+
+          branch.code
+            AS branch_code,
+
+          branch.name
+            AS branch_name,
+
+          g.cashier_id,
+
+          cashier.full_name
+            AS cashier_name,
+
+          cashier.username
+            AS cashier_username,
+
+          g.variant_id,
+
+          pv.product_id,
+
+          p.name
+            AS product_name,
+
+          pv.sku,
+
+          pv.primary_barcode,
+
+          size.name
+            AS size_name,
+
+          color.name
+            AS color_name,
+
+          g.sales_count,
+          g.line_count,
+          g.sold_quantity,
+
+          g.gross_revenue,
+          g.total_cost,
+          g.gross_profit,
+
+          CASE
+            WHEN g.gross_revenue <> 0
+            THEN ROUND(
+              (
+                g.gross_profit /
+                g.gross_revenue
+              ) * 100,
+              4
+            )
+            ELSE 0
+          END
+            AS gross_margin_percent,
+
+          g.missing_cost_snapshot_lines
+
+        FROM grouped g
+
+        LEFT JOIN branches branch
+          ON branch.company_id = $1
+          AND branch.id =
+              g.branch_id
+
+        LEFT JOIN users cashier
+          ON cashier.company_id = $1
+          AND cashier.id =
+              g.cashier_id
+
+        LEFT JOIN product_variants pv
+          ON pv.company_id = $1
+          AND pv.id =
+              g.variant_id
+
+        LEFT JOIN products p
+          ON p.company_id =
+             pv.company_id
+          AND p.id =
+              pv.product_id
+
+        LEFT JOIN fashion_sizes size
+          ON size.company_id =
+             pv.company_id
+          AND size.id =
+              pv.size_id
+
+        LEFT JOIN fashion_colors color
+          ON color.company_id =
+             pv.company_id
+          AND color.id =
+              pv.color_id
+
+        ORDER BY
+          group_type ASC,
+          period_date ASC NULLS LAST,
+          branch_name ASC NULLS LAST,
+          cashier_name ASC NULLS LAST,
+          gross_profit DESC,
+          product_name ASC NULLS LAST,
+          sku ASC NULLS LAST;
+        `,
+        [auth.companyId, branchId || null, cashierId || null, dateFrom, dateTo],
+      )
+
+      function mapProfitMetrics(row: Record<string, unknown> | undefined) {
+        return {
+          salesCount: Number(row?.sales_count ?? 0),
+
+          lineCount: Number(row?.line_count ?? 0),
+
+          soldQuantity: String(row?.sold_quantity ?? '0'),
+
+          grossRevenue: String(row?.gross_revenue ?? '0'),
+
+          totalCost: String(row?.total_cost ?? '0'),
+
+          grossProfit: String(row?.gross_profit ?? '0'),
+
+          grossMarginPercent: String(row?.gross_margin_percent ?? '0'),
+
+          missingCostSnapshotLines: Number(
+            row?.missing_cost_snapshot_lines ?? 0,
+          ),
+        }
+      }
+
+      const rows = result.rows as Array<Record<string, unknown>>
+
+      const summaryRow = rows.find((row) => row.group_type === 'summary')
+
+      const byDay = rows
+        .filter((row) => row.group_type === 'day')
+        .map((row) => ({
+          date: String(row.period_date ?? ''),
+
+          ...mapProfitMetrics(row),
+        }))
+        .sort((first, second) => first.date.localeCompare(second.date))
+
+      const byBranch = rows
+        .filter((row) => row.group_type === 'branch')
+        .map((row) => ({
+          branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+          branchCode:
+            typeof row.branch_code === 'string' ? row.branch_code : null,
+
+          branchName:
+            typeof row.branch_name === 'string'
+              ? row.branch_name
+              : 'Unknown branch',
+
+          ...mapProfitMetrics(row),
+        }))
+        .sort((first, second) =>
+          first.branchName.localeCompare(second.branchName),
+        )
+
+      const byCashier = rows
+        .filter((row) => row.group_type === 'cashier')
+        .map((row) => ({
+          cashierId: typeof row.cashier_id === 'string' ? row.cashier_id : null,
+
+          cashierName:
+            typeof row.cashier_name === 'string'
+              ? row.cashier_name
+              : 'Unknown or deleted user',
+
+          cashierUsername:
+            typeof row.cashier_username === 'string'
+              ? row.cashier_username
+              : null,
+
+          ...mapProfitMetrics(row),
+        }))
+        .sort((first, second) =>
+          first.cashierName.localeCompare(second.cashierName),
+        )
+
+      const topProducts = rows
+        .filter((row) => row.group_type === 'product')
+        .map((row) => ({
+          variantId: typeof row.variant_id === 'string' ? row.variant_id : null,
+
+          productId: typeof row.product_id === 'string' ? row.product_id : null,
+
+          productName:
+            typeof row.product_name === 'string'
+              ? row.product_name
+              : 'Unknown product',
+
+          sku: typeof row.sku === 'string' ? row.sku : null,
+
+          primaryBarcode:
+            typeof row.primary_barcode === 'string'
+              ? row.primary_barcode
+              : null,
+
+          sizeName: typeof row.size_name === 'string' ? row.size_name : null,
+
+          colorName: typeof row.color_name === 'string' ? row.color_name : null,
+
+          ...mapProfitMetrics(row),
+        }))
+        .sort((first, second) => {
+          const profitDifference =
+            Number(second.grossProfit) - Number(first.grossProfit)
+
+          if (profitDifference !== 0) {
+            return profitDifference
+          }
+
+          return first.productName.localeCompare(second.productName)
+        })
+        .slice(0, limit)
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+
+            branchId: branchId || null,
+
+            branchSelectionLocked: Boolean(auth.branchId),
+
+            cashierId: cashierId || null,
+
+            dateFrom,
+            dateTo,
+            days: reportDays,
+
+            limit,
+          },
+
+          definitions: {
+            includedSaleStatuses: ['completed', 'pending_review', 'refunded'],
+
+            revenueBasis: 'sale_items.line_total',
+
+            costBasis: 'sale_items.cost_total_snapshot',
+
+            profitFormula: 'grossRevenue - totalCost',
+
+            grossMarginFormula: '(grossProfit / grossRevenue) * 100',
+
+            missingCostSnapshotMeaning:
+              'Older sale lines created before costing snapshots may not have stored cost fields',
+          },
+
+          summary: mapProfitMetrics(summaryRow),
+
+          byDay,
+          byBranch,
+          byCashier,
+          topProducts,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
 // GET /api/reports/inventory-shortages
 //
 // تقرير نواقص المخزون حسب حدود إعادة الطلب.
