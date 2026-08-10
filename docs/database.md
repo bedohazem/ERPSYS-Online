@@ -389,6 +389,7 @@ Integrated costing behavior:
 - Online sales write cost and gross-profit snapshots.
 - Synced offline POS sales write cost and gross-profit snapshots.
 - Profitability reporting reads stored sale cost snapshots through `/api/reports/profitability`.
+- Stock valuation reporting reads current quantities and average costs through `/api/reports/stock-valuation`.
 
 Remaining integration work:
 
@@ -396,7 +397,6 @@ Remaining integration work:
 - Supplier returns must use authoritative historical cost.
 - Historical pre-costing data requires an initialization policy.
 - Landed-cost allocation remains pending.
-- Inventory valuation report remains pending.
 
 ## Reporting Rule
 

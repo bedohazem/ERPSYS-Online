@@ -218,7 +218,7 @@ A feature can only become `DONE` when:
 | R-005 | Customer receivables report               | DONE   | Receivables workspace             |
 | R-006 | Supplier outstanding balances             | DONE   | Supplier finance workspace        |
 | R-007 | Profitability reporting                   | UAT    | Backend endpoint integrated       |
-| R-008 | Stock valuation report                    | TODO   | Depends on costing                |
+| R-008 | Stock valuation report                    | UAT    | Backend endpoint integrated       |
 | R-009 | Inventory movement ledger report          | TODO   | Required for V1                   |
 | R-010 | Purchase and supplier reports             | TODO   | Required for V1                   |
 | R-011 | Transfer and stock-count reports          | TODO   | Required for V1                   |
