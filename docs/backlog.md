@@ -138,7 +138,7 @@ A feature can only become `DONE` when:
 | P-012 | Purchase order approval lifecycle     | TODO    | Draft, approval, cancellation, closure            |
 | P-013 | Landed costs                          | TODO    | Freight, customs, and additional expenses         |
 | P-014 | Weighted-average inventory costing    | PARTIAL | Foundation complete; purchase receipts integrated |
-| P-015 | Cost snapshot on sale items           | PARTIAL | Snapshot columns added; sale integration pending  |
+| P-015 | Cost snapshot on sale items           | DONE    | Online and offline sale snapshots integrated      |
 | P-016 | Procurement acceptance tests          | NEXT    | Included in baseline UAT                          |
 
 ---

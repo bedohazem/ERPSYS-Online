@@ -383,12 +383,16 @@ The costing method is defined by:
 
 - [ADR-004: Weighted Average Cost](./adr/004-weighted-average-cost.md)
 
-Remaining integration work:
+Integrated costing behavior:
 
 - Purchase receipts update moving-average cost through the centralized inventory costing service.
+- Online sales write cost and gross-profit snapshots.
+- Synced offline POS sales write cost and gross-profit snapshots.
+
+Remaining integration work:
+
 - Transfers must carry source-location cost.
 - Supplier returns must use authoritative historical cost.
-- Sales must write cost and profit snapshots.
 - Historical pre-costing data requires an initialization policy.
 - Landed-cost allocation remains pending.
 - Inventory valuation and profitability reports remain pending.
