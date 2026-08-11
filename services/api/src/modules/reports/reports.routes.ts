@@ -4261,6 +4261,1717 @@ reportsRouter.get(
 )
 
 // ======================================================
+// GET /api/reports/purchase-supplier-summary
+//
+// تقرير مشتريات وموردين شامل.
+//
+// Query:
+// - dateFrom: YYYY-MM-DD
+// - dateTo: YYYY-MM-DD
+// - branchId?
+// - supplierId?
+// - search?
+// - limit?
+//
+// يرجع:
+// - summary
+// - bySupplier
+// - recentReceipts
+// - recentInvoices
+// - recentPayments
+// - recentReturns
+// ======================================================
+reportsRouter.get(
+  '/api/reports/purchase-supplier-summary',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const dateFrom =
+        typeof req.query.dateFrom === 'string' ? req.query.dateFrom.trim() : ''
+
+      const dateTo =
+        typeof req.query.dateTo === 'string' ? req.query.dateTo.trim() : ''
+
+      if (!dateFrom || !isValidReportDate(dateFrom)) {
+        return res.status(400).json({
+          error: 'dateFrom must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (!dateTo || !isValidReportDate(dateTo)) {
+        return res.status(400).json({
+          error: 'dateTo must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (dateFrom > dateTo) {
+        return res.status(400).json({
+          error: 'dateFrom cannot be after dateTo',
+        })
+      }
+
+      const startTimestamp = new Date(`${dateFrom}T00:00:00.000Z`).getTime()
+
+      const endTimestamp = new Date(`${dateTo}T00:00:00.000Z`).getTime()
+
+      const reportDays =
+        Math.floor((endTimestamp - startTimestamp) / (24 * 60 * 60 * 1000)) + 1
+
+      if (reportDays > 366) {
+        return res.status(400).json({
+          error: 'Report period cannot exceed 366 days',
+        })
+      }
+
+      const requestedBranchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (requestedBranchId && !uuidPattern.test(requestedBranchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      if (
+        auth.branchId &&
+        requestedBranchId &&
+        requestedBranchId !== auth.branchId
+      ) {
+        return res.status(403).json({
+          error: 'Requested branch is outside the authenticated branch scope',
+        })
+      }
+
+      const branchId = auth.branchId || requestedBranchId || ''
+
+      const supplierId =
+        typeof req.query.supplierId === 'string'
+          ? req.query.supplierId.trim().toLowerCase()
+          : ''
+
+      if (supplierId && !uuidPattern.test(supplierId)) {
+        return res.status(400).json({
+          error: 'supplierId is invalid',
+        })
+      }
+
+      const search =
+        typeof req.query.search === 'string' && req.query.search.trim()
+          ? req.query.search.trim()
+          : ''
+
+      const searchPattern = search ? `%${search}%` : null
+
+      const limit = parseReportLimit(req.query.limit)
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+          SELECT id
+
+          FROM branches
+
+          WHERE company_id = $1
+            AND id = $2
+
+          LIMIT 1;
+          `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      if (supplierId) {
+        const supplierResult = await db.query(
+          `
+          SELECT id
+
+          FROM suppliers
+
+          WHERE company_id = $1
+            AND id = $2
+
+          LIMIT 1;
+          `,
+          [auth.companyId, supplierId],
+        )
+
+        if ((supplierResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Supplier was not found in the authenticated company',
+          })
+        }
+      }
+
+      const baseValues = [
+        auth.companyId,
+        branchId || null,
+        supplierId || null,
+        dateFrom,
+        dateTo,
+        searchPattern,
+      ]
+
+      const limitedValues = [...baseValues, limit]
+
+      const supplierScopeSql = `
+        SELECT
+          supplier.id,
+          supplier.code,
+          supplier.name,
+          supplier.phone,
+          supplier.email,
+          supplier.tax_number,
+          supplier.is_active
+
+        FROM suppliers supplier
+
+        WHERE supplier.company_id = $1
+
+          AND (
+            $3::uuid IS NULL
+            OR supplier.id =
+               $3::uuid
+          )
+
+          AND (
+            $6::text IS NULL
+
+            OR supplier.name ILIKE $6::text
+
+            OR supplier.code ILIKE $6::text
+
+            OR COALESCE(
+                 supplier.phone,
+                 ''
+               ) ILIKE $6::text
+
+            OR COALESCE(
+                 supplier.email,
+                 ''
+               ) ILIKE $6::text
+
+            OR COALESCE(
+                 supplier.tax_number,
+                 ''
+               ) ILIKE $6::text
+          )
+      `
+
+      const [
+        summaryResult,
+        bySupplierResult,
+        receiptsResult,
+        invoicesResult,
+        paymentsResult,
+        returnsResult,
+      ] = await Promise.all([
+        db.query(
+          `
+            WITH supplier_scope AS (
+              ${supplierScopeSql}
+            ),
+
+            receipt_scope AS (
+              SELECT
+                receipt.*
+
+              FROM purchase_receipts receipt
+
+              JOIN supplier_scope supplier
+                ON supplier.id =
+                   receipt.supplier_id
+
+              WHERE receipt.company_id = $1
+
+                AND (
+                  $2::uuid IS NULL
+                  OR receipt.branch_id =
+                     $2::uuid
+                )
+
+                AND receipt.received_at >=
+                    $4::date
+
+                AND receipt.received_at <
+                    (
+                      $5::date +
+                      INTERVAL '1 day'
+                    )
+
+                AND receipt.status <> 'cancelled'
+            ),
+
+            receipt_item_scope AS (
+              SELECT
+                item.purchase_receipt_id,
+
+                COUNT(*)::int
+                  AS line_count,
+
+                COALESCE(
+                  SUM(item.quantity),
+                  0
+                )
+                  AS received_quantity
+
+              FROM purchase_receipt_items item
+
+              JOIN receipt_scope receipt
+                ON receipt.company_id =
+                   item.company_id
+
+                AND receipt.id =
+                    item.purchase_receipt_id
+
+              GROUP BY
+                item.purchase_receipt_id
+            ),
+
+            invoice_scope AS (
+              SELECT
+                invoice.*
+
+              FROM supplier_invoices invoice
+
+              JOIN supplier_scope supplier
+                ON supplier.id =
+                   invoice.supplier_id
+
+              WHERE invoice.company_id = $1
+
+                AND (
+                  $2::uuid IS NULL
+                  OR invoice.branch_id =
+                     $2::uuid
+                )
+
+                AND invoice.invoice_date >=
+                    $4::date
+
+                AND invoice.invoice_date <
+                    (
+                      $5::date +
+                      INTERVAL '1 day'
+                    )
+
+                AND invoice.status <> 'cancelled'
+            ),
+
+            payment_scope AS (
+              SELECT
+                payment.*
+
+              FROM supplier_payments payment
+
+              JOIN supplier_scope supplier
+                ON supplier.id =
+                   payment.supplier_id
+
+              WHERE payment.company_id = $1
+
+                AND (
+                  $2::uuid IS NULL
+                  OR payment.branch_id =
+                     $2::uuid
+                )
+
+                AND payment.paid_at >=
+                    $4::date
+
+                AND payment.paid_at <
+                    (
+                      $5::date +
+                      INTERVAL '1 day'
+                    )
+            ),
+
+            return_scope AS (
+              SELECT
+                supplier_return.*
+
+              FROM supplier_returns supplier_return
+
+              JOIN supplier_scope supplier
+                ON supplier.id =
+                   supplier_return.supplier_id
+
+              WHERE supplier_return.company_id = $1
+
+                AND (
+                  $2::uuid IS NULL
+                  OR supplier_return.branch_id =
+                     $2::uuid
+                )
+
+                AND supplier_return.created_at >=
+                    $4::date
+
+                AND supplier_return.created_at <
+                    (
+                      $5::date +
+                      INTERVAL '1 day'
+                    )
+
+                AND supplier_return.status = 'posted'
+            ),
+
+            return_item_scope AS (
+              SELECT
+                item.supplier_return_id,
+
+                COUNT(*)::int
+                  AS line_count,
+
+                COALESCE(
+                  SUM(item.quantity),
+                  0
+                )
+                  AS returned_quantity
+
+              FROM supplier_return_items item
+
+              JOIN return_scope supplier_return
+                ON supplier_return.company_id =
+                   item.company_id
+
+                AND supplier_return.id =
+                    item.supplier_return_id
+
+              GROUP BY
+                item.supplier_return_id
+            ),
+
+            credit_note_scope AS (
+              SELECT
+                credit_note.*
+
+              FROM supplier_credit_notes credit_note
+
+              JOIN supplier_scope supplier
+                ON supplier.id =
+                   credit_note.supplier_id
+
+              WHERE credit_note.company_id = $1
+
+                AND (
+                  $2::uuid IS NULL
+                  OR credit_note.branch_id =
+                     $2::uuid
+                )
+
+                AND credit_note.created_at >=
+                    $4::date
+
+                AND credit_note.created_at <
+                    (
+                      $5::date +
+                      INTERVAL '1 day'
+                    )
+            )
+
+            SELECT
+              (
+                SELECT COUNT(*)::int
+                FROM supplier_scope
+              )
+                AS supplier_count,
+
+              (
+                SELECT COUNT(*)::int
+                FROM supplier_scope
+                WHERE is_active = TRUE
+              )
+                AS active_supplier_count,
+
+              (
+                SELECT COUNT(*)::int
+                FROM receipt_scope
+              )
+                AS receipt_count,
+
+              COALESCE(
+                (
+                  SELECT SUM(total)
+                  FROM receipt_scope
+                ),
+                0
+              )
+                AS purchase_total,
+
+              COALESCE(
+                (
+                  SELECT SUM(received_quantity)
+                  FROM receipt_item_scope
+                ),
+                0
+              )
+                AS received_quantity,
+
+              (
+                SELECT COUNT(*)::int
+                FROM invoice_scope
+              )
+                AS invoice_count,
+
+              COALESCE(
+                (
+                  SELECT SUM(total)
+                  FROM invoice_scope
+                ),
+                0
+              )
+                AS invoice_total,
+
+              COALESCE(
+                (
+                  SELECT SUM(paid_total)
+                  FROM invoice_scope
+                ),
+                0
+              )
+                AS invoice_paid_total,
+
+              COALESCE(
+                (
+                  SELECT SUM(credit_total)
+                  FROM invoice_scope
+                ),
+                0
+              )
+                AS invoice_credit_total,
+
+              COALESCE(
+                (
+                  SELECT SUM(balance)
+                  FROM invoice_scope
+                ),
+                0
+              )
+                AS invoice_balance_total,
+
+              COALESCE(
+                (
+                  SELECT SUM(supplier_credit_balance)
+                  FROM invoice_scope
+                ),
+                0
+              )
+                AS supplier_credit_balance_total,
+
+              (
+                SELECT COUNT(*)::int
+                FROM payment_scope
+              )
+                AS payment_count,
+
+              COALESCE(
+                (
+                  SELECT SUM(amount)
+                  FROM payment_scope
+                ),
+                0
+              )
+                AS payment_total,
+
+              (
+                SELECT COUNT(*)::int
+                FROM return_scope
+              )
+                AS supplier_return_count,
+
+              COALESCE(
+                (
+                  SELECT SUM(total)
+                  FROM return_scope
+                ),
+                0
+              )
+                AS supplier_return_total,
+
+              COALESCE(
+                (
+                  SELECT SUM(returned_quantity)
+                  FROM return_item_scope
+                ),
+                0
+              )
+                AS returned_quantity,
+
+              (
+                SELECT COUNT(*)::int
+                FROM credit_note_scope
+              )
+                AS credit_note_count,
+
+              COALESCE(
+                (
+                  SELECT SUM(amount)
+                  FROM credit_note_scope
+                ),
+                0
+              )
+                AS credit_note_total;
+            `,
+          baseValues,
+        ),
+
+        db.query(
+          `
+            WITH supplier_scope AS (
+              ${supplierScopeSql}
+            ),
+
+            receipt_totals AS (
+              SELECT
+                receipt.supplier_id,
+
+                COUNT(*)::int
+                  AS receipt_count,
+
+                COALESCE(
+                  SUM(receipt.total),
+                  0
+                )
+                  AS purchase_total,
+
+                COALESCE(
+                  SUM(item_summary.received_quantity),
+                  0
+                )
+                  AS received_quantity
+
+              FROM purchase_receipts receipt
+
+              JOIN supplier_scope supplier
+                ON supplier.id =
+                   receipt.supplier_id
+
+              LEFT JOIN LATERAL (
+                SELECT
+                  COALESCE(
+                    SUM(item.quantity),
+                    0
+                  )
+                    AS received_quantity
+
+                FROM purchase_receipt_items item
+
+                WHERE item.company_id =
+                      receipt.company_id
+
+                  AND item.purchase_receipt_id =
+                      receipt.id
+              ) item_summary
+                ON TRUE
+
+              WHERE receipt.company_id = $1
+
+                AND (
+                  $2::uuid IS NULL
+                  OR receipt.branch_id =
+                     $2::uuid
+                )
+
+                AND receipt.received_at >=
+                    $4::date
+
+                AND receipt.received_at <
+                    (
+                      $5::date +
+                      INTERVAL '1 day'
+                    )
+
+                AND receipt.status <> 'cancelled'
+
+              GROUP BY
+                receipt.supplier_id
+            ),
+
+            invoice_totals AS (
+              SELECT
+                invoice.supplier_id,
+
+                COUNT(*)::int
+                  AS invoice_count,
+
+                COALESCE(
+                  SUM(invoice.total),
+                  0
+                )
+                  AS invoice_total,
+
+                COALESCE(
+                  SUM(invoice.paid_total),
+                  0
+                )
+                  AS paid_total,
+
+                COALESCE(
+                  SUM(invoice.credit_total),
+                  0
+                )
+                  AS credit_total,
+
+                COALESCE(
+                  SUM(invoice.balance),
+                  0
+                )
+                  AS balance_total,
+
+                COALESCE(
+                  SUM(invoice.supplier_credit_balance),
+                  0
+                )
+                  AS supplier_credit_balance_total
+
+              FROM supplier_invoices invoice
+
+              JOIN supplier_scope supplier
+                ON supplier.id =
+                   invoice.supplier_id
+
+              WHERE invoice.company_id = $1
+
+                AND (
+                  $2::uuid IS NULL
+                  OR invoice.branch_id =
+                     $2::uuid
+                )
+
+                AND invoice.invoice_date >=
+                    $4::date
+
+                AND invoice.invoice_date <
+                    (
+                      $5::date +
+                      INTERVAL '1 day'
+                    )
+
+                AND invoice.status <> 'cancelled'
+
+              GROUP BY
+                invoice.supplier_id
+            ),
+
+            payment_totals AS (
+              SELECT
+                payment.supplier_id,
+
+                COUNT(*)::int
+                  AS payment_count,
+
+                COALESCE(
+                  SUM(payment.amount),
+                  0
+                )
+                  AS payment_total
+
+              FROM supplier_payments payment
+
+              JOIN supplier_scope supplier
+                ON supplier.id =
+                   payment.supplier_id
+
+              WHERE payment.company_id = $1
+
+                AND (
+                  $2::uuid IS NULL
+                  OR payment.branch_id =
+                     $2::uuid
+                )
+
+                AND payment.paid_at >=
+                    $4::date
+
+                AND payment.paid_at <
+                    (
+                      $5::date +
+                      INTERVAL '1 day'
+                    )
+
+              GROUP BY
+                payment.supplier_id
+            ),
+
+            return_totals AS (
+              SELECT
+                supplier_return.supplier_id,
+
+                COUNT(*)::int
+                  AS supplier_return_count,
+
+                COALESCE(
+                  SUM(supplier_return.total),
+                  0
+                )
+                  AS supplier_return_total
+
+              FROM supplier_returns supplier_return
+
+              JOIN supplier_scope supplier
+                ON supplier.id =
+                   supplier_return.supplier_id
+
+              WHERE supplier_return.company_id = $1
+
+                AND (
+                  $2::uuid IS NULL
+                  OR supplier_return.branch_id =
+                     $2::uuid
+                )
+
+                AND supplier_return.created_at >=
+                    $4::date
+
+                AND supplier_return.created_at <
+                    (
+                      $5::date +
+                      INTERVAL '1 day'
+                    )
+
+                AND supplier_return.status = 'posted'
+
+              GROUP BY
+                supplier_return.supplier_id
+            )
+
+            SELECT
+              supplier.id
+                AS supplier_id,
+
+              supplier.code
+                AS supplier_code,
+
+              supplier.name
+                AS supplier_name,
+
+              supplier.phone,
+              supplier.email,
+              supplier.tax_number,
+              supplier.is_active,
+
+              COALESCE(
+                receipt_totals.receipt_count,
+                0
+              )
+                AS receipt_count,
+
+              COALESCE(
+                receipt_totals.purchase_total,
+                0
+              )
+                AS purchase_total,
+
+              COALESCE(
+                receipt_totals.received_quantity,
+                0
+              )
+                AS received_quantity,
+
+              COALESCE(
+                invoice_totals.invoice_count,
+                0
+              )
+                AS invoice_count,
+
+              COALESCE(
+                invoice_totals.invoice_total,
+                0
+              )
+                AS invoice_total,
+
+              COALESCE(
+                invoice_totals.paid_total,
+                0
+              )
+                AS paid_total,
+
+              COALESCE(
+                invoice_totals.credit_total,
+                0
+              )
+                AS credit_total,
+
+              COALESCE(
+                invoice_totals.balance_total,
+                0
+              )
+                AS balance_total,
+
+              COALESCE(
+                invoice_totals.supplier_credit_balance_total,
+                0
+              )
+                AS supplier_credit_balance_total,
+
+              COALESCE(
+                payment_totals.payment_count,
+                0
+              )
+                AS payment_count,
+
+              COALESCE(
+                payment_totals.payment_total,
+                0
+              )
+                AS payment_total,
+
+              COALESCE(
+                return_totals.supplier_return_count,
+                0
+              )
+                AS supplier_return_count,
+
+              COALESCE(
+                return_totals.supplier_return_total,
+                0
+              )
+                AS supplier_return_total
+
+            FROM supplier_scope supplier
+
+            LEFT JOIN receipt_totals
+              ON receipt_totals.supplier_id =
+                 supplier.id
+
+            LEFT JOIN invoice_totals
+              ON invoice_totals.supplier_id =
+                 supplier.id
+
+            LEFT JOIN payment_totals
+              ON payment_totals.supplier_id =
+                 supplier.id
+
+            LEFT JOIN return_totals
+              ON return_totals.supplier_id =
+                 supplier.id
+
+            ORDER BY
+              balance_total DESC,
+              invoice_total DESC,
+              purchase_total DESC,
+              supplier.name ASC
+
+            LIMIT $7;
+            `,
+          limitedValues,
+        ),
+
+        db.query(
+          `
+            WITH supplier_scope AS (
+              ${supplierScopeSql}
+            )
+
+            SELECT
+              receipt.id,
+              receipt.receipt_number,
+              receipt.status,
+
+              receipt.branch_id,
+
+              branch.code
+                AS branch_code,
+
+              branch.name
+                AS branch_name,
+
+              receipt.stock_location_id,
+
+              location.code
+                AS stock_location_code,
+
+              location.name
+                AS stock_location_name,
+
+              supplier.id
+                AS supplier_id,
+
+              supplier.code
+                AS supplier_code,
+
+              supplier.name
+                AS supplier_name,
+
+              receipt.subtotal,
+              receipt.discount_total,
+              receipt.tax_total,
+              receipt.total,
+
+              item_summary.line_count,
+              item_summary.received_quantity,
+
+              receipt.received_at,
+              receipt.created_at
+
+            FROM purchase_receipts receipt
+
+            JOIN supplier_scope supplier
+              ON supplier.id =
+                 receipt.supplier_id
+
+            LEFT JOIN branches branch
+              ON branch.company_id =
+                 receipt.company_id
+
+              AND branch.id =
+                  receipt.branch_id
+
+            JOIN stock_locations location
+              ON location.company_id =
+                 receipt.company_id
+
+              AND location.id =
+                  receipt.stock_location_id
+
+            LEFT JOIN LATERAL (
+              SELECT
+                COUNT(*)::int
+                  AS line_count,
+
+                COALESCE(
+                  SUM(item.quantity),
+                  0
+                )
+                  AS received_quantity
+
+              FROM purchase_receipt_items item
+
+              WHERE item.company_id =
+                    receipt.company_id
+
+                AND item.purchase_receipt_id =
+                    receipt.id
+            ) item_summary
+              ON TRUE
+
+            WHERE receipt.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR receipt.branch_id =
+                   $2::uuid
+              )
+
+              AND receipt.received_at >=
+                  $4::date
+
+              AND receipt.received_at <
+                  (
+                    $5::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND receipt.status <> 'cancelled'
+
+            ORDER BY
+              receipt.received_at DESC,
+              receipt.id DESC
+
+            LIMIT $7;
+            `,
+          limitedValues,
+        ),
+
+        db.query(
+          `
+            WITH supplier_scope AS (
+              ${supplierScopeSql}
+            )
+
+            SELECT
+              invoice.id,
+              invoice.invoice_number,
+              invoice.supplier_invoice_number,
+
+              invoice.branch_id,
+
+              branch.code
+                AS branch_code,
+
+              branch.name
+                AS branch_name,
+
+              supplier.id
+                AS supplier_id,
+
+              supplier.code
+                AS supplier_code,
+
+              supplier.name
+                AS supplier_name,
+
+              invoice.purchase_receipt_id,
+              receipt.receipt_number,
+
+              invoice.invoice_date,
+              invoice.due_date,
+              invoice.status,
+
+              invoice.subtotal,
+              invoice.discount_total,
+              invoice.tax_total,
+              invoice.total,
+
+              invoice.paid_total,
+              invoice.credit_total,
+              invoice.balance,
+              invoice.supplier_credit_balance,
+
+              invoice.created_at,
+              invoice.updated_at
+
+            FROM supplier_invoices invoice
+
+            JOIN supplier_scope supplier
+              ON supplier.id =
+                 invoice.supplier_id
+
+            LEFT JOIN branches branch
+              ON branch.company_id =
+                 invoice.company_id
+
+              AND branch.id =
+                  invoice.branch_id
+
+            JOIN purchase_receipts receipt
+              ON receipt.company_id =
+                 invoice.company_id
+
+              AND receipt.id =
+                  invoice.purchase_receipt_id
+
+            WHERE invoice.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR invoice.branch_id =
+                   $2::uuid
+              )
+
+              AND invoice.invoice_date >=
+                  $4::date
+
+              AND invoice.invoice_date <
+                  (
+                    $5::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND invoice.status <> 'cancelled'
+
+            ORDER BY
+              invoice.invoice_date DESC,
+              invoice.created_at DESC,
+              invoice.id DESC
+
+            LIMIT $7;
+            `,
+          limitedValues,
+        ),
+
+        db.query(
+          `
+            WITH supplier_scope AS (
+              ${supplierScopeSql}
+            )
+
+            SELECT
+              payment.id,
+              payment.payment_number,
+
+              payment.branch_id,
+
+              branch.code
+                AS branch_code,
+
+              branch.name
+                AS branch_name,
+
+              supplier.id
+                AS supplier_id,
+
+              supplier.code
+                AS supplier_code,
+
+              supplier.name
+                AS supplier_name,
+
+              payment.supplier_invoice_id,
+              invoice.invoice_number,
+
+              payment.amount,
+              payment.payment_method,
+              payment.reference_number,
+
+              payment.paid_at,
+              payment.created_at
+
+            FROM supplier_payments payment
+
+            JOIN supplier_scope supplier
+              ON supplier.id =
+                 payment.supplier_id
+
+            LEFT JOIN branches branch
+              ON branch.company_id =
+                 payment.company_id
+
+              AND branch.id =
+                  payment.branch_id
+
+            JOIN supplier_invoices invoice
+              ON invoice.company_id =
+                 payment.company_id
+
+              AND invoice.id =
+                  payment.supplier_invoice_id
+
+            WHERE payment.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR payment.branch_id =
+                   $2::uuid
+              )
+
+              AND payment.paid_at >=
+                  $4::date
+
+              AND payment.paid_at <
+                  (
+                    $5::date +
+                    INTERVAL '1 day'
+                  )
+
+            ORDER BY
+              payment.paid_at DESC,
+              payment.id DESC
+
+            LIMIT $7;
+            `,
+          limitedValues,
+        ),
+
+        db.query(
+          `
+            WITH supplier_scope AS (
+              ${supplierScopeSql}
+            )
+
+            SELECT
+              supplier_return.id,
+              supplier_return.return_number,
+              supplier_return.status,
+
+              supplier_return.branch_id,
+
+              branch.code
+                AS branch_code,
+
+              branch.name
+                AS branch_name,
+
+              supplier.id
+                AS supplier_id,
+
+              supplier.code
+                AS supplier_code,
+
+              supplier.name
+                AS supplier_name,
+
+              supplier_return.supplier_invoice_id,
+              invoice.invoice_number,
+
+              supplier_return.purchase_receipt_id,
+              receipt.receipt_number,
+
+              supplier_return.stock_location_id,
+
+              location.code
+                AS stock_location_code,
+
+              location.name
+                AS stock_location_name,
+
+              supplier_return.subtotal,
+              supplier_return.discount_total,
+              supplier_return.tax_total,
+              supplier_return.total,
+
+              item_summary.line_count,
+              item_summary.returned_quantity,
+
+              credit_note.id
+                AS credit_note_id,
+
+              credit_note.credit_note_number,
+
+              credit_note.amount
+                AS credit_note_amount,
+
+              supplier_return.created_at
+
+            FROM supplier_returns supplier_return
+
+            JOIN supplier_scope supplier
+              ON supplier.id =
+                 supplier_return.supplier_id
+
+            LEFT JOIN branches branch
+              ON branch.company_id =
+                 supplier_return.company_id
+
+              AND branch.id =
+                  supplier_return.branch_id
+
+            JOIN supplier_invoices invoice
+              ON invoice.company_id =
+                 supplier_return.company_id
+
+              AND invoice.id =
+                  supplier_return.supplier_invoice_id
+
+            JOIN purchase_receipts receipt
+              ON receipt.company_id =
+                 supplier_return.company_id
+
+              AND receipt.id =
+                  supplier_return.purchase_receipt_id
+
+            JOIN stock_locations location
+              ON location.company_id =
+                 supplier_return.company_id
+
+              AND location.id =
+                  supplier_return.stock_location_id
+
+            LEFT JOIN supplier_credit_notes credit_note
+              ON credit_note.company_id =
+                 supplier_return.company_id
+
+              AND credit_note.supplier_return_id =
+                  supplier_return.id
+
+            LEFT JOIN LATERAL (
+              SELECT
+                COUNT(*)::int
+                  AS line_count,
+
+                COALESCE(
+                  SUM(item.quantity),
+                  0
+                )
+                  AS returned_quantity
+
+              FROM supplier_return_items item
+
+              WHERE item.company_id =
+                    supplier_return.company_id
+
+                AND item.supplier_return_id =
+                    supplier_return.id
+            ) item_summary
+              ON TRUE
+
+            WHERE supplier_return.company_id = $1
+
+              AND (
+                $2::uuid IS NULL
+                OR supplier_return.branch_id =
+                   $2::uuid
+              )
+
+              AND supplier_return.created_at >=
+                  $4::date
+
+              AND supplier_return.created_at <
+                  (
+                    $5::date +
+                    INTERVAL '1 day'
+                  )
+
+              AND supplier_return.status = 'posted'
+
+            ORDER BY
+              supplier_return.created_at DESC,
+              supplier_return.id DESC
+
+            LIMIT $7;
+            `,
+          limitedValues,
+        ),
+      ])
+
+      const summaryRow = summaryResult.rows[0] as
+        | Record<string, unknown>
+        | undefined
+
+      const summary = {
+        supplierCount: Number(summaryRow?.supplier_count ?? 0),
+
+        activeSupplierCount: Number(summaryRow?.active_supplier_count ?? 0),
+
+        receiptCount: Number(summaryRow?.receipt_count ?? 0),
+
+        purchaseTotal: String(summaryRow?.purchase_total ?? '0'),
+
+        receivedQuantity: String(summaryRow?.received_quantity ?? '0'),
+
+        invoiceCount: Number(summaryRow?.invoice_count ?? 0),
+
+        invoiceTotal: String(summaryRow?.invoice_total ?? '0'),
+
+        invoicePaidTotal: String(summaryRow?.invoice_paid_total ?? '0'),
+
+        invoiceCreditTotal: String(summaryRow?.invoice_credit_total ?? '0'),
+
+        invoiceBalanceTotal: String(summaryRow?.invoice_balance_total ?? '0'),
+
+        supplierCreditBalanceTotal: String(
+          summaryRow?.supplier_credit_balance_total ?? '0',
+        ),
+
+        paymentCount: Number(summaryRow?.payment_count ?? 0),
+
+        paymentTotal: String(summaryRow?.payment_total ?? '0'),
+
+        supplierReturnCount: Number(summaryRow?.supplier_return_count ?? 0),
+
+        supplierReturnTotal: String(summaryRow?.supplier_return_total ?? '0'),
+
+        returnedQuantity: String(summaryRow?.returned_quantity ?? '0'),
+
+        creditNoteCount: Number(summaryRow?.credit_note_count ?? 0),
+
+        creditNoteTotal: String(summaryRow?.credit_note_total ?? '0'),
+      }
+
+      const bySupplier = (
+        bySupplierResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        supplierId: String(row.supplier_id),
+
+        supplierCode: String(row.supplier_code),
+
+        supplierName: String(row.supplier_name),
+
+        phone: typeof row.phone === 'string' ? row.phone : null,
+
+        email: typeof row.email === 'string' ? row.email : null,
+
+        taxNumber: typeof row.tax_number === 'string' ? row.tax_number : null,
+
+        isActive: Boolean(row.is_active),
+
+        receiptCount: Number(row.receipt_count ?? 0),
+
+        purchaseTotal: String(row.purchase_total ?? '0'),
+
+        receivedQuantity: String(row.received_quantity ?? '0'),
+
+        invoiceCount: Number(row.invoice_count ?? 0),
+
+        invoiceTotal: String(row.invoice_total ?? '0'),
+
+        paidTotal: String(row.paid_total ?? '0'),
+
+        creditTotal: String(row.credit_total ?? '0'),
+
+        balanceTotal: String(row.balance_total ?? '0'),
+
+        supplierCreditBalanceTotal: String(
+          row.supplier_credit_balance_total ?? '0',
+        ),
+
+        paymentCount: Number(row.payment_count ?? 0),
+
+        paymentTotal: String(row.payment_total ?? '0'),
+
+        supplierReturnCount: Number(row.supplier_return_count ?? 0),
+
+        supplierReturnTotal: String(row.supplier_return_total ?? '0'),
+      }))
+
+      const recentReceipts = (
+        receiptsResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        id: String(row.id),
+
+        receiptNumber: String(row.receipt_number),
+
+        status: String(row.status),
+
+        branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+        branchCode:
+          typeof row.branch_code === 'string' ? row.branch_code : null,
+
+        branchName:
+          typeof row.branch_name === 'string' ? row.branch_name : null,
+
+        stockLocationId: String(row.stock_location_id),
+
+        stockLocationCode: String(row.stock_location_code),
+
+        stockLocationName: String(row.stock_location_name),
+
+        supplierId: String(row.supplier_id),
+
+        supplierCode: String(row.supplier_code),
+
+        supplierName: String(row.supplier_name),
+
+        subtotal: String(row.subtotal ?? '0'),
+
+        discountTotal: String(row.discount_total ?? '0'),
+
+        taxTotal: String(row.tax_total ?? '0'),
+
+        total: String(row.total ?? '0'),
+
+        lineCount: Number(row.line_count ?? 0),
+
+        receivedQuantity: String(row.received_quantity ?? '0'),
+
+        receivedAt: serializeReportTimestamp(row.received_at),
+
+        createdAt: serializeReportTimestamp(row.created_at),
+      }))
+
+      const recentInvoices = (
+        invoicesResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        id: String(row.id),
+
+        invoiceNumber: String(row.invoice_number),
+
+        supplierInvoiceNumber:
+          typeof row.supplier_invoice_number === 'string'
+            ? row.supplier_invoice_number
+            : null,
+
+        branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+        branchCode:
+          typeof row.branch_code === 'string' ? row.branch_code : null,
+
+        branchName:
+          typeof row.branch_name === 'string' ? row.branch_name : null,
+
+        supplierId: String(row.supplier_id),
+
+        supplierCode: String(row.supplier_code),
+
+        supplierName: String(row.supplier_name),
+
+        purchaseReceiptId: String(row.purchase_receipt_id),
+
+        receiptNumber: String(row.receipt_number),
+
+        invoiceDate:
+          row.invoice_date instanceof Date
+            ? row.invoice_date.toISOString().slice(0, 10)
+            : String(row.invoice_date ?? ''),
+
+        dueDate:
+          row.due_date instanceof Date
+            ? row.due_date.toISOString().slice(0, 10)
+            : row.due_date === null || row.due_date === undefined
+              ? null
+              : String(row.due_date),
+
+        status: String(row.status),
+
+        subtotal: String(row.subtotal ?? '0'),
+
+        discountTotal: String(row.discount_total ?? '0'),
+
+        taxTotal: String(row.tax_total ?? '0'),
+
+        total: String(row.total ?? '0'),
+
+        paidTotal: String(row.paid_total ?? '0'),
+
+        creditTotal: String(row.credit_total ?? '0'),
+
+        balance: String(row.balance ?? '0'),
+
+        supplierCreditBalance: String(row.supplier_credit_balance ?? '0'),
+
+        createdAt: serializeReportTimestamp(row.created_at),
+
+        updatedAt: serializeReportTimestamp(row.updated_at),
+      }))
+
+      const recentPayments = (
+        paymentsResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        id: String(row.id),
+
+        paymentNumber: String(row.payment_number),
+
+        branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+        branchCode:
+          typeof row.branch_code === 'string' ? row.branch_code : null,
+
+        branchName:
+          typeof row.branch_name === 'string' ? row.branch_name : null,
+
+        supplierId: String(row.supplier_id),
+
+        supplierCode: String(row.supplier_code),
+
+        supplierName: String(row.supplier_name),
+
+        supplierInvoiceId: String(row.supplier_invoice_id),
+
+        invoiceNumber: String(row.invoice_number),
+
+        amount: String(row.amount ?? '0'),
+
+        paymentMethod: String(row.payment_method),
+
+        referenceNumber:
+          typeof row.reference_number === 'string'
+            ? row.reference_number
+            : null,
+
+        paidAt: serializeReportTimestamp(row.paid_at),
+
+        createdAt: serializeReportTimestamp(row.created_at),
+      }))
+
+      const recentReturns = (
+        returnsResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        id: String(row.id),
+
+        returnNumber: String(row.return_number),
+
+        status: String(row.status),
+
+        branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+
+        branchCode:
+          typeof row.branch_code === 'string' ? row.branch_code : null,
+
+        branchName:
+          typeof row.branch_name === 'string' ? row.branch_name : null,
+
+        supplierId: String(row.supplier_id),
+
+        supplierCode: String(row.supplier_code),
+
+        supplierName: String(row.supplier_name),
+
+        supplierInvoiceId: String(row.supplier_invoice_id),
+
+        invoiceNumber: String(row.invoice_number),
+
+        purchaseReceiptId: String(row.purchase_receipt_id),
+
+        receiptNumber: String(row.receipt_number),
+
+        stockLocationId: String(row.stock_location_id),
+
+        stockLocationCode: String(row.stock_location_code),
+
+        stockLocationName: String(row.stock_location_name),
+
+        subtotal: String(row.subtotal ?? '0'),
+
+        discountTotal: String(row.discount_total ?? '0'),
+
+        taxTotal: String(row.tax_total ?? '0'),
+
+        total: String(row.total ?? '0'),
+
+        lineCount: Number(row.line_count ?? 0),
+
+        returnedQuantity: String(row.returned_quantity ?? '0'),
+
+        creditNoteId:
+          typeof row.credit_note_id === 'string' ? row.credit_note_id : null,
+
+        creditNoteNumber:
+          typeof row.credit_note_number === 'string'
+            ? row.credit_note_number
+            : null,
+
+        creditNoteAmount:
+          row.credit_note_amount === null ||
+          row.credit_note_amount === undefined
+            ? null
+            : String(row.credit_note_amount),
+
+        createdAt: serializeReportTimestamp(row.created_at),
+      }))
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+
+            branchId: branchId || null,
+
+            branchSelectionLocked: Boolean(auth.branchId),
+
+            supplierId: supplierId || null,
+
+            dateFrom,
+            dateTo,
+            days: reportDays,
+
+            search: search || null,
+
+            limit,
+          },
+
+          definitions: {
+            purchaseBasis:
+              'purchase_receipts and purchase_receipt_items excluding cancelled receipts',
+
+            invoiceBasis: 'supplier_invoices excluding cancelled invoices',
+
+            paymentBasis: 'supplier_payments.paid_at',
+
+            returnBasis:
+              'supplier_returns with posted status and linked supplier_credit_notes where available',
+
+            outstandingFormula:
+              'supplier_invoices.balance = total - paid_total - credit_total',
+          },
+
+          summary,
+
+          bySupplier,
+
+          recentReceipts,
+          recentInvoices,
+          recentPayments,
+          recentReturns,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
 // GET /api/reports/inventory-shortages
 //
 // تقرير نواقص المخزون حسب حدود إعادة الطلب.
