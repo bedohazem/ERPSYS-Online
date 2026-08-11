@@ -408,6 +408,8 @@ Current reporting integrations include:
 - Stock valuation reporting through `/api/reports/stock-valuation`.
 - Inventory movement ledger reporting through `/api/reports/inventory-movement-ledger`.
 - Purchase and supplier reporting through `/api/reports/purchase-supplier-summary`.
+- Transfer and stock-count reporting through `/api/reports/transfer-stock-count-summary`.
+- Damaged and inspection stock reporting through `/api/reports/damage-inspection-stock`.
 
 Reports must respect:
 

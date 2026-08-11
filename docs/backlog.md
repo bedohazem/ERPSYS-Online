@@ -221,8 +221,8 @@ A feature can only become `DONE` when:
 | R-008 | Stock valuation report                    | UAT    | Backend endpoint integrated       |
 | R-009 | Inventory movement ledger report          | UAT    | Backend endpoint integrated       |
 | R-010 | Purchase and supplier reports             | UAT    | Backend endpoint integrated       |
-| R-011 | Transfer and stock-count reports          | TODO   | Required for V1                   |
-| R-012 | Damaged and inspection stock reports      | TODO   | Required for V1                   |
+| R-011 | Transfer and stock-count reports          | UAT    | Backend endpoint integrated       |
+| R-012 | Damaged and inspection stock reports      | UAT    | Backend endpoint integrated       |
 | R-013 | Cashier shift and cash-difference reports | TODO   | Required for V1                   |
 | R-014 | Fashion size/color/season analysis        | TODO   | Required for Fashion V1           |
 | R-015 | CSV and Excel export                      | TODO   | Required for V1                   |

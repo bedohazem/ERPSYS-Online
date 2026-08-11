@@ -5972,6 +5972,1385 @@ reportsRouter.get(
 )
 
 // ======================================================
+// GET /api/reports/transfer-stock-count-summary
+//
+// تقرير التحويلات والجرد.
+//
+// Query:
+// - dateFrom: YYYY-MM-DD
+// - dateTo: YYYY-MM-DD
+// - branchId?
+// - transferStatus?
+// - stockCountStatus?
+// - search?
+// - limit?
+// ======================================================
+reportsRouter.get(
+  '/api/reports/transfer-stock-count-summary',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const dateFrom =
+        typeof req.query.dateFrom === 'string' ? req.query.dateFrom.trim() : ''
+
+      const dateTo =
+        typeof req.query.dateTo === 'string' ? req.query.dateTo.trim() : ''
+
+      if (!dateFrom || !isValidReportDate(dateFrom)) {
+        return res.status(400).json({
+          error: 'dateFrom must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (!dateTo || !isValidReportDate(dateTo)) {
+        return res.status(400).json({
+          error: 'dateTo must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (dateFrom > dateTo) {
+        return res.status(400).json({
+          error: 'dateFrom cannot be after dateTo',
+        })
+      }
+
+      const startTimestamp = new Date(`${dateFrom}T00:00:00.000Z`).getTime()
+      const endTimestamp = new Date(`${dateTo}T00:00:00.000Z`).getTime()
+
+      const reportDays =
+        Math.floor((endTimestamp - startTimestamp) / (24 * 60 * 60 * 1000)) + 1
+
+      if (reportDays > 366) {
+        return res.status(400).json({
+          error: 'Report period cannot exceed 366 days',
+        })
+      }
+
+      const requestedBranchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (requestedBranchId && !uuidPattern.test(requestedBranchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      if (
+        auth.branchId &&
+        requestedBranchId &&
+        requestedBranchId !== auth.branchId
+      ) {
+        return res.status(403).json({
+          error: 'Requested branch is outside the authenticated branch scope',
+        })
+      }
+
+      const branchId = auth.branchId || requestedBranchId || ''
+
+      const transferStatus =
+        typeof req.query.transferStatus === 'string' &&
+        req.query.transferStatus.trim()
+          ? req.query.transferStatus.trim().toLowerCase()
+          : 'all'
+
+      if (
+        ![
+          'all',
+          'draft',
+          'pending',
+          'approved',
+          'in_transit',
+          'received',
+          'cancelled',
+        ].includes(transferStatus)
+      ) {
+        return res.status(400).json({
+          error:
+            'transferStatus must be all, draft, pending, approved, in_transit, received, or cancelled',
+        })
+      }
+
+      const stockCountStatus =
+        typeof req.query.stockCountStatus === 'string' &&
+        req.query.stockCountStatus.trim()
+          ? req.query.stockCountStatus.trim().toLowerCase()
+          : 'all'
+
+      if (
+        !['all', 'draft', 'completed', 'cancelled'].includes(stockCountStatus)
+      ) {
+        return res.status(400).json({
+          error: 'stockCountStatus must be all, draft, completed, or cancelled',
+        })
+      }
+
+      const search =
+        typeof req.query.search === 'string' && req.query.search.trim()
+          ? req.query.search.trim()
+          : ''
+
+      const searchPattern = search ? `%${search}%` : null
+      const limit = parseReportLimit(req.query.limit)
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+          SELECT id
+          FROM branches
+          WHERE company_id = $1
+            AND id = $2
+          LIMIT 1;
+          `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      const baseValues = [
+        auth.companyId,
+        branchId || null,
+        dateFrom,
+        dateTo,
+        transferStatus,
+        stockCountStatus,
+        searchPattern,
+      ]
+
+      const limitedValues = [...baseValues, limit]
+
+      const transferScopeSql = `
+        SELECT
+          t.id,
+          t.transfer_number,
+          t.status,
+
+          t.from_branch_id,
+          from_branch.code AS from_branch_code,
+          from_branch.name AS from_branch_name,
+
+          t.to_branch_id,
+          to_branch.code AS to_branch_code,
+          to_branch.name AS to_branch_name,
+
+          t.from_location_id,
+          from_location.code AS from_location_code,
+          from_location.name AS from_location_name,
+
+          t.to_location_id,
+          to_location.code AS to_location_code,
+          to_location.name AS to_location_name,
+
+          COALESCE(item_summary.line_count, 0)::int AS line_count,
+          COALESCE(item_summary.requested_quantity, 0) AS requested_quantity,
+          COALESCE(item_summary.approved_quantity, 0) AS approved_quantity,
+          COALESCE(item_summary.received_quantity, 0) AS received_quantity,
+
+          t.note,
+          t.requested_at,
+          t.approved_at,
+          t.received_at,
+          t.created_at,
+          t.updated_at
+
+        FROM transfers t
+
+        JOIN stock_locations from_location
+          ON from_location.company_id = t.company_id
+          AND from_location.id = t.from_location_id
+
+        JOIN stock_locations to_location
+          ON to_location.company_id = t.company_id
+          AND to_location.id = t.to_location_id
+
+        LEFT JOIN branches from_branch
+          ON from_branch.company_id = t.company_id
+          AND from_branch.id = t.from_branch_id
+
+        LEFT JOIN branches to_branch
+          ON to_branch.company_id = t.company_id
+          AND to_branch.id = t.to_branch_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            COUNT(*)::int AS line_count,
+            COALESCE(SUM(item.requested_quantity), 0) AS requested_quantity,
+            COALESCE(SUM(COALESCE(item.approved_quantity, 0)), 0) AS approved_quantity,
+            COALESCE(SUM(COALESCE(item.received_quantity, 0)), 0) AS received_quantity
+
+          FROM transfer_items item
+
+          WHERE item.company_id = t.company_id
+            AND item.transfer_id = t.id
+        ) item_summary
+          ON TRUE
+
+        WHERE t.company_id = $1
+
+          AND (
+            $2::uuid IS NULL
+            OR t.from_branch_id = $2::uuid
+            OR t.to_branch_id = $2::uuid
+          )
+
+          AND t.requested_at >= $3::date
+
+          AND t.requested_at < ($4::date + INTERVAL '1 day')
+
+          AND (
+            $5::text = 'all'
+            OR t.status = $5::text
+          )
+
+          AND (
+            $7::text IS NULL
+
+            OR t.transfer_number ILIKE $7::text
+
+            OR from_location.name ILIKE $7::text
+            OR from_location.code ILIKE $7::text
+
+            OR to_location.name ILIKE $7::text
+            OR to_location.code ILIKE $7::text
+
+            OR COALESCE(from_branch.name, '') ILIKE $7::text
+            OR COALESCE(to_branch.name, '') ILIKE $7::text
+            OR COALESCE(t.note, '') ILIKE $7::text
+          )
+      `
+
+      const stockCountScopeSql = `
+        SELECT
+          count_doc.id,
+          count_doc.count_number,
+          count_doc.status,
+
+          count_doc.branch_id,
+          branch.code AS branch_code,
+          branch.name AS branch_name,
+
+          count_doc.stock_location_id,
+          location.code AS stock_location_code,
+          location.name AS stock_location_name,
+          location.location_type,
+
+          COALESCE(item_summary.line_count, 0)::int AS line_count,
+          COALESCE(item_summary.counted_line_count, 0)::int AS counted_line_count,
+          COALESCE(item_summary.expected_quantity, 0) AS expected_quantity,
+          COALESCE(item_summary.counted_quantity, 0) AS counted_quantity,
+          COALESCE(item_summary.difference_quantity, 0) AS difference_quantity,
+          COALESCE(item_summary.absolute_difference_quantity, 0) AS absolute_difference_quantity,
+
+          count_doc.notes,
+          count_doc.created_at,
+          count_doc.completed_at,
+          count_doc.cancelled_at,
+          count_doc.updated_at
+
+        FROM inventory_stock_counts count_doc
+
+        JOIN stock_locations location
+          ON location.company_id = count_doc.company_id
+          AND location.id = count_doc.stock_location_id
+
+        LEFT JOIN branches branch
+          ON branch.company_id = count_doc.company_id
+          AND branch.id = count_doc.branch_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            COUNT(*)::int AS line_count,
+
+            COUNT(*) FILTER (
+              WHERE item.counted_quantity IS NOT NULL
+            )::int AS counted_line_count,
+
+            COALESCE(SUM(item.expected_quantity), 0) AS expected_quantity,
+            COALESCE(SUM(COALESCE(item.counted_quantity, 0)), 0) AS counted_quantity,
+            COALESCE(SUM(COALESCE(item.difference_quantity, 0)), 0) AS difference_quantity,
+            COALESCE(SUM(ABS(COALESCE(item.difference_quantity, 0))), 0) AS absolute_difference_quantity
+
+          FROM inventory_stock_count_items item
+
+          WHERE item.company_id = count_doc.company_id
+            AND item.stock_count_id = count_doc.id
+        ) item_summary
+          ON TRUE
+
+        WHERE count_doc.company_id = $1
+
+          AND (
+            $2::uuid IS NULL
+            OR count_doc.branch_id = $2::uuid
+          )
+
+          AND count_doc.created_at >= $3::date
+
+          AND count_doc.created_at < ($4::date + INTERVAL '1 day')
+
+          AND (
+            $6::text = 'all'
+            OR count_doc.status = $6::text
+          )
+
+          AND (
+            $7::text IS NULL
+
+            OR count_doc.count_number ILIKE $7::text
+            OR location.name ILIKE $7::text
+            OR location.code ILIKE $7::text
+            OR COALESCE(branch.name, '') ILIKE $7::text
+            OR COALESCE(count_doc.notes, '') ILIKE $7::text
+          )
+      `
+
+      const [summaryResult, transfersResult, stockCountsResult] =
+        await Promise.all([
+          db.query(
+            `
+            WITH transfer_rows AS (
+              ${transferScopeSql}
+            ),
+
+            stock_count_rows AS (
+              ${stockCountScopeSql}
+            )
+
+            SELECT
+              (SELECT COUNT(*)::int FROM transfer_rows) AS transfer_count,
+
+              (
+                SELECT COUNT(*)::int
+                FROM transfer_rows
+                WHERE status = 'received'
+              ) AS received_transfer_count,
+
+              (
+                SELECT COUNT(*)::int
+                FROM transfer_rows
+                WHERE status = 'cancelled'
+              ) AS cancelled_transfer_count,
+
+              COALESCE(
+                (SELECT SUM(requested_quantity) FROM transfer_rows),
+                0
+              ) AS transfer_requested_quantity,
+
+              COALESCE(
+                (SELECT SUM(approved_quantity) FROM transfer_rows),
+                0
+              ) AS transfer_approved_quantity,
+
+              COALESCE(
+                (SELECT SUM(received_quantity) FROM transfer_rows),
+                0
+              ) AS transfer_received_quantity,
+
+              (SELECT COUNT(*)::int FROM stock_count_rows) AS stock_count_count,
+
+              (
+                SELECT COUNT(*)::int
+                FROM stock_count_rows
+                WHERE status = 'completed'
+              ) AS completed_stock_count_count,
+
+              (
+                SELECT COUNT(*)::int
+                FROM stock_count_rows
+                WHERE status = 'cancelled'
+              ) AS cancelled_stock_count_count,
+
+              COALESCE(
+                (SELECT SUM(expected_quantity) FROM stock_count_rows),
+                0
+              ) AS stock_count_expected_quantity,
+
+              COALESCE(
+                (SELECT SUM(counted_quantity) FROM stock_count_rows),
+                0
+              ) AS stock_count_counted_quantity,
+
+              COALESCE(
+                (SELECT SUM(difference_quantity) FROM stock_count_rows),
+                0
+              ) AS stock_count_difference_quantity,
+
+              COALESCE(
+                (SELECT SUM(absolute_difference_quantity) FROM stock_count_rows),
+                0
+              ) AS stock_count_absolute_difference_quantity;
+            `,
+            baseValues,
+          ),
+
+          db.query(
+            `
+            WITH transfer_rows AS (
+              ${transferScopeSql}
+            )
+
+            SELECT *
+
+            FROM transfer_rows
+
+            ORDER BY
+              requested_at DESC,
+              id DESC
+
+            LIMIT $8;
+            `,
+            limitedValues,
+          ),
+
+          db.query(
+            `
+            WITH stock_count_rows AS (
+              ${stockCountScopeSql}
+            )
+
+            SELECT *
+
+            FROM stock_count_rows
+
+            ORDER BY
+              created_at DESC,
+              id DESC
+
+            LIMIT $8;
+            `,
+            limitedValues,
+          ),
+        ])
+
+      const summaryRow = summaryResult.rows[0] as
+        | Record<string, unknown>
+        | undefined
+
+      const recentTransfers = (
+        transfersResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        id: String(row.id),
+        transferNumber: String(row.transfer_number),
+        status: String(row.status),
+
+        fromBranchId:
+          typeof row.from_branch_id === 'string' ? row.from_branch_id : null,
+        fromBranchCode:
+          typeof row.from_branch_code === 'string'
+            ? row.from_branch_code
+            : null,
+        fromBranchName:
+          typeof row.from_branch_name === 'string'
+            ? row.from_branch_name
+            : null,
+
+        toBranchId:
+          typeof row.to_branch_id === 'string' ? row.to_branch_id : null,
+        toBranchCode:
+          typeof row.to_branch_code === 'string' ? row.to_branch_code : null,
+        toBranchName:
+          typeof row.to_branch_name === 'string' ? row.to_branch_name : null,
+
+        fromLocationId: String(row.from_location_id),
+        fromLocationCode: String(row.from_location_code),
+        fromLocationName: String(row.from_location_name),
+
+        toLocationId: String(row.to_location_id),
+        toLocationCode: String(row.to_location_code),
+        toLocationName: String(row.to_location_name),
+
+        lineCount: Number(row.line_count ?? 0),
+        requestedQuantity: String(row.requested_quantity ?? '0'),
+        approvedQuantity: String(row.approved_quantity ?? '0'),
+        receivedQuantity: String(row.received_quantity ?? '0'),
+
+        note: typeof row.note === 'string' ? row.note : null,
+
+        requestedAt: serializeReportTimestamp(row.requested_at),
+        approvedAt: serializeReportTimestamp(row.approved_at),
+        receivedAt: serializeReportTimestamp(row.received_at),
+        createdAt: serializeReportTimestamp(row.created_at),
+        updatedAt: serializeReportTimestamp(row.updated_at),
+      }))
+
+      const recentStockCounts = (
+        stockCountsResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        id: String(row.id),
+        countNumber: String(row.count_number),
+        status: String(row.status),
+
+        branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+        branchCode:
+          typeof row.branch_code === 'string' ? row.branch_code : null,
+        branchName:
+          typeof row.branch_name === 'string' ? row.branch_name : null,
+
+        stockLocationId: String(row.stock_location_id),
+        stockLocationCode: String(row.stock_location_code),
+        stockLocationName: String(row.stock_location_name),
+        locationType: String(row.location_type),
+
+        lineCount: Number(row.line_count ?? 0),
+        countedLineCount: Number(row.counted_line_count ?? 0),
+
+        expectedQuantity: String(row.expected_quantity ?? '0'),
+        countedQuantity: String(row.counted_quantity ?? '0'),
+        differenceQuantity: String(row.difference_quantity ?? '0'),
+        absoluteDifferenceQuantity: String(
+          row.absolute_difference_quantity ?? '0',
+        ),
+
+        notes: typeof row.notes === 'string' ? row.notes : null,
+
+        createdAt: serializeReportTimestamp(row.created_at),
+        completedAt: serializeReportTimestamp(row.completed_at),
+        cancelledAt: serializeReportTimestamp(row.cancelled_at),
+        updatedAt: serializeReportTimestamp(row.updated_at),
+      }))
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+            branchId: branchId || null,
+            branchSelectionLocked: Boolean(auth.branchId),
+            transferStatus,
+            stockCountStatus,
+            dateFrom,
+            dateTo,
+            days: reportDays,
+            search: search || null,
+            limit,
+          },
+
+          definitions: {
+            transferBasis:
+              'transfers and transfer_items using requested_at as report date',
+            stockCountBasis:
+              'inventory_stock_counts and inventory_stock_count_items using created_at as report date',
+            branchScope:
+              'Transfers match either source or destination branch; stock counts match document branch',
+          },
+
+          summary: {
+            transferCount: Number(summaryRow?.transfer_count ?? 0),
+            receivedTransferCount: Number(
+              summaryRow?.received_transfer_count ?? 0,
+            ),
+            cancelledTransferCount: Number(
+              summaryRow?.cancelled_transfer_count ?? 0,
+            ),
+            transferRequestedQuantity: String(
+              summaryRow?.transfer_requested_quantity ?? '0',
+            ),
+            transferApprovedQuantity: String(
+              summaryRow?.transfer_approved_quantity ?? '0',
+            ),
+            transferReceivedQuantity: String(
+              summaryRow?.transfer_received_quantity ?? '0',
+            ),
+
+            stockCountCount: Number(summaryRow?.stock_count_count ?? 0),
+            completedStockCountCount: Number(
+              summaryRow?.completed_stock_count_count ?? 0,
+            ),
+            cancelledStockCountCount: Number(
+              summaryRow?.cancelled_stock_count_count ?? 0,
+            ),
+            stockCountExpectedQuantity: String(
+              summaryRow?.stock_count_expected_quantity ?? '0',
+            ),
+            stockCountCountedQuantity: String(
+              summaryRow?.stock_count_counted_quantity ?? '0',
+            ),
+            stockCountDifferenceQuantity: String(
+              summaryRow?.stock_count_difference_quantity ?? '0',
+            ),
+            stockCountAbsoluteDifferenceQuantity: String(
+              summaryRow?.stock_count_absolute_difference_quantity ?? '0',
+            ),
+          },
+
+          recentTransfers,
+          recentStockCounts,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
+// GET /api/reports/damage-inspection-stock
+//
+// تقرير مخزون التالف والتفتيش.
+//
+// Query:
+// - dateFrom: YYYY-MM-DD
+// - dateTo: YYYY-MM-DD
+// - branchId?
+// - stockLocationId?
+// - locationType? all | damaged | inspection
+// - search?
+// - limit?
+// ======================================================
+reportsRouter.get(
+  '/api/reports/damage-inspection-stock',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const dateFrom =
+        typeof req.query.dateFrom === 'string' ? req.query.dateFrom.trim() : ''
+
+      const dateTo =
+        typeof req.query.dateTo === 'string' ? req.query.dateTo.trim() : ''
+
+      if (!dateFrom || !isValidReportDate(dateFrom)) {
+        return res.status(400).json({
+          error: 'dateFrom must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (!dateTo || !isValidReportDate(dateTo)) {
+        return res.status(400).json({
+          error: 'dateTo must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (dateFrom > dateTo) {
+        return res.status(400).json({
+          error: 'dateFrom cannot be after dateTo',
+        })
+      }
+
+      const startTimestamp = new Date(`${dateFrom}T00:00:00.000Z`).getTime()
+      const endTimestamp = new Date(`${dateTo}T00:00:00.000Z`).getTime()
+
+      const reportDays =
+        Math.floor((endTimestamp - startTimestamp) / (24 * 60 * 60 * 1000)) + 1
+
+      if (reportDays > 366) {
+        return res.status(400).json({
+          error: 'Report period cannot exceed 366 days',
+        })
+      }
+
+      const requestedBranchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (requestedBranchId && !uuidPattern.test(requestedBranchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      if (
+        auth.branchId &&
+        requestedBranchId &&
+        requestedBranchId !== auth.branchId
+      ) {
+        return res.status(403).json({
+          error: 'Requested branch is outside the authenticated branch scope',
+        })
+      }
+
+      const branchId = auth.branchId || requestedBranchId || ''
+
+      const stockLocationId =
+        typeof req.query.stockLocationId === 'string'
+          ? req.query.stockLocationId.trim().toLowerCase()
+          : ''
+
+      if (stockLocationId && !uuidPattern.test(stockLocationId)) {
+        return res.status(400).json({
+          error: 'stockLocationId is invalid',
+        })
+      }
+
+      const locationType =
+        typeof req.query.locationType === 'string' &&
+        req.query.locationType.trim()
+          ? req.query.locationType.trim().toLowerCase()
+          : 'all'
+
+      if (!['all', 'damaged', 'inspection'].includes(locationType)) {
+        return res.status(400).json({
+          error: 'locationType must be all, damaged, or inspection',
+        })
+      }
+
+      const search =
+        typeof req.query.search === 'string' && req.query.search.trim()
+          ? req.query.search.trim()
+          : ''
+
+      const searchPattern = search ? `%${search}%` : null
+      const limit = parseReportLimit(req.query.limit)
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+          SELECT id
+          FROM branches
+          WHERE company_id = $1
+            AND id = $2
+          LIMIT 1;
+          `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      if (stockLocationId) {
+        const locationResult = await db.query(
+          `
+          SELECT id
+          FROM stock_locations
+          WHERE company_id = $1
+            AND id = $2
+            AND location_type IN ('damaged', 'inspection')
+            AND (
+              $3::uuid IS NULL
+              OR branch_id = $3::uuid
+            )
+          LIMIT 1;
+          `,
+          [auth.companyId, stockLocationId, branchId || null],
+        )
+
+        if ((locationResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error:
+              'Damage or inspection stock location was not found in the authenticated scope',
+          })
+        }
+      }
+
+      const baseValues = [
+        auth.companyId,
+        branchId || null,
+        stockLocationId || null,
+        locationType,
+        dateFrom,
+        dateTo,
+        searchPattern,
+      ]
+
+      const limitedValues = [...baseValues, limit]
+
+      const currentScopeSql = `
+        SELECT
+          location.id AS stock_location_id,
+          location.code AS stock_location_code,
+          location.name AS stock_location_name,
+          location.location_type,
+
+          location.branch_id,
+
+          branch.code AS branch_code,
+          branch.name AS branch_name,
+
+          sb.variant_id,
+          pv.product_id,
+          p.name AS product_name,
+          pv.sku,
+          pv.primary_barcode,
+
+          size.name AS size_name,
+          color.name AS color_name,
+          category.name AS category_name,
+          brand.name AS brand_name,
+
+          sb.quantity,
+          COALESCE(sb.average_cost, 0) AS average_cost,
+
+          ROUND(
+            (
+              sb.quantity *
+              COALESCE(sb.average_cost, 0)
+            )::numeric,
+            2
+          ) AS inventory_value
+
+        FROM stock_balances sb
+
+        JOIN stock_locations location
+          ON location.company_id = sb.company_id
+          AND location.id = sb.stock_location_id
+
+        LEFT JOIN branches branch
+          ON branch.company_id = sb.company_id
+          AND branch.id = location.branch_id
+
+        JOIN product_variants pv
+          ON pv.company_id = sb.company_id
+          AND pv.id = sb.variant_id
+
+        JOIN products p
+          ON p.company_id = pv.company_id
+          AND p.id = pv.product_id
+
+        LEFT JOIN fashion_sizes size
+          ON size.company_id = pv.company_id
+          AND size.id = pv.size_id
+
+        LEFT JOIN fashion_colors color
+          ON color.company_id = pv.company_id
+          AND color.id = pv.color_id
+
+        LEFT JOIN product_categories category
+          ON category.company_id = p.company_id
+          AND category.id = p.category_id
+
+        LEFT JOIN brands brand
+          ON brand.company_id = p.company_id
+          AND brand.id = p.brand_id
+
+        WHERE sb.company_id = $1
+
+          AND location.location_type IN ('damaged', 'inspection')
+
+          AND (
+            $2::uuid IS NULL
+            OR location.branch_id = $2::uuid
+          )
+
+          AND (
+            $3::uuid IS NULL
+            OR location.id = $3::uuid
+          )
+
+          AND (
+            $4::text = 'all'
+            OR location.location_type = $4::text
+          )
+
+          AND (
+            $7::text IS NULL
+
+            OR p.name ILIKE $7::text
+            OR pv.sku ILIKE $7::text
+            OR COALESCE(pv.primary_barcode, '') ILIKE $7::text
+            OR location.name ILIKE $7::text
+            OR location.code ILIKE $7::text
+            OR COALESCE(branch.name, '') ILIKE $7::text
+            OR COALESCE(category.name, '') ILIKE $7::text
+            OR COALESCE(brand.name, '') ILIKE $7::text
+          )
+      `
+
+      const movementScopeSql = `
+        SELECT
+          sm.id,
+          sm.stock_location_id,
+
+          location.code AS stock_location_code,
+          location.name AS stock_location_name,
+          location.location_type,
+
+          location.branch_id,
+
+          branch.code AS branch_code,
+          branch.name AS branch_name,
+
+          sm.variant_id,
+          pv.product_id,
+          p.name AS product_name,
+          pv.sku,
+          pv.primary_barcode,
+
+          size.name AS size_name,
+          color.name AS color_name,
+          category.name AS category_name,
+          brand.name AS brand_name,
+
+          sm.movement_type,
+          sm.quantity,
+          sm.quantity_before,
+          sm.quantity_after,
+
+          sm.unit_cost,
+          sm.average_cost_before,
+          sm.average_cost_after,
+          sm.inventory_value_before,
+          sm.inventory_value_after,
+
+          sm.reference_type,
+          sm.reference_id,
+          sm.note,
+          sm.created_at
+
+        FROM stock_movements sm
+
+        JOIN stock_locations location
+          ON location.company_id = sm.company_id
+          AND location.id = sm.stock_location_id
+
+        LEFT JOIN branches branch
+          ON branch.company_id = sm.company_id
+          AND branch.id = location.branch_id
+
+        JOIN product_variants pv
+          ON pv.company_id = sm.company_id
+          AND pv.id = sm.variant_id
+
+        JOIN products p
+          ON p.company_id = pv.company_id
+          AND p.id = pv.product_id
+
+        LEFT JOIN fashion_sizes size
+          ON size.company_id = pv.company_id
+          AND size.id = pv.size_id
+
+        LEFT JOIN fashion_colors color
+          ON color.company_id = pv.company_id
+          AND color.id = pv.color_id
+
+        LEFT JOIN product_categories category
+          ON category.company_id = p.company_id
+          AND category.id = p.category_id
+
+        LEFT JOIN brands brand
+          ON brand.company_id = p.company_id
+          AND brand.id = p.brand_id
+
+        WHERE sm.company_id = $1
+
+          AND location.location_type IN ('damaged', 'inspection')
+
+          AND (
+            $2::uuid IS NULL
+            OR location.branch_id = $2::uuid
+          )
+
+          AND (
+            $3::uuid IS NULL
+            OR location.id = $3::uuid
+          )
+
+          AND (
+            $4::text = 'all'
+            OR location.location_type = $4::text
+          )
+
+          AND sm.created_at >= $5::date
+
+          AND sm.created_at < ($6::date + INTERVAL '1 day')
+
+          AND (
+            $7::text IS NULL
+
+            OR p.name ILIKE $7::text
+            OR pv.sku ILIKE $7::text
+            OR COALESCE(pv.primary_barcode, '') ILIKE $7::text
+            OR location.name ILIKE $7::text
+            OR location.code ILIKE $7::text
+            OR COALESCE(branch.name, '') ILIKE $7::text
+            OR COALESCE(category.name, '') ILIKE $7::text
+            OR COALESCE(brand.name, '') ILIKE $7::text
+            OR COALESCE(sm.note, '') ILIKE $7::text
+          )
+      `
+
+      const [summaryResult, byLocationResult, topItemsResult, movementsResult] =
+        await Promise.all([
+          db.query(
+            `
+            WITH current_rows AS (
+              ${currentScopeSql}
+            ),
+
+            movement_rows AS (
+              ${movementScopeSql}
+            )
+
+            SELECT
+              (SELECT COUNT(DISTINCT stock_location_id)::int FROM current_rows)
+                AS current_location_count,
+
+              (SELECT COUNT(DISTINCT variant_id)::int FROM current_rows)
+                AS current_variant_count,
+
+              COALESCE(
+                (SELECT SUM(quantity) FROM current_rows),
+                0
+              ) AS current_quantity,
+
+              COALESCE(
+                (SELECT SUM(inventory_value) FROM current_rows),
+                0
+              ) AS current_inventory_value,
+
+              COALESCE(
+                (
+                  SELECT SUM(quantity)
+                  FROM current_rows
+                  WHERE location_type = 'damaged'
+                ),
+                0
+              ) AS damaged_quantity,
+
+              COALESCE(
+                (
+                  SELECT SUM(inventory_value)
+                  FROM current_rows
+                  WHERE location_type = 'damaged'
+                ),
+                0
+              ) AS damaged_inventory_value,
+
+              COALESCE(
+                (
+                  SELECT SUM(quantity)
+                  FROM current_rows
+                  WHERE location_type = 'inspection'
+                ),
+                0
+              ) AS inspection_quantity,
+
+              COALESCE(
+                (
+                  SELECT SUM(inventory_value)
+                  FROM current_rows
+                  WHERE location_type = 'inspection'
+                ),
+                0
+              ) AS inspection_inventory_value,
+
+              (SELECT COUNT(*)::int FROM movement_rows) AS movement_count,
+
+              COALESCE(
+                (
+                  SELECT SUM(
+                    CASE
+                      WHEN quantity > 0 THEN quantity
+                      ELSE 0
+                    END
+                  )
+                  FROM movement_rows
+                ),
+                0
+              ) AS incoming_quantity,
+
+              COALESCE(
+                (
+                  SELECT SUM(
+                    CASE
+                      WHEN quantity < 0 THEN ABS(quantity)
+                      ELSE 0
+                    END
+                  )
+                  FROM movement_rows
+                ),
+                0
+              ) AS outgoing_quantity,
+
+              COALESCE(
+                (SELECT SUM(quantity) FROM movement_rows),
+                0
+              ) AS net_quantity,
+
+              (
+                SELECT COUNT(*)::int
+                FROM movement_rows
+                WHERE movement_type = 'damage'
+              ) AS damage_movement_count;
+            `,
+            baseValues,
+          ),
+
+          db.query(
+            `
+            WITH current_rows AS (
+              ${currentScopeSql}
+            )
+
+            SELECT
+              stock_location_id,
+              stock_location_code,
+              stock_location_name,
+              location_type,
+
+              branch_id,
+              branch_code,
+              branch_name,
+
+              COUNT(DISTINCT variant_id)::int AS variant_count,
+              COALESCE(SUM(quantity), 0) AS quantity,
+              COALESCE(SUM(inventory_value), 0) AS inventory_value
+
+            FROM current_rows
+
+            GROUP BY
+              stock_location_id,
+              stock_location_code,
+              stock_location_name,
+              location_type,
+              branch_id,
+              branch_code,
+              branch_name
+
+            ORDER BY
+              inventory_value DESC,
+              stock_location_name ASC;
+            `,
+            baseValues,
+          ),
+
+          db.query(
+            `
+            WITH current_rows AS (
+              ${currentScopeSql}
+            )
+
+            SELECT *
+
+            FROM current_rows
+
+            ORDER BY
+              inventory_value DESC,
+              quantity DESC,
+              product_name ASC,
+              sku ASC
+
+            LIMIT $8;
+            `,
+            limitedValues,
+          ),
+
+          db.query(
+            `
+            WITH movement_rows AS (
+              ${movementScopeSql}
+            )
+
+            SELECT *
+
+            FROM movement_rows
+
+            ORDER BY
+              created_at DESC,
+              id DESC
+
+            LIMIT $8;
+            `,
+            limitedValues,
+          ),
+        ])
+
+      const summaryRow = summaryResult.rows[0] as
+        | Record<string, unknown>
+        | undefined
+
+      const byLocation = (
+        byLocationResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        stockLocationId: String(row.stock_location_id),
+        stockLocationCode: String(row.stock_location_code),
+        stockLocationName: String(row.stock_location_name),
+        locationType: String(row.location_type),
+
+        branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+        branchCode:
+          typeof row.branch_code === 'string' ? row.branch_code : null,
+        branchName:
+          typeof row.branch_name === 'string' ? row.branch_name : null,
+
+        variantCount: Number(row.variant_count ?? 0),
+        quantity: String(row.quantity ?? '0'),
+        inventoryValue: String(row.inventory_value ?? '0'),
+      }))
+
+      const topItems = (
+        topItemsResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        stockLocationId: String(row.stock_location_id),
+        stockLocationCode: String(row.stock_location_code),
+        stockLocationName: String(row.stock_location_name),
+        locationType: String(row.location_type),
+
+        branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+        branchName:
+          typeof row.branch_name === 'string' ? row.branch_name : null,
+
+        variantId: String(row.variant_id),
+        productId: String(row.product_id),
+        productName: String(row.product_name),
+        sku: String(row.sku),
+
+        primaryBarcode:
+          typeof row.primary_barcode === 'string' ? row.primary_barcode : null,
+
+        sizeName: typeof row.size_name === 'string' ? row.size_name : null,
+        colorName: typeof row.color_name === 'string' ? row.color_name : null,
+        categoryName:
+          typeof row.category_name === 'string' ? row.category_name : null,
+        brandName: typeof row.brand_name === 'string' ? row.brand_name : null,
+
+        quantity: String(row.quantity ?? '0'),
+        averageCost: String(row.average_cost ?? '0'),
+        inventoryValue: String(row.inventory_value ?? '0'),
+      }))
+
+      const recentMovements = (
+        movementsResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        id: String(row.id),
+
+        stockLocationId: String(row.stock_location_id),
+        stockLocationCode: String(row.stock_location_code),
+        stockLocationName: String(row.stock_location_name),
+        locationType: String(row.location_type),
+
+        branchId: typeof row.branch_id === 'string' ? row.branch_id : null,
+        branchName:
+          typeof row.branch_name === 'string' ? row.branch_name : null,
+
+        variantId: String(row.variant_id),
+        productId: String(row.product_id),
+        productName: String(row.product_name),
+        sku: String(row.sku),
+
+        primaryBarcode:
+          typeof row.primary_barcode === 'string' ? row.primary_barcode : null,
+
+        sizeName: typeof row.size_name === 'string' ? row.size_name : null,
+        colorName: typeof row.color_name === 'string' ? row.color_name : null,
+        categoryName:
+          typeof row.category_name === 'string' ? row.category_name : null,
+        brandName: typeof row.brand_name === 'string' ? row.brand_name : null,
+
+        movementType: String(row.movement_type),
+        quantity: String(row.quantity ?? '0'),
+
+        quantityBefore:
+          row.quantity_before === null || row.quantity_before === undefined
+            ? null
+            : String(row.quantity_before),
+
+        quantityAfter:
+          row.quantity_after === null || row.quantity_after === undefined
+            ? null
+            : String(row.quantity_after),
+
+        unitCost:
+          row.unit_cost === null || row.unit_cost === undefined
+            ? null
+            : String(row.unit_cost),
+
+        averageCostBefore:
+          row.average_cost_before === null ||
+          row.average_cost_before === undefined
+            ? null
+            : String(row.average_cost_before),
+
+        averageCostAfter:
+          row.average_cost_after === null ||
+          row.average_cost_after === undefined
+            ? null
+            : String(row.average_cost_after),
+
+        inventoryValueBefore:
+          row.inventory_value_before === null ||
+          row.inventory_value_before === undefined
+            ? null
+            : String(row.inventory_value_before),
+
+        inventoryValueAfter:
+          row.inventory_value_after === null ||
+          row.inventory_value_after === undefined
+            ? null
+            : String(row.inventory_value_after),
+
+        referenceType:
+          typeof row.reference_type === 'string' ? row.reference_type : null,
+
+        referenceId:
+          typeof row.reference_id === 'string' ? row.reference_id : null,
+
+        note: typeof row.note === 'string' ? row.note : null,
+
+        createdAt: serializeReportTimestamp(row.created_at),
+      }))
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+            branchId: branchId || null,
+            branchSelectionLocked: Boolean(auth.branchId),
+            stockLocationId: stockLocationId || null,
+            locationType,
+            dateFrom,
+            dateTo,
+            days: reportDays,
+            search: search || null,
+            limit,
+          },
+
+          definitions: {
+            currentStockBasis:
+              'stock_balances for stock_locations with location_type damaged or inspection',
+            movementBasis:
+              'stock_movements in damaged or inspection locations within date range',
+            inventoryValueFormula: 'quantity * averageCost',
+          },
+
+          summary: {
+            currentLocationCount: Number(
+              summaryRow?.current_location_count ?? 0,
+            ),
+            currentVariantCount: Number(summaryRow?.current_variant_count ?? 0),
+            currentQuantity: String(summaryRow?.current_quantity ?? '0'),
+            currentInventoryValue: String(
+              summaryRow?.current_inventory_value ?? '0',
+            ),
+            damagedQuantity: String(summaryRow?.damaged_quantity ?? '0'),
+            damagedInventoryValue: String(
+              summaryRow?.damaged_inventory_value ?? '0',
+            ),
+            inspectionQuantity: String(summaryRow?.inspection_quantity ?? '0'),
+            inspectionInventoryValue: String(
+              summaryRow?.inspection_inventory_value ?? '0',
+            ),
+            movementCount: Number(summaryRow?.movement_count ?? 0),
+            incomingQuantity: String(summaryRow?.incoming_quantity ?? '0'),
+            outgoingQuantity: String(summaryRow?.outgoing_quantity ?? '0'),
+            netQuantity: String(summaryRow?.net_quantity ?? '0'),
+            damageMovementCount: Number(summaryRow?.damage_movement_count ?? 0),
+          },
+
+          byLocation,
+          topItems,
+          recentMovements,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
 // GET /api/reports/inventory-shortages
 //
 // تقرير نواقص المخزون حسب حدود إعادة الطلب.
