@@ -407,6 +407,7 @@ Current reporting integrations include:
 - Profitability reporting through `/api/reports/profitability`.
 - Stock valuation reporting through `/api/reports/stock-valuation`.
 - Inventory movement ledger reporting through `/api/reports/inventory-movement-ledger`.
+- Purchase and supplier reporting through `/api/reports/purchase-supplier-summary`.
 
 Reports must respect:
 
