@@ -410,6 +410,8 @@ Current reporting integrations include:
 - Purchase and supplier reporting through `/api/reports/purchase-supplier-summary`.
 - Transfer and stock-count reporting through `/api/reports/transfer-stock-count-summary`.
 - Damaged and inspection stock reporting through `/api/reports/damage-inspection-stock`.
+- Cashier shift and cash-difference reporting through `/api/reports/cashier-shift-summary`.
+- Fashion size/color/season analysis through `/api/reports/fashion-analysis`.
 
 Reports must respect:
 

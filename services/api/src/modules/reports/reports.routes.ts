@@ -7351,6 +7351,1237 @@ reportsRouter.get(
 )
 
 // ======================================================
+// GET /api/reports/cashier-shift-summary
+//
+// تقرير ورديات الكاشير وفروق الخزنة.
+//
+// Query:
+// - dateFrom: YYYY-MM-DD
+// - dateTo: YYYY-MM-DD
+// - branchId?
+// - cashierId?
+// - status? all | open | closed
+// - search?
+// - limit?
+// ======================================================
+reportsRouter.get(
+  '/api/reports/cashier-shift-summary',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const dateFrom =
+        typeof req.query.dateFrom === 'string' ? req.query.dateFrom.trim() : ''
+
+      const dateTo =
+        typeof req.query.dateTo === 'string' ? req.query.dateTo.trim() : ''
+
+      if (!dateFrom || !isValidReportDate(dateFrom)) {
+        return res.status(400).json({
+          error: 'dateFrom must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (!dateTo || !isValidReportDate(dateTo)) {
+        return res.status(400).json({
+          error: 'dateTo must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (dateFrom > dateTo) {
+        return res.status(400).json({
+          error: 'dateFrom cannot be after dateTo',
+        })
+      }
+
+      const startTimestamp = new Date(`${dateFrom}T00:00:00.000Z`).getTime()
+      const endTimestamp = new Date(`${dateTo}T00:00:00.000Z`).getTime()
+
+      const reportDays =
+        Math.floor((endTimestamp - startTimestamp) / (24 * 60 * 60 * 1000)) + 1
+
+      if (reportDays > 366) {
+        return res.status(400).json({
+          error: 'Report period cannot exceed 366 days',
+        })
+      }
+
+      const requestedBranchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (requestedBranchId && !uuidPattern.test(requestedBranchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      if (
+        auth.branchId &&
+        requestedBranchId &&
+        requestedBranchId !== auth.branchId
+      ) {
+        return res.status(403).json({
+          error: 'Requested branch is outside the authenticated branch scope',
+        })
+      }
+
+      const branchId = auth.branchId || requestedBranchId || ''
+
+      const cashierId =
+        typeof req.query.cashierId === 'string'
+          ? req.query.cashierId.trim().toLowerCase()
+          : ''
+
+      if (cashierId && !uuidPattern.test(cashierId)) {
+        return res.status(400).json({
+          error: 'cashierId is invalid',
+        })
+      }
+
+      const shiftStatus =
+        typeof req.query.status === 'string' && req.query.status.trim()
+          ? req.query.status.trim().toLowerCase()
+          : 'all'
+
+      if (!['all', 'open', 'closed'].includes(shiftStatus)) {
+        return res.status(400).json({
+          error: 'status must be all, open, or closed',
+        })
+      }
+
+      const search =
+        typeof req.query.search === 'string' && req.query.search.trim()
+          ? req.query.search.trim()
+          : ''
+
+      const searchPattern = search ? `%${search}%` : null
+      const limit = parseReportLimit(req.query.limit)
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+          SELECT id
+          FROM branches
+          WHERE company_id = $1
+            AND id = $2
+          LIMIT 1;
+          `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      if (cashierId) {
+        const cashierResult = await db.query(
+          `
+          SELECT id
+          FROM users
+          WHERE company_id = $1
+            AND id = $2
+          LIMIT 1;
+          `,
+          [auth.companyId, cashierId],
+        )
+
+        if ((cashierResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Cashier was not found in the authenticated company',
+          })
+        }
+      }
+
+      const baseValues = [
+        auth.companyId,
+        branchId || null,
+        cashierId || null,
+        shiftStatus,
+        dateFrom,
+        dateTo,
+        searchPattern,
+      ]
+
+      const limitedValues = [...baseValues, limit]
+
+      const shiftScopeSql = `
+        SELECT
+          shift.id,
+          shift.branch_id,
+
+          branch.code AS branch_code,
+          branch.name AS branch_name,
+
+          shift.cashier_id,
+
+          cashier.full_name AS cashier_name,
+          cashier.username AS cashier_username,
+
+          shift.shift_number,
+          shift.status,
+
+          shift.opened_at,
+          shift.closed_at,
+
+          shift.opening_cash,
+          shift.closing_cash,
+          shift.expected_cash,
+          shift.difference,
+
+          shift.net_sales_cash,
+          shift.cash_returns,
+          shift.net_exchange_cash,
+
+          shift.sales_count,
+          shift.voided_sales_count,
+          shift.returns_count,
+          shift.exchanges_count,
+
+          shift.pos_device_id,
+          shift.pos_cashier_grant_id,
+
+          shift.closed_by,
+
+          closed_user.full_name AS closed_by_name,
+          closed_user.username AS closed_by_username,
+
+          shift.closing_note,
+          shift.settlement_snapshot,
+          shift.created_at
+
+        FROM cashier_shifts shift
+
+        JOIN branches branch
+          ON branch.company_id = shift.company_id
+          AND branch.id = shift.branch_id
+
+        JOIN users cashier
+          ON cashier.company_id = shift.company_id
+          AND cashier.id = shift.cashier_id
+
+        LEFT JOIN users closed_user
+          ON closed_user.company_id = shift.company_id
+          AND closed_user.id = shift.closed_by
+
+        WHERE shift.company_id = $1
+
+          AND (
+            $2::uuid IS NULL
+            OR shift.branch_id = $2::uuid
+          )
+
+          AND (
+            $3::uuid IS NULL
+            OR shift.cashier_id = $3::uuid
+          )
+
+          AND (
+            $4::text = 'all'
+            OR shift.status = $4::text
+          )
+
+          AND shift.opened_at >= $5::date
+
+          AND shift.opened_at < ($6::date + INTERVAL '1 day')
+
+          AND (
+            $7::text IS NULL
+
+            OR shift.shift_number ILIKE $7::text
+            OR branch.name ILIKE $7::text
+            OR branch.code ILIKE $7::text
+            OR cashier.full_name ILIKE $7::text
+            OR cashier.username ILIKE $7::text
+            OR COALESCE(shift.closing_note, '') ILIKE $7::text
+          )
+      `
+
+      const [summaryResult, byCashierResult, shiftsResult] = await Promise.all([
+        db.query(
+          `
+            WITH shift_rows AS (
+              ${shiftScopeSql}
+            )
+
+            SELECT
+              COUNT(*)::int AS shift_count,
+
+              COUNT(*) FILTER (
+                WHERE status = 'open'
+              )::int AS open_shift_count,
+
+              COUNT(*) FILTER (
+                WHERE status = 'closed'
+              )::int AS closed_shift_count,
+
+              COALESCE(SUM(opening_cash), 0) AS opening_cash_total,
+              COALESCE(SUM(COALESCE(closing_cash, 0)), 0) AS closing_cash_total,
+              COALESCE(SUM(COALESCE(expected_cash, 0)), 0) AS expected_cash_total,
+              COALESCE(SUM(COALESCE(difference, 0)), 0) AS cash_difference_total,
+
+              COALESCE(
+                SUM(
+                  CASE
+                    WHEN COALESCE(difference, 0) > 0
+                    THEN difference
+                    ELSE 0
+                  END
+                ),
+                0
+              ) AS cash_over_total,
+
+              COALESCE(
+                SUM(
+                  CASE
+                    WHEN COALESCE(difference, 0) < 0
+                    THEN ABS(difference)
+                    ELSE 0
+                  END
+                ),
+                0
+              ) AS cash_short_total,
+
+              COALESCE(SUM(COALESCE(net_sales_cash, 0)), 0) AS net_sales_cash_total,
+              COALESCE(SUM(COALESCE(cash_returns, 0)), 0) AS cash_returns_total,
+              COALESCE(SUM(COALESCE(net_exchange_cash, 0)), 0) AS net_exchange_cash_total,
+
+              COALESCE(SUM(COALESCE(sales_count, 0)), 0)::int AS sales_count,
+              COALESCE(SUM(COALESCE(voided_sales_count, 0)), 0)::int AS voided_sales_count,
+              COALESCE(SUM(COALESCE(returns_count, 0)), 0)::int AS returns_count,
+              COALESCE(SUM(COALESCE(exchanges_count, 0)), 0)::int AS exchanges_count
+
+            FROM shift_rows;
+            `,
+          baseValues,
+        ),
+
+        db.query(
+          `
+            WITH shift_rows AS (
+              ${shiftScopeSql}
+            )
+
+            SELECT
+              cashier_id,
+              cashier_name,
+              cashier_username,
+
+              COUNT(*)::int AS shift_count,
+
+              COUNT(*) FILTER (
+                WHERE status = 'open'
+              )::int AS open_shift_count,
+
+              COUNT(*) FILTER (
+                WHERE status = 'closed'
+              )::int AS closed_shift_count,
+
+              COALESCE(SUM(opening_cash), 0) AS opening_cash_total,
+              COALESCE(SUM(COALESCE(closing_cash, 0)), 0) AS closing_cash_total,
+              COALESCE(SUM(COALESCE(expected_cash, 0)), 0) AS expected_cash_total,
+              COALESCE(SUM(COALESCE(difference, 0)), 0) AS cash_difference_total,
+
+              COALESCE(SUM(COALESCE(net_sales_cash, 0)), 0) AS net_sales_cash_total,
+              COALESCE(SUM(COALESCE(cash_returns, 0)), 0) AS cash_returns_total,
+              COALESCE(SUM(COALESCE(net_exchange_cash, 0)), 0) AS net_exchange_cash_total
+
+            FROM shift_rows
+
+            GROUP BY
+              cashier_id,
+              cashier_name,
+              cashier_username
+
+            ORDER BY
+              ABS(COALESCE(SUM(COALESCE(difference, 0)), 0)) DESC,
+              cashier_name ASC;
+            `,
+          baseValues,
+        ),
+
+        db.query(
+          `
+            WITH shift_rows AS (
+              ${shiftScopeSql}
+            )
+
+            SELECT *
+
+            FROM shift_rows
+
+            ORDER BY
+              opened_at DESC,
+              id DESC
+
+            LIMIT $8;
+            `,
+          limitedValues,
+        ),
+      ])
+
+      const summaryRow = summaryResult.rows[0] as
+        | Record<string, unknown>
+        | undefined
+
+      const byCashier = (
+        byCashierResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        cashierId: String(row.cashier_id),
+        cashierName: String(row.cashier_name),
+        cashierUsername:
+          typeof row.cashier_username === 'string'
+            ? row.cashier_username
+            : null,
+
+        shiftCount: Number(row.shift_count ?? 0),
+        openShiftCount: Number(row.open_shift_count ?? 0),
+        closedShiftCount: Number(row.closed_shift_count ?? 0),
+
+        openingCashTotal: String(row.opening_cash_total ?? '0'),
+        closingCashTotal: String(row.closing_cash_total ?? '0'),
+        expectedCashTotal: String(row.expected_cash_total ?? '0'),
+        cashDifferenceTotal: String(row.cash_difference_total ?? '0'),
+
+        netSalesCashTotal: String(row.net_sales_cash_total ?? '0'),
+        cashReturnsTotal: String(row.cash_returns_total ?? '0'),
+        netExchangeCashTotal: String(row.net_exchange_cash_total ?? '0'),
+      }))
+
+      const recentShifts = (
+        shiftsResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        id: String(row.id),
+
+        branchId: String(row.branch_id),
+        branchCode: String(row.branch_code),
+        branchName: String(row.branch_name),
+
+        cashierId: String(row.cashier_id),
+        cashierName: String(row.cashier_name),
+        cashierUsername:
+          typeof row.cashier_username === 'string'
+            ? row.cashier_username
+            : null,
+
+        shiftNumber: String(row.shift_number),
+        status: String(row.status),
+
+        openedAt: serializeReportTimestamp(row.opened_at),
+        closedAt: serializeReportTimestamp(row.closed_at),
+
+        openingCash: String(row.opening_cash ?? '0'),
+
+        closingCash:
+          row.closing_cash === null || row.closing_cash === undefined
+            ? null
+            : String(row.closing_cash),
+
+        expectedCash:
+          row.expected_cash === null || row.expected_cash === undefined
+            ? null
+            : String(row.expected_cash),
+
+        difference:
+          row.difference === null || row.difference === undefined
+            ? null
+            : String(row.difference),
+
+        netSalesCash:
+          row.net_sales_cash === null || row.net_sales_cash === undefined
+            ? null
+            : String(row.net_sales_cash),
+
+        cashReturns:
+          row.cash_returns === null || row.cash_returns === undefined
+            ? null
+            : String(row.cash_returns),
+
+        netExchangeCash:
+          row.net_exchange_cash === null || row.net_exchange_cash === undefined
+            ? null
+            : String(row.net_exchange_cash),
+
+        salesCount: Number(row.sales_count ?? 0),
+        voidedSalesCount: Number(row.voided_sales_count ?? 0),
+        returnsCount: Number(row.returns_count ?? 0),
+        exchangesCount: Number(row.exchanges_count ?? 0),
+
+        posDeviceId:
+          typeof row.pos_device_id === 'string' ? row.pos_device_id : null,
+
+        posCashierGrantId:
+          typeof row.pos_cashier_grant_id === 'string'
+            ? row.pos_cashier_grant_id
+            : null,
+
+        closedBy: typeof row.closed_by === 'string' ? row.closed_by : null,
+
+        closedByName:
+          typeof row.closed_by_name === 'string' ? row.closed_by_name : null,
+
+        closedByUsername:
+          typeof row.closed_by_username === 'string'
+            ? row.closed_by_username
+            : null,
+
+        closingNote:
+          typeof row.closing_note === 'string' ? row.closing_note : null,
+
+        settlementSnapshot:
+          row.settlement_snapshot === null ||
+          row.settlement_snapshot === undefined
+            ? null
+            : row.settlement_snapshot,
+
+        createdAt: serializeReportTimestamp(row.created_at),
+      }))
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+            branchId: branchId || null,
+            branchSelectionLocked: Boolean(auth.branchId),
+            cashierId: cashierId || null,
+            status: shiftStatus,
+            dateFrom,
+            dateTo,
+            days: reportDays,
+            search: search || null,
+            limit,
+          },
+
+          definitions: {
+            reportDateBasis: 'cashier_shifts.opened_at',
+            cashDifferenceFormula: 'closing_cash - expected_cash',
+            settlementSnapshotBasis:
+              'cashier_shifts settlement columns captured at shift close',
+          },
+
+          summary: {
+            shiftCount: Number(summaryRow?.shift_count ?? 0),
+            openShiftCount: Number(summaryRow?.open_shift_count ?? 0),
+            closedShiftCount: Number(summaryRow?.closed_shift_count ?? 0),
+
+            openingCashTotal: String(summaryRow?.opening_cash_total ?? '0'),
+            closingCashTotal: String(summaryRow?.closing_cash_total ?? '0'),
+            expectedCashTotal: String(summaryRow?.expected_cash_total ?? '0'),
+            cashDifferenceTotal: String(
+              summaryRow?.cash_difference_total ?? '0',
+            ),
+            cashOverTotal: String(summaryRow?.cash_over_total ?? '0'),
+            cashShortTotal: String(summaryRow?.cash_short_total ?? '0'),
+
+            netSalesCashTotal: String(summaryRow?.net_sales_cash_total ?? '0'),
+            cashReturnsTotal: String(summaryRow?.cash_returns_total ?? '0'),
+            netExchangeCashTotal: String(
+              summaryRow?.net_exchange_cash_total ?? '0',
+            ),
+
+            salesCount: Number(summaryRow?.sales_count ?? 0),
+            voidedSalesCount: Number(summaryRow?.voided_sales_count ?? 0),
+            returnsCount: Number(summaryRow?.returns_count ?? 0),
+            exchangesCount: Number(summaryRow?.exchanges_count ?? 0),
+          },
+
+          byCashier,
+          recentShifts,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
+// GET /api/reports/fashion-analysis
+//
+// تحليل الفاشون حسب المقاس واللون والموسم.
+//
+// Query:
+// - dateFrom: YYYY-MM-DD
+// - dateTo: YYYY-MM-DD
+// - branchId?
+// - sizeId?
+// - colorId?
+// - seasonId?
+// - search?
+// - limit?
+// ======================================================
+reportsRouter.get(
+  '/api/reports/fashion-analysis',
+
+  async (req, res, next) => {
+    try {
+      const auth = getAuthContext(res)
+
+      const dateFrom =
+        typeof req.query.dateFrom === 'string' ? req.query.dateFrom.trim() : ''
+
+      const dateTo =
+        typeof req.query.dateTo === 'string' ? req.query.dateTo.trim() : ''
+
+      if (!dateFrom || !isValidReportDate(dateFrom)) {
+        return res.status(400).json({
+          error: 'dateFrom must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (!dateTo || !isValidReportDate(dateTo)) {
+        return res.status(400).json({
+          error: 'dateTo must be a valid YYYY-MM-DD date',
+        })
+      }
+
+      if (dateFrom > dateTo) {
+        return res.status(400).json({
+          error: 'dateFrom cannot be after dateTo',
+        })
+      }
+
+      const startTimestamp = new Date(`${dateFrom}T00:00:00.000Z`).getTime()
+      const endTimestamp = new Date(`${dateTo}T00:00:00.000Z`).getTime()
+
+      const reportDays =
+        Math.floor((endTimestamp - startTimestamp) / (24 * 60 * 60 * 1000)) + 1
+
+      if (reportDays > 366) {
+        return res.status(400).json({
+          error: 'Report period cannot exceed 366 days',
+        })
+      }
+
+      const requestedBranchId =
+        typeof req.query.branchId === 'string'
+          ? req.query.branchId.trim().toLowerCase()
+          : ''
+
+      if (requestedBranchId && !uuidPattern.test(requestedBranchId)) {
+        return res.status(400).json({
+          error: 'branchId is invalid',
+        })
+      }
+
+      if (
+        auth.branchId &&
+        requestedBranchId &&
+        requestedBranchId !== auth.branchId
+      ) {
+        return res.status(403).json({
+          error: 'Requested branch is outside the authenticated branch scope',
+        })
+      }
+
+      const branchId = auth.branchId || requestedBranchId || ''
+
+      const sizeId =
+        typeof req.query.sizeId === 'string'
+          ? req.query.sizeId.trim().toLowerCase()
+          : ''
+
+      if (sizeId && !uuidPattern.test(sizeId)) {
+        return res.status(400).json({
+          error: 'sizeId is invalid',
+        })
+      }
+
+      const colorId =
+        typeof req.query.colorId === 'string'
+          ? req.query.colorId.trim().toLowerCase()
+          : ''
+
+      if (colorId && !uuidPattern.test(colorId)) {
+        return res.status(400).json({
+          error: 'colorId is invalid',
+        })
+      }
+
+      const seasonId =
+        typeof req.query.seasonId === 'string'
+          ? req.query.seasonId.trim().toLowerCase()
+          : ''
+
+      if (seasonId && !uuidPattern.test(seasonId)) {
+        return res.status(400).json({
+          error: 'seasonId is invalid',
+        })
+      }
+
+      const search =
+        typeof req.query.search === 'string' && req.query.search.trim()
+          ? req.query.search.trim()
+          : ''
+
+      const searchPattern = search ? `%${search}%` : null
+      const limit = parseProductReportLimit(req.query.limit)
+
+      if (branchId) {
+        const branchResult = await db.query(
+          `
+          SELECT id
+          FROM branches
+          WHERE company_id = $1
+            AND id = $2
+          LIMIT 1;
+          `,
+          [auth.companyId, branchId],
+        )
+
+        if ((branchResult.rowCount ?? 0) === 0) {
+          return res.status(404).json({
+            error: 'Branch was not found in the authenticated company',
+          })
+        }
+      }
+
+      const baseValues = [
+        auth.companyId,
+        branchId || null,
+        sizeId || null,
+        colorId || null,
+        seasonId || null,
+        dateFrom,
+        dateTo,
+        searchPattern,
+      ]
+
+      const limitedValues = [...baseValues, limit]
+
+      const variantScopeSql = `
+        SELECT
+          pv.id AS variant_id,
+          pv.product_id,
+
+          p.name AS product_name,
+          p.product_type,
+
+          pv.sku,
+          pv.primary_barcode,
+          pv.style_code,
+
+          size.id AS size_id,
+          size.name AS size_name,
+          size.code AS size_code,
+          size.sort_order AS size_sort_order,
+
+          color.id AS color_id,
+          color.name AS color_name,
+          color.code AS color_code,
+          color.hex_code,
+
+          season.id AS season_id,
+          season.name AS season_name,
+          season.code AS season_code,
+          season.year AS season_year,
+
+          collection.id AS collection_id,
+          collection.name AS collection_name,
+          collection.code AS collection_code,
+
+          category.name AS category_name,
+          brand.name AS brand_name,
+
+          COALESCE(stock_summary.current_stock, 0) AS current_stock,
+          COALESCE(stock_summary.inventory_value, 0) AS inventory_value,
+
+          COALESCE(sales_summary.sold_quantity, 0) AS sold_quantity,
+          COALESCE(sales_summary.sales_count, 0)::int AS sales_count,
+          COALESCE(sales_summary.gross_revenue, 0) AS gross_revenue,
+          COALESCE(sales_summary.total_cost, 0) AS total_cost,
+          COALESCE(sales_summary.gross_profit, 0) AS gross_profit
+
+        FROM product_variants pv
+
+        JOIN products p
+          ON p.company_id = pv.company_id
+          AND p.id = pv.product_id
+
+        LEFT JOIN fashion_sizes size
+          ON size.company_id = pv.company_id
+          AND size.id = pv.size_id
+
+        LEFT JOIN fashion_colors color
+          ON color.company_id = pv.company_id
+          AND color.id = pv.color_id
+
+        LEFT JOIN fashion_seasons season
+          ON season.company_id = pv.company_id
+          AND season.id = pv.season_id
+
+        LEFT JOIN fashion_collections collection
+          ON collection.company_id = pv.company_id
+          AND collection.id = pv.collection_id
+
+        LEFT JOIN product_categories category
+          ON category.company_id = p.company_id
+          AND category.id = p.category_id
+
+        LEFT JOIN brands brand
+          ON brand.company_id = p.company_id
+          AND brand.id = p.brand_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            COALESCE(SUM(sb.quantity), 0) AS current_stock,
+
+            COALESCE(
+              SUM(
+                ROUND(
+                  (
+                    sb.quantity *
+                    COALESCE(sb.average_cost, 0)
+                  )::numeric,
+                  2
+                )
+              ),
+              0
+            ) AS inventory_value
+
+          FROM stock_balances sb
+
+          WHERE sb.company_id = pv.company_id
+            AND sb.variant_id = pv.id
+
+            AND (
+              $2::uuid IS NULL
+              OR sb.branch_id = $2::uuid
+            )
+        ) stock_summary
+          ON TRUE
+
+        LEFT JOIN LATERAL (
+          SELECT
+            COALESCE(SUM(si.quantity), 0) AS sold_quantity,
+
+            COUNT(DISTINCT s.id)::int AS sales_count,
+
+            COALESCE(SUM(si.line_total), 0) AS gross_revenue,
+
+            COALESCE(
+              SUM(COALESCE(si.cost_total_snapshot, 0)),
+              0
+            ) AS total_cost,
+
+            COALESCE(
+              SUM(
+                COALESCE(
+                  si.gross_profit_snapshot,
+                  si.line_total - COALESCE(si.cost_total_snapshot, 0)
+                )
+              ),
+              0
+            ) AS gross_profit
+
+          FROM sale_items si
+
+          JOIN sales s
+            ON s.company_id = si.company_id
+            AND s.id = si.sale_id
+
+          WHERE si.company_id = pv.company_id
+            AND si.variant_id = pv.id
+
+            AND (
+              $2::uuid IS NULL
+              OR s.branch_id = $2::uuid
+            )
+
+            AND s.created_at >= $6::date
+
+            AND s.created_at < ($7::date + INTERVAL '1 day')
+
+            AND s.status IN (
+              'completed',
+              'pending_review',
+              'refunded'
+            )
+        ) sales_summary
+          ON TRUE
+
+        WHERE pv.company_id = $1
+
+          AND p.product_type = 'fashion'
+
+          AND (
+            $3::uuid IS NULL
+            OR pv.size_id = $3::uuid
+          )
+
+          AND (
+            $4::uuid IS NULL
+            OR pv.color_id = $4::uuid
+          )
+
+          AND (
+            $5::uuid IS NULL
+            OR pv.season_id = $5::uuid
+          )
+
+          AND (
+            $8::text IS NULL
+
+            OR p.name ILIKE $8::text
+            OR pv.sku ILIKE $8::text
+            OR COALESCE(pv.primary_barcode, '') ILIKE $8::text
+            OR COALESCE(pv.style_code, '') ILIKE $8::text
+            OR COALESCE(size.name, '') ILIKE $8::text
+            OR COALESCE(color.name, '') ILIKE $8::text
+            OR COALESCE(season.name, '') ILIKE $8::text
+            OR COALESCE(collection.name, '') ILIKE $8::text
+            OR COALESCE(category.name, '') ILIKE $8::text
+            OR COALESCE(brand.name, '') ILIKE $8::text
+          )
+      `
+
+      const [
+        summaryResult,
+        bySizeResult,
+        byColorResult,
+        bySeasonResult,
+        topVariantsResult,
+      ] = await Promise.all([
+        db.query(
+          `
+            WITH variant_rows AS (
+              ${variantScopeSql}
+            )
+
+            SELECT
+              COUNT(*)::int AS variant_count,
+
+              COUNT(DISTINCT product_id)::int AS product_count,
+
+              COUNT(*) FILTER (
+                WHERE sold_quantity > 0
+              )::int AS sold_variant_count,
+
+              COALESCE(SUM(current_stock), 0) AS current_stock,
+
+              COALESCE(SUM(inventory_value), 0) AS inventory_value,
+
+              COALESCE(SUM(sold_quantity), 0) AS sold_quantity,
+
+              COALESCE(SUM(sales_count), 0)::int AS sales_count,
+
+              COALESCE(SUM(gross_revenue), 0) AS gross_revenue,
+
+              COALESCE(SUM(total_cost), 0) AS total_cost,
+
+              COALESCE(SUM(gross_profit), 0) AS gross_profit,
+
+              CASE
+                WHEN COALESCE(SUM(gross_revenue), 0) <> 0
+                THEN ROUND(
+                  (
+                    COALESCE(SUM(gross_profit), 0) /
+                    NULLIF(SUM(gross_revenue), 0)
+                  )::numeric * 100,
+                  4
+                )
+                ELSE 0
+              END AS gross_margin_percent
+
+            FROM variant_rows;
+            `,
+          baseValues,
+        ),
+
+        db.query(
+          `
+            WITH variant_rows AS (
+              ${variantScopeSql}
+            )
+
+            SELECT
+              size_id,
+              size_name,
+              size_code,
+              size_sort_order,
+
+              COUNT(*)::int AS variant_count,
+              COALESCE(SUM(current_stock), 0) AS current_stock,
+              COALESCE(SUM(inventory_value), 0) AS inventory_value,
+              COALESCE(SUM(sold_quantity), 0) AS sold_quantity,
+              COALESCE(SUM(gross_revenue), 0) AS gross_revenue,
+              COALESCE(SUM(gross_profit), 0) AS gross_profit
+
+            FROM variant_rows
+
+            GROUP BY
+              size_id,
+              size_name,
+              size_code,
+              size_sort_order
+
+            ORDER BY
+              gross_revenue DESC,
+              size_sort_order ASC NULLS LAST,
+              size_name ASC NULLS LAST;
+            `,
+          baseValues,
+        ),
+
+        db.query(
+          `
+            WITH variant_rows AS (
+              ${variantScopeSql}
+            )
+
+            SELECT
+              color_id,
+              color_name,
+              color_code,
+              hex_code,
+
+              COUNT(*)::int AS variant_count,
+              COALESCE(SUM(current_stock), 0) AS current_stock,
+              COALESCE(SUM(inventory_value), 0) AS inventory_value,
+              COALESCE(SUM(sold_quantity), 0) AS sold_quantity,
+              COALESCE(SUM(gross_revenue), 0) AS gross_revenue,
+              COALESCE(SUM(gross_profit), 0) AS gross_profit
+
+            FROM variant_rows
+
+            GROUP BY
+              color_id,
+              color_name,
+              color_code,
+              hex_code
+
+            ORDER BY
+              gross_revenue DESC,
+              color_name ASC NULLS LAST;
+            `,
+          baseValues,
+        ),
+
+        db.query(
+          `
+            WITH variant_rows AS (
+              ${variantScopeSql}
+            )
+
+            SELECT
+              season_id,
+              season_name,
+              season_code,
+              season_year,
+
+              COUNT(*)::int AS variant_count,
+              COALESCE(SUM(current_stock), 0) AS current_stock,
+              COALESCE(SUM(inventory_value), 0) AS inventory_value,
+              COALESCE(SUM(sold_quantity), 0) AS sold_quantity,
+              COALESCE(SUM(gross_revenue), 0) AS gross_revenue,
+              COALESCE(SUM(gross_profit), 0) AS gross_profit
+
+            FROM variant_rows
+
+            GROUP BY
+              season_id,
+              season_name,
+              season_code,
+              season_year
+
+            ORDER BY
+              gross_revenue DESC,
+              season_year DESC NULLS LAST,
+              season_name ASC NULLS LAST;
+            `,
+          baseValues,
+        ),
+
+        db.query(
+          `
+            WITH variant_rows AS (
+              ${variantScopeSql}
+            )
+
+            SELECT *
+
+            FROM variant_rows
+
+            ORDER BY
+              gross_revenue DESC,
+              sold_quantity DESC,
+              product_name ASC,
+              sku ASC
+
+            LIMIT $9;
+            `,
+          limitedValues,
+        ),
+      ])
+
+      function mapFashionMetrics(row: Record<string, unknown>) {
+        return {
+          variantCount: Number(row.variant_count ?? 0),
+          currentStock: String(row.current_stock ?? '0'),
+          inventoryValue: String(row.inventory_value ?? '0'),
+          soldQuantity: String(row.sold_quantity ?? '0'),
+          grossRevenue: String(row.gross_revenue ?? '0'),
+          grossProfit: String(row.gross_profit ?? '0'),
+        }
+      }
+
+      const summaryRow = summaryResult.rows[0] as
+        | Record<string, unknown>
+        | undefined
+
+      const bySize = (bySizeResult.rows as Array<Record<string, unknown>>).map(
+        (row) => ({
+          sizeId: typeof row.size_id === 'string' ? row.size_id : null,
+          sizeName:
+            typeof row.size_name === 'string'
+              ? row.size_name
+              : 'Unspecified size',
+          sizeCode: typeof row.size_code === 'string' ? row.size_code : null,
+          sizeSortOrder:
+            row.size_sort_order === null || row.size_sort_order === undefined
+              ? null
+              : Number(row.size_sort_order),
+
+          ...mapFashionMetrics(row),
+        }),
+      )
+
+      const byColor = (
+        byColorResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        colorId: typeof row.color_id === 'string' ? row.color_id : null,
+        colorName:
+          typeof row.color_name === 'string'
+            ? row.color_name
+            : 'Unspecified color',
+        colorCode: typeof row.color_code === 'string' ? row.color_code : null,
+        hexCode: typeof row.hex_code === 'string' ? row.hex_code : null,
+
+        ...mapFashionMetrics(row),
+      }))
+
+      const bySeason = (
+        bySeasonResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        seasonId: typeof row.season_id === 'string' ? row.season_id : null,
+        seasonName:
+          typeof row.season_name === 'string'
+            ? row.season_name
+            : 'Unspecified season',
+        seasonCode:
+          typeof row.season_code === 'string' ? row.season_code : null,
+        seasonYear:
+          row.season_year === null || row.season_year === undefined
+            ? null
+            : Number(row.season_year),
+
+        ...mapFashionMetrics(row),
+      }))
+
+      const topVariants = (
+        topVariantsResult.rows as Array<Record<string, unknown>>
+      ).map((row) => ({
+        variantId: String(row.variant_id),
+        productId: String(row.product_id),
+        productName: String(row.product_name),
+
+        sku: String(row.sku),
+
+        primaryBarcode:
+          typeof row.primary_barcode === 'string' ? row.primary_barcode : null,
+
+        styleCode: typeof row.style_code === 'string' ? row.style_code : null,
+
+        sizeId: typeof row.size_id === 'string' ? row.size_id : null,
+        sizeName: typeof row.size_name === 'string' ? row.size_name : null,
+
+        colorId: typeof row.color_id === 'string' ? row.color_id : null,
+        colorName: typeof row.color_name === 'string' ? row.color_name : null,
+
+        seasonId: typeof row.season_id === 'string' ? row.season_id : null,
+        seasonName:
+          typeof row.season_name === 'string' ? row.season_name : null,
+        seasonYear:
+          row.season_year === null || row.season_year === undefined
+            ? null
+            : Number(row.season_year),
+
+        collectionId:
+          typeof row.collection_id === 'string' ? row.collection_id : null,
+        collectionName:
+          typeof row.collection_name === 'string' ? row.collection_name : null,
+
+        categoryName:
+          typeof row.category_name === 'string' ? row.category_name : null,
+
+        brandName: typeof row.brand_name === 'string' ? row.brand_name : null,
+
+        currentStock: String(row.current_stock ?? '0'),
+        inventoryValue: String(row.inventory_value ?? '0'),
+        soldQuantity: String(row.sold_quantity ?? '0'),
+        salesCount: Number(row.sales_count ?? 0),
+        grossRevenue: String(row.gross_revenue ?? '0'),
+        totalCost: String(row.total_cost ?? '0'),
+        grossProfit: String(row.gross_profit ?? '0'),
+      }))
+
+      return res.json({
+        data: {
+          filters: {
+            companyId: auth.companyId,
+            branchId: branchId || null,
+            branchSelectionLocked: Boolean(auth.branchId),
+            sizeId: sizeId || null,
+            colorId: colorId || null,
+            seasonId: seasonId || null,
+            dateFrom,
+            dateTo,
+            days: reportDays,
+            search: search || null,
+            limit,
+          },
+
+          definitions: {
+            productScope: 'products.product_type = fashion',
+            stockBasis: 'current stock from stock_balances',
+            salesBasis:
+              'sale_items joined to sales using sales.created_at as report date',
+            profitBasis:
+              'sale_items gross-profit snapshots where available, otherwise line_total minus stored cost snapshot',
+          },
+
+          summary: {
+            variantCount: Number(summaryRow?.variant_count ?? 0),
+            productCount: Number(summaryRow?.product_count ?? 0),
+            soldVariantCount: Number(summaryRow?.sold_variant_count ?? 0),
+            currentStock: String(summaryRow?.current_stock ?? '0'),
+            inventoryValue: String(summaryRow?.inventory_value ?? '0'),
+            soldQuantity: String(summaryRow?.sold_quantity ?? '0'),
+            salesCount: Number(summaryRow?.sales_count ?? 0),
+            grossRevenue: String(summaryRow?.gross_revenue ?? '0'),
+            totalCost: String(summaryRow?.total_cost ?? '0'),
+            grossProfit: String(summaryRow?.gross_profit ?? '0'),
+            grossMarginPercent: String(summaryRow?.gross_margin_percent ?? '0'),
+          },
+
+          bySize,
+          byColor,
+          bySeason,
+          topVariants,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+// ======================================================
 // GET /api/reports/inventory-shortages
 //
 // تقرير نواقص المخزون حسب حدود إعادة الطلب.
